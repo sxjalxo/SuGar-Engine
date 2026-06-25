@@ -1,0 +1,172 @@
+{
+  "version": 2,
+  "objects": [
+    {
+      "name": "Parent",
+      "parent": -1,
+      "transform": {
+        "pos": [0, 0, 0],
+        "rot": [0, 0, 0],
+        "scale": [1.1, 1.1, 1.1]
+      },
+      "mesh": "assets/models/textured_cube.obj",
+      "material": {
+        "albedo": "builtin://checkerboard",
+        "metallic": 0.05,
+        "roughness": 0.82,
+        "ao": 1
+      },
+      "script": "Spinner"
+    },
+    {
+      "name": "Child",
+      "parent": 0,
+      "transform": {
+        "pos": [2, 0, 0],
+        "rot": [0, -0.55, 0],
+        "scale": [0.75, 0.75, 0.75]
+      },
+      "mesh": "assets/models/textured_cube.obj",
+      "material": {
+        "albedo": "builtin://checkerboard",
+        "metallic": 0.95,
+        "roughness": 0.16,
+        "ao": 1
+      }
+    },
+    {
+      "name": "Support",
+      "parent": 0,
+      "transform": {
+        "pos": [-1.75, 0.65, -0.9],
+        "rot": [0.25, 0.35, 0.15],
+        "scale": [0.55, 0.55, 0.55]
+      },
+      "mesh": "assets/models/textured_cube.obj",
+      "material": {
+        "albedo": "builtin://checkerboard",
+        "metallic": 0.30,
+        "roughness": 0.45,
+        "ao": 1
+      }
+    },
+    {
+      "name": "Player",
+      "parent": -1,
+      "transform": {
+        "pos": [0, -1.6, 1.5],
+        "rot": [0, 0, 0],
+        "scale": [0.6, 0.6, 0.6]
+      },
+      "mesh": "assets/models/textured_cube.obj",
+      "material": {
+        "albedo": "builtin://checkerboard",
+        "metallic": 0.1,
+        "roughness": 0.35,
+        "ao": 1
+      },
+      "script": "PlayerController"
+    },
+    {
+      "name": "FallingBox",
+      "parent": -1,
+      "transform": {
+        "pos": [-0.5, 3, 0],
+        "rot": [0, 0, 0],
+        "scale": [0.5, 0.5, 0.5]
+      },
+      "mesh": "assets/models/textured_cube.obj",
+      "material": {
+        "albedo": "builtin://checkerboard",
+        "metallic": 0.2,
+        "roughness": 0.55,
+        "ao": 1
+      },
+      "rigidbody": {
+        "velocity": [0, 0, 0],
+        "mass": 1,
+        "restitution": 0.3,
+        "friction": 0.5,
+        "useGravity": true,
+        "isStatic": false
+      },
+      "collider": {
+        "type": "box",
+        "halfExtents": [0.5, 0.5, 0.5],
+        "radius": 0.5
+      }
+    },
+    {
+      "name": "Ground",
+      "parent": -1,
+      "transform": {
+        "pos": [0, -2.5, 0],
+        "rot": [0, 0, 0],
+        "scale": [10, 0.5, 10]
+      },
+      "mesh": "assets/models/textured_cube.obj",
+      "material": {
+        "albedo": "builtin://checkerboard",
+        "metallic": 0,
+        "roughness": 0.9,
+        "ao": 1
+      },
+      "rigidbody": {
+        "velocity": [0, 0, 0],
+        "mass": 1,
+        "restitution": 0.3,
+        "friction": 0.5,
+        "useGravity": false,
+        "isStatic": true
+      },
+      "collider": {
+        "type": "box",
+        "halfExtents": [0.5, 0.5, 0.5],
+        "radius": 0.5
+      }
+    },
+    {
+      "name": "BouncyBox",
+      "parent": -1,
+      "transform": {
+        "pos": [1.5, 2, -1],
+        "rot": [0, 0, 0],
+        "scale": [0.4, 0.4, 0.4]
+      },
+      "mesh": "assets/models/textured_cube.obj",
+      "material": {
+        "albedo": "builtin://checkerboard",
+        "metallic": 0.6,
+        "roughness": 0.3,
+        "ao": 1
+      },
+      "rigidbody": {
+        "velocity": [1.5, 0, 0],
+        "mass": 1,
+        "restitution": 0.8,
+        "friction": 0.3,
+        "useGravity": true,
+        "isStatic": false
+      },
+      "collider": {
+        "type": "box",
+        "halfExtents": [0.5, 0.5, 0.5],
+        "radius": 0.5
+      }
+    }
+  ],
+  "lights": [
+    {
+      "pos": [2.5, 2.5, 3],
+      "color": [1, 0.95, 0.85]
+    },
+    {
+      "pos": [-2.5, 1.5, 2],
+      "color": [0.35, 0.45, 1]
+    },
+    {
+      "pos": [0, 4, -3.5],
+      "color": [0.85, 0.55, 0.45]
+    }
+  ]
+}

@@ -1,0 +1,33 @@
+# Build output
+/build/
+/out/
+
+# Visual Studio
+/.vs/
+*.vcxproj*
+*.sln
+*.user
+
+# CMake
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+
+# IDE / editor
+/.idea/
+/.vscode/
+compile_commands.json
+
+# Compiled shaders (generated into build/)
+*.spv
+
+# Generated at runtime (ImGui window layout)
+imgui.ini
+
+# OS files
+Thumbs.db
+.DS_Store
+
+# Project docs are intentionally tracked — do not ignore markdown:
+#   README.md, ROADMAP.md
+# (listed here so future *.md ignore rules don't accidentally drop them)
