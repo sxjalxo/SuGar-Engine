@@ -211,9 +211,10 @@ Full plan in [ROADMAP.md](ROADMAP.md). Summary:
   management + prefab Revert/Apply + thumbnails). **M1 / Track A complete.**
 * **Track B** *(in progress)* — the wedge: 11A editor command infrastructure;
   11B time-travel scrubbing + frame stepping + ECS query console; 11C snapshot
-  backend abstraction (`ISnapshotStorage`) + timeline bookmarks *done*; later:
-  binary/delta snapshot backends, query-language growth, Phase 12 code hot reload
-  + in-place state restore
+  backend abstraction (`ISnapshotStorage`) + timeline bookmarks *done*. **Phase 12
+  code hot reload** started: layering into `Editor -> Engine -> Core` (a Vulkan-free
+  `SuGarCore` library the future game DLL links). Later: binary/delta snapshot
+  backends, query-language growth, in-place state restore
 * **Track C** — graphics, cross-platform, packaging, ecosystem
 
 ---

@@ -310,10 +310,16 @@ direction.
   - DONE: **dependency inversion of `Registry`** — the ECS no longer calls the
     Vulkan-coupled `ResourceManager`; it releases handles through an injected
     `onReleaseAsset` hook the Engine wires. This is the pattern for every up-call
-    found while moving code into Core.
-  - Next: create the `SuGarCore` shared lib (ECS, components, math, `Behavior` +
-    `BehaviorRegistry` mechanism, `InputActions`, `CollisionEvent`, `AssetHandle`);
-    make the Engine link it; fix remaining up-calls the same way.
+    found while moving code into Core. *Refinement (later, not now):* evolve the
+    `std::function` hook into an `IAssetReleaseService` interface — interfaces are
+    easier to mock in tests than raw callbacks.
+  - DONE: **`SuGarCore` library** (`CMakeLists.txt`) — ECS, component data, math,
+    `Behavior` + `BehaviorRegistry`, `InputActions`, `CollisionEvent`,
+    `AssetHandle`, `Material`. Compiles with **no Vulkan** (self-sufficient glm /
+    glfw includes), which is what enforces the boundary; the Engine links it.
+    STATIC for now — flips to SHARED in 12B so the game DLL shares Core singletons.
+  - Next: split the concrete behaviors (Spinner/PlayerController/CollisionSfx) out
+    of Core into the game module; flip Core to SHARED.
 - 12B — **Game module DLL**: move concrete behaviors into a DLL that links only
   Core and exports `registerGameBehaviors`; the Engine loads a copy so the
   original can be recompiled while running.

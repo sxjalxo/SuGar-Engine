@@ -28,8 +28,13 @@ target_link_libraries(imgui PUBLIC
     Vulkan::Vulkan
 )
 
-add_executable(SuGarEngine
-    src/main.cpp
+# --- Core layer -------------------------------------------------------------
+# Engine-agnostic foundation: ECS, component data, math, behavior registry, input.
+# No Vulkan / renderer / ResourceManager dependencies (the Registry releases assets
+# through an injected hook). The hot-reloadable game module (Phase 12B) will link
+# only against this. STATIC for now; becomes SHARED once the game DLL needs to
+# share Core singletons (e.g. BehaviorRegistry's table).
+add_library(SuGarCore STATIC
     src/ecs/Entity.h
     src/ecs/EntityManager.cpp
     src/ecs/EntityManager.h
@@ -40,6 +45,26 @@ add_executable(SuGarEngine
     src/core/Input.h
     src/core/InputActions.cpp
     src/core/InputActions.h
+    src/scene/Behavior.h
+    src/scene/BehaviorRegistry.cpp
+    src/scene/BehaviorRegistry.h
+    src/scene/Transform.h
+    src/scene/TransformMath.h
+    src/physics/CollisionEvent.h
+    src/physics/PhysicsComponents.h
+    src/audio/AudioComponents.h
+    src/assets/AssetHandle.h
+    src/rendering/Material.h
+)
+
+target_include_directories(SuGarCore PUBLIC
+    src
+    external/glm/glm
+    external/glfw/include
+)
+
+add_executable(SuGarEngine
+    src/main.cpp
     src/core/SnapshotStorage.h
     src/SuGarApp.cpp
     src/Renderer.cpp
@@ -52,7 +77,6 @@ add_executable(SuGarEngine
     src/assets/ModelImporter.cpp
     src/assets/ModelImporter.h
     src/assets/tiny_gltf_impl.cpp
-    src/assets/AssetHandle.h
     src/assets/AssetRegistry.cpp
     src/assets/AssetRegistry.h
     src/assets/FileWatcher.cpp
@@ -67,7 +91,6 @@ add_executable(SuGarEngine
     src/editor/EntityQuery.h
     src/SelfTests.h
     src/audio/AudioClip.h
-    src/audio/AudioComponents.h
     src/audio/AudioEngine.h
     src/audio/AudioEngine.cpp
     src/audio/AudioLoader.h
@@ -75,15 +98,8 @@ add_executable(SuGarEngine
     src/audio/AudioSystem.h
     src/audio/AudioSystem.cpp
     src/audio/miniaudio_impl.cpp
-    src/physics/CollisionEvent.h
-    src/physics/PhysicsComponents.h
     src/physics/PhysicsWorld.cpp
     src/physics/PhysicsWorld.h
-    src/scene/Transform.h
-    src/scene/TransformMath.h
-    src/scene/Behavior.h
-    src/scene/BehaviorRegistry.cpp
-    src/scene/BehaviorRegistry.h
     src/scene/DrawList.cpp
     src/scene/DrawList.h
     src/scene/GameObject.h
@@ -92,7 +108,6 @@ add_executable(SuGarEngine
     src/scene/SceneSerializer.cpp
     src/scene/SceneSerializer.h
     src/rendering/Camera.h
-    src/rendering/Material.h
     src/rendering/Mesh.cpp
     src/rendering/Mesh.h
     src/rendering/Texture.cpp
@@ -102,6 +117,7 @@ add_executable(SuGarEngine
 )
 
 target_link_libraries(SuGarEngine
+    SuGarCore
     glfw
     imgui
     Vulkan::Vulkan
