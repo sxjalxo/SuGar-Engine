@@ -97,6 +97,7 @@ private:
     void buildEditorUi();
     void drawPlayControls();
     void drawTimelinePanel();
+    void drawQueryConsolePanel();
     void drawHierarchyPanel();
     void drawInspectorPanel();
     void drawAssetBrowserPanel();
@@ -184,6 +185,12 @@ private:
     Transform gizmoEditBefore;
     bool inspectorEditing = false;
     Transform inspectorEditBefore;
+
+    // ECS query console (Phase 11B): last query text, its matches, and any error.
+    char queryBuffer[128] = "rigidbody where vel.y < 0";
+    std::vector<Entity> queryResults;
+    std::string queryError;
+    bool queryHasRun = false;
     std::string editorStatusMessage;
     std::vector<AssetHandle> deferredResourceReleases;
     

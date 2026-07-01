@@ -64,6 +64,7 @@ add_executable(SuGarEngine
     src/editor/EditorCommand.h
     src/editor/EditorCommands.h
     src/editor/EditorCommandSelfTest.h
+    src/editor/EntityQuery.h
     src/audio/AudioClip.h
     src/audio/AudioComponents.h
     src/audio/AudioEngine.h

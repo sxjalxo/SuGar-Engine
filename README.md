@@ -79,11 +79,14 @@ scrubbing + frame stepping. Next: ECS query console, then code hot reload.
 
 * **Snapshot ring-buffer** — a full-scene snapshot is captured every fixed step
   during Play (rolling ~10 s window)
-* **Timeline panel** — scrub backward to restore and inspect any recorded frame
+* **Timeline panel** — scrub backward to restore and inspect any recorded frame,
+  with a seconds-behind-live readout
 * **Frame stepping** — step through history frame-by-frame, or advance the live
   sim one fixed step at a time; **Resume Live** to return to play
 * **Live hot-patch** — the inspector edits the running scene directly, so
   component data changes apply while playing with no restart
+* **ECS query console** — `<component> [where <field> <op> <value>]`
+  (e.g. `rigidbody where vel.y < 0`); click a match to select it
 
 ### Rendering
 
@@ -191,9 +194,10 @@ Full plan in [ROADMAP.md](ROADMAP.md). Summary:
   10B gizmos + undo/redo + duplicate; 10C multi-select + delete + component
   management + prefab Revert/Apply + thumbnails). **M1 / Track A complete.**
 * **Track B** *(in progress)* — the wedge: 11A editor command infrastructure
-  (transactions, entity remapping, compression) *done*; 11B snapshot ring-buffer
-  + time-travel scrubbing + frame stepping *done*; next: ECS query console, then
-  native code hot reload + scheduling
+  (transactions, entity remapping, compression) *done*; 11B time-travel scrubbing
+  + frame stepping + ECS query console *done*; next 11C snapshot backend
+  abstraction (binary/delta storage + timeline bookmarks), then Phase 12 code hot
+  reload + in-place state restore
 * **Track C** — graphics, cross-platform, packaging, ecosystem
 
 ---

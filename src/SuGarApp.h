@@ -63,6 +63,8 @@ public:
     void stepFrame(int delta);
     // Leaves scrubbing: restores the newest snapshot and returns to live Play.
     void resumeLive();
+    // Duration of one recorded frame, so the editor can show timeline seconds.
+    float fixedTimestep() const;
 
     // Public getters for Renderer access
     VkDevice getDevice() const { return device; }

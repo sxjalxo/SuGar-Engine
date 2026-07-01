@@ -9,6 +9,7 @@
 #include "rendering/Mesh.h"
 #include "rendering/Camera.h"
 #include "editor/EditorCommands.h"
+#include "editor/EntityQuery.h"
 #include <cmath>
 #include <cstdio>
 #include <memory>
@@ -1415,6 +1416,7 @@ void Renderer::buildEditorUi() {
     drawHierarchyPanel();
     drawInspectorPanel();
     drawAssetBrowserPanel();
+    drawQueryConsolePanel();
 
     ImGui::Begin("Viewport");
 
@@ -1878,8 +1880,13 @@ void Renderer::drawTimelinePanel() {
     } else {
         ImGui::TextColored(ImVec4(0.20f, 0.90f, 0.30f, 1.0f), "LIVE");
     }
+
+    // Frame index plus how far back we are from the live edge, in seconds
+    // (humans reason in seconds better than frame counts).
+    const float secondsBehindLive = static_cast<float>(cursor - (count - 1)) * app->fixedTimestep();
+    ImGui::Text("Frame: %d / %d", cursor, count - 1);
     ImGui::SameLine();
-    ImGui::Text("Frame %d / %d", cursor, count - 1);
+    ImGui::Text("   Time: %+.2f s", secondsBehindLive);
 
     // Scrubber over the recorded frames — dragging it pauses and restores a
     // past frame for inspection (basic time-travel debugging).
@@ -1902,6 +1909,46 @@ void Renderer::drawTimelinePanel() {
     }
     ImGui::EndDisabled();
     ImGui::TextDisabled("Scrub to inspect past frames; edits while scrubbing aren't kept.");
+
+    ImGui::End();
+}
+
+void Renderer::drawQueryConsolePanel() {
+    ImGui::Begin("Query");
+
+    if (registry == nullptr) {
+        ImGui::TextUnformatted("No registry bound.");
+        ImGui::End();
+        return;
+    }
+
+    ImGui::TextDisabled("<component> [where <field> <op> <value>]");
+    ImGui::TextDisabled("e.g. rigidbody where vel.y < 0  |  transform where pos.y > 5  |  audiosource");
+
+    ImGui::SetNextItemWidth(-1.0f);
+    const bool entered = ImGui::InputText("##query", queryBuffer, sizeof(queryBuffer),
+                                          ImGuiInputTextFlags_EnterReturnsTrue);
+    if (ImGui::Button("Run") || entered) {
+        EntityQuery::Result result = EntityQuery::run(*registry, queryBuffer);
+        queryResults = std::move(result.entities);
+        queryError = std::move(result.error);
+        queryHasRun = true;
+    }
+
+    if (queryHasRun) {
+        ImGui::Separator();
+        if (!queryError.empty()) {
+            ImGui::TextColored(ImVec4(0.95f, 0.5f, 0.4f, 1.0f), "%s", queryError.c_str());
+        } else {
+            ImGui::Text("%zu match(es) — click to select", queryResults.size());
+            for (Entity entity : queryResults) {
+                const std::string label = getEntityLabel(*registry, entity) + "##q" + std::to_string(entity);
+                if (ImGui::Selectable(label.c_str(), isSelected(entity))) {
+                    selectSingle(entity);
+                }
+            }
+        }
+    }
 
     ImGui::End();
 }

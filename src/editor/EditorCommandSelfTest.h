@@ -11,6 +11,7 @@
 #include "ecs/Registry.h"
 #include "editor/EditorCommand.h"
 #include "editor/EditorCommands.h"
+#include "editor/EntityQuery.h"
 
 namespace EditorCommandSelfTest {
 
@@ -108,6 +109,32 @@ inline bool run() {
         history.undo(reg); // transform now targets b -> sets b to its `before` (x=0)
         const bool remapped = xOf(reg, b) == 0.0f && xOf(reg, a) == 1.0f;
         allOk &= check("remap repoints command to new entity", remapped);
+    }
+
+    // 4) ECS query language.
+    {
+        Registry reg;
+        const Entity a = reg.createEntity();
+        reg.transforms.add(a, { transformAtX(0.0f) });
+        RigidBodyComponent falling{};
+        falling.velocity = glm::vec3(0.0f, -5.0f, 0.0f);
+        reg.rigidBodies.add(a, falling);
+
+        const Entity b = reg.createEntity();
+        reg.transforms.add(b, { transformAtX(0.0f) });
+        RigidBodyComponent rising{};
+        rising.velocity = glm::vec3(0.0f, 3.0f, 0.0f);
+        reg.rigidBodies.add(b, rising);
+
+        const auto filtered = EntityQuery::run(reg, "rigidbody where vel.y < 0");
+        allOk &= check("query filters by field",
+                       filtered.error.empty() && filtered.entities.size() == 1 && filtered.entities[0] == a);
+
+        const auto all = EntityQuery::run(reg, "rigidbody");
+        allOk &= check("query lists all with component", all.error.empty() && all.entities.size() == 2);
+
+        allOk &= check("query reports unknown component", !EntityQuery::run(reg, "bogus").error.empty());
+        allOk &= check("query reports unknown field", !EntityQuery::run(reg, "rigidbody where vel.q < 0").error.empty());
     }
 
     std::cout << "[selftest] " << (allOk ? "ALL PASS" : "FAILURES PRESENT") << "\n";

@@ -243,29 +243,50 @@ introspection on top of it. Resolves the id-stability limitation from 10B/10C.
   and isn't remap-aware — fine since those entities aren't recreated by other
   commands; revisit if that changes.
 
-#### Phase 11B — Live introspection & time travel  (IN PROGRESS)
+#### Phase 11B — Live introspection & time travel  (DONE)
 - **Snapshot ring-buffer + time-travel scrubbing** (DONE) — a `std::deque` of
   full-scene snapshots (`saveToString`) captured each fixed step in Play (capacity
   ~600 frames / 10 s, oldest evicted). New editor **Timeline** panel: a scrubber
-  restores any past frame (pauses + `loadFromString`), plus frame **stepping**
+  restores any past frame (pauses + `loadFromString`), frame **stepping**
   (`|< Step` / `Step >|`) — within the ring while scrubbing, or advancing the sim
-  one fixed step at the live edge — and **Resume Live**. `SuGarApp` owns the ring
-  + `scrubCursor` (-1 = live); the main loop only advances (and captures) while
+  one fixed step at the live edge — **Resume Live**, and a **seconds-behind-live**
+  readout (`Time: +.2f s`) alongside the frame index. `SuGarApp` owns the ring +
+  `scrubCursor` (-1 = live); the main loop only advances (and captures) while
   live-playing. This is the basic time-travel debugging behind M2.
 - **Live state view / hot-patch** (already works) — the inspector edits the live
   registry directly, including while playing, so component data is hot-patched
   with no restart. A dedicated "live vs authored" view is a later refinement.
-- ECS **query/inspector console** (NEXT) — "show all entities with RigidBody
-  where v.y < 0".
-- Known limits (future): snapshots are full-scene JSON captured every frame
-  (delta-encoding / downsampling + binary later); restoring reassigns entity ids,
-  so a scrub clears editor selection; scrubbed edits aren't kept (inspection only —
-  a "fork from here" branch is a later nicety).
+- **ECS query/inspector console** (DONE) — `EntityQuery` (engine-side, unit-tested)
+  parses `<component> [where <field> <op> <value>]` (e.g. `rigidbody where vel.y < 0`)
+  over the authoritative ECS; the "Query" panel lists matches and click-selects
+  them. Curated numeric fields per component; ops `< <= > >= == !=`.
+- Known limits (deferred by design → see 11C / Phase 12): snapshots are full-scene
+  JSON every frame (memory: 600 frames x scene size); restoring reassigns entity
+  ids, so a scrub clears editor selection; scrubbed edits aren't kept (inspection
+  only — a "fork from here" branch is a later nicety).
+
+#### Phase 11C — Snapshot backend abstraction  (NEXT)
+The Timeline must not know *how* frames are stored. Introduce an `ISnapshotStorage`
+interface behind the ring buffer so the encoding can evolve without touching the
+UI or `SuGarApp`'s time-travel logic:
+- `JsonSnapshotStorage` — today's full-JSON-per-frame (correct, simple baseline).
+- `BinarySnapshotStorage` — compact binary encoding of the same state.
+- `DeltaSnapshotStorage` — store frame deltas + periodic keyframes; the big memory
+  win (the current 600 x full-scene cost is fine for M2, not for production).
+- **Timeline bookmarks** — tag a frame with a label ("physics exploded") and
+  jump Previous/Next bookmark. Tiny feature, big debugging usability.
 
 ### Phase 12 — Code hot reload  (Pillar 1, the hard one)
 - Reloadable **game module**: compile gameplay/behaviors into a hot-swappable unit;
   on reload, migrate state via the serializer (state lives in components, so it survives).
 - Reload **only affected systems**, not the whole scene/domain.
+- **In-place state restore (patch, don't rebuild).** Scene/snapshot restore today
+  is destroy → reload → rebuild, which reassigns entity ids and wipes editor
+  selection / inspector / undo history. Move to *patching component data into the
+  existing entities* (no entity recreation) so selection, inspector state, editor
+  windows, and command history all survive a restore/hot-reload/scrub. This also
+  removes the id-reassignment behind the 11A remap machinery and the 11B scrub
+  selection loss.
 - *This is the headline feature and the hardest. The Phase 6 behavior architecture
   decides whether this is easy or impossible.*
 

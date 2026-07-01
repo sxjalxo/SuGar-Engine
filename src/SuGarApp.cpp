@@ -547,6 +547,10 @@ void SuGarApp::stepFrame(int delta) {
     }
 }
 
+float SuGarApp::fixedTimestep() const {
+    return FIXED_TIMESTEP;
+}
+
 void SuGarApp::resumeLive() {
     if (scrubCursor >= 0 && !snapshotRing.empty()) {
         restoreSnapshot(snapshotRing.back());
