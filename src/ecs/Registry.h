@@ -1,8 +1,9 @@
 #pragma once
 
 #include <algorithm>
+#include <functional>
 #include <stdexcept>
-#include "assets/ResourceManager.h"
+#include "assets/AssetHandle.h"
 #include "audio/AudioComponents.h"
 #include "ecs/ComponentStorage.h"
 #include "ecs/Components.h"
@@ -105,6 +106,12 @@ public:
     ComponentStorage<AudioSourceComponent> audioSources;
     ComponentStorage<AudioListenerComponent> audioListeners;
 
+    // Injected by the Engine layer to release GPU/asset handles when an entity is
+    // destroyed. Keeps the ECS (Core layer) free of any ResourceManager / Vulkan
+    // dependency (dependency inversion for the Editor -> Engine -> Core split).
+    // Left null in headless contexts (tests), where no resources are loaded.
+    std::function<void(AssetHandle)> onReleaseAsset;
+
 private:
     void ensureHierarchy(Entity entity) {
         if (!hierarchy.has(entity)) {
@@ -132,16 +139,17 @@ private:
     }
 
     void releaseResources(Entity entity) {
+        if (!onReleaseAsset) {
+            return; // no resource backend wired (headless/tests)
+        }
         if (meshes.has(entity)) {
-            ResourceManager::release(meshes.get(entity).mesh);
+            onReleaseAsset(meshes.get(entity).mesh);
         }
-
         if (materials.has(entity)) {
-            ResourceManager::release(materials.get(entity).material.albedo);
+            onReleaseAsset(materials.get(entity).material.albedo);
         }
-
         if (audioSources.has(entity)) {
-            ResourceManager::release(audioSources.get(entity).clip);
+            onReleaseAsset(audioSources.get(entity).clip);
         }
     }
 

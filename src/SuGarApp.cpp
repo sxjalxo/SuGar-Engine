@@ -676,6 +676,9 @@ void SuGarApp::initVulkan() {
     createLogicalDevice();
     createCommandPool();
     ResourceManager::init(device, physicalDevice, commandPool, graphicsQueue);
+    // Engine wires the ECS's asset-release hook to ResourceManager, so Core's
+    // Registry never references the Vulkan-coupled resource system directly.
+    registry.onReleaseAsset = [](AssetHandle handle) { ResourceManager::release(handle); };
     createCommandBuffers();
 }
 

@@ -5,6 +5,8 @@
 // reassuring table before you ever launch the editor. Everything here runs
 // headless (no Vulkan); subsystems that need a device are reported as SKIPPED.
 
+#include <chrono>
+#include <iomanip>
 #include <iostream>
 #include <string>
 #include <utility>
@@ -16,6 +18,7 @@
 #include "editor/EditorCommands.h"
 #include "editor/EntityQuery.h"
 #include "physics/PhysicsWorld.h"
+#include "scene/BehaviorRegistry.h"
 #include "scene/Light.h"
 #include "scene/SceneSerializer.h"
 
@@ -213,21 +216,75 @@ inline bool testSerializer() {
            text.find("\"pos\"") != std::string::npos;
 }
 
+// --- BehaviorRegistry: register / resolve by name / clear -------------------
+inline bool testBehaviorRegistry() {
+    BehaviorRegistry::clear();
+    BehaviorRegistry::registerBuiltins();
+    bool ok = BehaviorRegistry::has("Spinner") &&
+              BehaviorRegistry::has("PlayerController") &&
+              BehaviorRegistry::has("CollisionSfx") &&
+              BehaviorRegistry::get("Spinner") != nullptr &&
+              BehaviorRegistry::get("DoesNotExist") == nullptr;
+    BehaviorRegistry::clear();
+    ok &= !BehaviorRegistry::has("Spinner");
+    return ok;
+}
+
+// --- Registry graph: parenting, cycle guard, destroy detaches children ------
+inline bool testRegistryGraph() {
+    Registry reg;
+    const Entity parent = reg.createEntity();
+    reg.transforms.add(parent, {});
+    reg.hierarchy.add(parent, {});
+    const Entity child = reg.createEntity();
+    reg.transforms.add(child, {});
+    reg.hierarchy.add(child, {});
+
+    reg.setParent(child, parent);
+    bool ok = reg.hierarchy.get(child).parent == parent;
+
+    bool threwOnCycle = false;
+    try {
+        reg.setParent(parent, child); // would form a cycle
+    } catch (...) {
+        threwOnCycle = true;
+    }
+    ok &= threwOnCycle;
+
+    reg.destroyEntity(parent); // destroying the parent detaches the child
+    ok &= reg.hierarchy.has(child) && reg.hierarchy.get(child).parent == INVALID_ENTITY;
+    return ok;
+}
+
 inline bool run() {
-    const std::pair<const char*, bool> results[] = {
-        { "CommandHistory  ", testCommandHistory() },
-        { "EntityQuery     ", testEntityQuery() },
-        { "SnapshotStorage ", testSnapshotStorage() },
-        { "Physics         ", testPhysics() },
-        { "Serializer      ", testSerializer() },
+    using TestFn = bool (*)();
+    struct Case { const char* name; TestFn fn; };
+    const Case cases[] = {
+        { "CommandHistory",   testCommandHistory },
+        { "EntityQuery",      testEntityQuery },
+        { "SnapshotStorage",  testSnapshotStorage },
+        { "Physics",          testPhysics },
+        { "Serializer",       testSerializer },
+        { "BehaviorRegistry", testBehaviorRegistry },
+        { "RegistryGraph",    testRegistryGraph },
     };
 
     bool allOk = true;
-    for (const auto& [name, ok] : results) {
-        std::cout << "[selftest] " << name << (ok ? "PASS" : "FAIL") << "\n";
+    for (const Case& test : cases) {
+        const auto start = std::chrono::high_resolution_clock::now();
+        const bool ok = test.fn();
+        const auto end = std::chrono::high_resolution_clock::now();
+        const double milliseconds = std::chrono::duration<double, std::milli>(end - start).count();
+
+        std::string label = test.name;
+        while (label.size() < 18) {
+            label += '.';
+        }
+        std::cout << "[selftest] " << label << ' ' << (ok ? "PASS" : "FAIL")
+                  << " (" << std::fixed << std::setprecision(2) << milliseconds << " ms)\n";
         allOk &= ok;
     }
-    std::cout << "[selftest] ResourceManager SKIPPED (needs Vulkan device)\n";
+    std::cout << "[selftest] ResourceManager.. SKIPPED (needs Vulkan device)\n";
     std::cout << "[selftest] " << (allOk ? "ALL PASS" : "FAILURES PRESENT") << "\n";
     return allOk;
 }

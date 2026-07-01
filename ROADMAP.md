@@ -18,6 +18,11 @@ engines neglect once a project grows:
 **Positioning:** *"A Vulkan engine designed for instant iteration and
 debuggable systems — not just rendering power."*
 
+**The decision lens (Track B onward):** for every feature, ask *"does this make
+developers faster?"* Iteration speed / debuggability is the identity and the
+tie-breaker — time travel, query console, hot reload, self-tests, bookmarks all
+point the same way.
+
 Success = indie devs adopt it because iterating in SuGar feels faster and
 clearer than the big engines. Open-source, community-driven, dev-led.
 
@@ -57,10 +62,11 @@ So the DX pillars are cheap to add later instead of expensive retrofits:
   it can't exist in gameplay state.
 - **Every subsystem has a confidence self-test.** Not exhaustive — one quick
   "is this sane?" check each, aggregated into a single headless run
-  (`SUGAR_SELFTEST=1` → `src/SelfTests.h`) that prints a PASS/FAIL table before
-  the editor even launches. Covered today: CommandHistory, EntityQuery,
-  SnapshotStorage, Physics, Serializer (save). Pending a small device harness:
-  Serializer round-trip, ResourceManager (need Vulkan).
+  (`SUGAR_SELFTEST=1` → `src/SelfTests.h`) that prints a per-test PASS/FAIL table
+  **with timings** before the editor even launches. Covered today: CommandHistory,
+  EntityQuery, SnapshotStorage, Physics, Serializer (save), BehaviorRegistry,
+  RegistryGraph. Pending a small device harness: Serializer round-trip,
+  ResourceManager (need Vulkan).
 
 ---
 
@@ -292,9 +298,27 @@ The `EntityQuery` parser is a simple tokenizer, deliberately structured to grow:
 - **Ordering** — `rigidbody order by vel.y desc`.
 Not needed now; noted so the grammar is extended rather than rewritten.
 
-### Phase 12 — Code hot reload  (Pillar 1, the hard one)
-- Reloadable **game module**: compile gameplay/behaviors into a hot-swappable unit;
-  on reload, migrate state via the serializer (state lives in components, so it survives).
+### Phase 12 — Code hot reload  (Pillar 1, the hard one)  (IN PROGRESS)
+
+**Architecture (decided): layered `Editor -> Engine -> Core`.** Core is a shared
+library (so its singletons like `BehaviorRegistry` are shared); the hot-swappable
+**game module (DLL) links only against Core**; **no executable exports**. Larger
+refactor than an exe-exports DLL split, but a cleaner API boundary, simpler
+cross-platform hot reload, and it matches the engine's dependency-inversion
+direction.
+- 12A — **Core extraction** (in progress):
+  - DONE: **dependency inversion of `Registry`** — the ECS no longer calls the
+    Vulkan-coupled `ResourceManager`; it releases handles through an injected
+    `onReleaseAsset` hook the Engine wires. This is the pattern for every up-call
+    found while moving code into Core.
+  - Next: create the `SuGarCore` shared lib (ECS, components, math, `Behavior` +
+    `BehaviorRegistry` mechanism, `InputActions`, `CollisionEvent`, `AssetHandle`);
+    make the Engine link it; fix remaining up-calls the same way.
+- 12B — **Game module DLL**: move concrete behaviors into a DLL that links only
+  Core and exports `registerGameBehaviors`; the Engine loads a copy so the
+  original can be recompiled while running.
+- 12C — Reloadable game module: on file change, clear registry, unload, reload,
+  re-register; state survives because it lives in components (Phase 6 design).
 - Reload **only affected systems**, not the whole scene/domain.
 - **In-place state restore (patch, don't rebuild).** Scene/snapshot restore today
   is destroy → reload → rebuild, which reassigns entity ids and wipes editor

@@ -191,8 +191,9 @@ before launching the editor:
 $env:SUGAR_SELFTEST = "1"; build\Debug\SuGarEngine.exe; $env:SUGAR_SELFTEST = ""
 ```
 
-Prints a PASS/FAIL table for CommandHistory, EntityQuery, SnapshotStorage,
-Physics, and Serializer.
+Prints a per-test PASS/FAIL table (with timings) for CommandHistory,
+EntityQuery, SnapshotStorage, Physics, Serializer, BehaviorRegistry, and
+RegistryGraph.
 
 ---
 
