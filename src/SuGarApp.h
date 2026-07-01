@@ -1,6 +1,7 @@
 #pragma once
 
 #include <vulkan/vulkan.h>
+#include <deque>
 #include <memory>
 #include <vector>
 #include "assets/AssetRegistry.h"
@@ -50,6 +51,19 @@ public:
     void resume();
     void stop();
 
+    // Time-travel debugging (Phase 11B). A ring buffer of full-scene snapshots is
+    // captured each fixed step during Play; the editor Timeline panel drives these.
+    int getSnapshotCount() const { return static_cast<int>(snapshotRing.size()); }
+    bool isScrubbing() const { return scrubCursor >= 0; }
+    int getScrubCursor() const { return scrubCursor; }
+    // Pauses and restores the snapshot at `index` (clamped) for inspection.
+    void scrubTo(int index);
+    // Steps by `delta` frames: within the ring while scrubbing; at the live edge,
+    // -1 enters the ring and +1 advances the sim one fixed step (frame-by-frame).
+    void stepFrame(int delta);
+    // Leaves scrubbing: restores the newest snapshot and returns to live Play.
+    void resumeLive();
+
     // Public getters for Renderer access
     VkDevice getDevice() const { return device; }
     VkCommandPool getCommandPool() const { return commandPool; }
@@ -85,9 +99,18 @@ private:
     PhysicsWorld physicsWorld;
     AudioEngine audioEngine;
 
+    // Time-travel ring buffer of serialized scene snapshots, oldest at front.
+    std::deque<std::string> snapshotRing;
+    size_t snapshotCapacity = 600; // ~10 s at 60 Hz
+    int scrubCursor = -1;          // -1 = live; otherwise index into snapshotRing
+
     void initWindow();
     void initVulkan();
     void initAudio();
+    // Time-travel internals.
+    void captureSnapshot();
+    void advanceOneFixedStep();
+    void restoreSnapshot(const std::string& snapshot);
     void initScene();
     void initRenderer();
     void rebuildDrawList();

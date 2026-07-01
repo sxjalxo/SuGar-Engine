@@ -2,6 +2,7 @@
 #include "Renderer.h"
 #include "assets/ResourceManager.h"
 #include "audio/AudioSystem.h"
+#include "editor/EditorCommandSelfTest.h"
 #include "core/Input.h"
 #include "core/InputActions.h"
 #include "rendering/Camera.h"
@@ -21,6 +22,7 @@
 #include <optional>
 #include <set>
 #include <cstdint>
+#include <cstdlib>
 #include <algorithm>
 #include <chrono>
 #include <thread>
@@ -135,6 +137,13 @@ SuGarApp::~SuGarApp() {
 }
 
 void SuGarApp::run() {
+    // Opt-in editor-command self-test (Phase 11A). Runs and exits early so it can
+    // be checked in CI / by hand without spinning up Vulkan.
+    if (std::getenv("SUGAR_SELFTEST") != nullptr) {
+        EditorCommandSelfTest::run();
+        return;
+    }
+
     initWindow();
     initVulkan();
     initAudio();
@@ -423,6 +432,9 @@ void SuGarApp::play() {
     }
 
     engineState = EngineState::Play;
+    snapshotRing.clear();
+    scrubCursor = -1;
+    captureSnapshot(); // record the initial play state as frame 0
     std::cout << "[Play] entered play mode\n";
 }
 
@@ -436,8 +448,12 @@ void SuGarApp::pause() {
 
 void SuGarApp::resume() {
     if (engineState == EngineState::Paused) {
-        engineState = EngineState::Play;
-        audioEngine.setPaused(false);
+        if (scrubCursor >= 0) {
+            resumeLive(); // leave time-travel scrubbing back to the live edge
+        } else {
+            engineState = EngineState::Play;
+            audioEngine.setPaused(false);
+        }
         std::cout << "[Play] gameplay resumed\n";
     }
 }
@@ -460,9 +476,84 @@ void SuGarApp::stop() {
         std::cerr << "failed to restore scene snapshot\n";
     }
 
+    snapshotRing.clear();
+    scrubCursor = -1;
     onSceneReplaced();
     engineState = EngineState::Edit;
     std::cout << "[Stop] restored edit scene\n";
+}
+
+void SuGarApp::captureSnapshot() {
+    std::string snapshot = SceneSerializer::saveToString(registry, sceneLights);
+    if (snapshot.empty()) {
+        return;
+    }
+    snapshotRing.push_back(std::move(snapshot));
+    while (snapshotRing.size() > snapshotCapacity) {
+        snapshotRing.pop_front();
+    }
+}
+
+void SuGarApp::restoreSnapshot(const std::string& snapshot) {
+    if (device != VK_NULL_HANDLE) {
+        vkDeviceWaitIdle(device);
+    }
+    if (!SceneSerializer::loadFromString(registry, sceneLights, snapshot)) {
+        std::cerr << "failed to restore snapshot\n";
+        return;
+    }
+    onSceneReplaced();
+}
+
+void SuGarApp::advanceOneFixedStep() {
+    updateSystems(FIXED_TIMESTEP);
+    captureSnapshot();
+}
+
+void SuGarApp::scrubTo(int index) {
+    if (snapshotRing.empty()) {
+        return;
+    }
+    index = std::clamp(index, 0, static_cast<int>(snapshotRing.size()) - 1);
+    if (index == scrubCursor) {
+        return; // avoid re-restoring the same frame while dragging the slider
+    }
+
+    scrubCursor = index;
+    engineState = EngineState::Paused;
+    audioEngine.stopAll();
+    audioEngine.setPaused(true);
+    restoreSnapshot(snapshotRing[static_cast<size_t>(index)]);
+}
+
+void SuGarApp::stepFrame(int delta) {
+    if (engineState == EngineState::Edit || snapshotRing.empty()) {
+        return;
+    }
+
+    if (scrubCursor >= 0) {
+        scrubTo(scrubCursor + delta); // move within the recorded ring
+        return;
+    }
+
+    // At the live edge.
+    if (delta < 0) {
+        scrubTo(static_cast<int>(snapshotRing.size()) - 2); // step back into history
+    } else {
+        engineState = EngineState::Paused; // frame-by-frame forward: advance one step
+        audioEngine.setPaused(false);
+        advanceOneFixedStep();
+        audioEngine.setPaused(true);
+    }
+}
+
+void SuGarApp::resumeLive() {
+    if (scrubCursor >= 0 && !snapshotRing.empty()) {
+        restoreSnapshot(snapshotRing.back());
+    }
+    scrubCursor = -1;
+    engineState = EngineState::Play;
+    audioEngine.setPaused(false);
 }
 
 void SuGarApp::updateSystems(float fixedDeltaTime) {
@@ -579,13 +670,15 @@ void SuGarApp::mainLoop() {
         // Fixed-timestep gameplay update. Gameplay advances only in Play state;
         // rendering below stays uncapped. The accumulator is clamped to avoid a
         // spiral of death after a long stall (e.g. window drag / hot reload).
-        if (engineState == EngineState::Play) {
+        // Advance the sim only while live-playing (not while scrubbing history).
+        if (engineState == EngineState::Play && scrubCursor < 0) {
             fixedAccumulator += deltaTime;
             if (fixedAccumulator > MAX_ACCUMULATED_TIME) {
                 fixedAccumulator = MAX_ACCUMULATED_TIME;
             }
             while (fixedAccumulator >= FIXED_TIMESTEP) {
                 updateSystems(FIXED_TIMESTEP);
+                captureSnapshot(); // record each fixed step for time travel
                 fixedAccumulator -= FIXED_TIMESTEP;
             }
         } else {

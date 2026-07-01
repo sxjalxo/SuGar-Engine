@@ -1026,7 +1026,8 @@ bool SceneSerializer::savePrefab(const Registry& registry, Entity root, const st
     return output.good();
 }
 
-Entity SceneSerializer::instantiateFromString(Registry& registry, const std::string& text) {
+Entity SceneSerializer::instantiateFromString(Registry& registry, const std::string& text,
+                                              std::vector<Entity>* outCreated) {
     try {
         const JsonValue rootValue = JsonParser(text).parse();
         const auto& root = requireObject(rootValue, "prefab root");
@@ -1039,10 +1040,17 @@ Entity SceneSerializer::instantiateFromString(Registry& registry, const std::str
 
         const auto& objectValues = requireArray(requireObjectField(root, "objects"), "objects");
         const std::vector<Entity> created = createEntitiesFromObjects(registry, objectValues, prefabVersion);
+        if (outCreated != nullptr) {
+            *outCreated = created;
+        }
         return created.empty() ? INVALID_ENTITY : created.front();
     } catch (...) {
         return INVALID_ENTITY;
     }
+}
+
+void SceneSerializer::collectSubtreeEntities(const Registry& registry, Entity root, std::vector<Entity>& out) {
+    collectSubtree(registry, root, out);
 }
 
 Entity SceneSerializer::instantiatePrefab(Registry& registry, const std::string& path) {

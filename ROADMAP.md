@@ -74,11 +74,11 @@ A polished scene viewer + editor **plus a working runtime (Phase 5 done):**
 These must exist for SuGar to be usable at all. We build each one **to the
 design principles above**, so the DX superpowers in Track B drop in cleanly.
 
-### Phase 5 — Runtime foundation (Play mode)  ✅ DONE
+### Phase 5 — Runtime foundation (Play mode)  (DONE)
 - 5A snapshot/restore · 5B fixed-step update loop · 5C Play/Pause/Stop toolbar.
 - *Note: 5A's snapshot is the seed of time-travel debugging (Pillar 3).*
 
-### Phase 6 — Behavior system + input mapping  ✅ DONE
+### Phase 6 — Behavior system + input mapping  (DONE)
 Built **reload-ready, split later** (the Phase 12 DLL split stays mechanical):
 - 6A: `Behavior` (stateless, `onStart`/`onUpdate`) + `BehaviorRegistry`
   (name → shared instance); `ScriptComponent` stores only the behavior name +
@@ -90,7 +90,7 @@ Built **reload-ready, split later** (the Phase 12 DLL split stays mechanical):
 - 6C: built-in `PlayerController` + a free-standing "Player" cube proving the
   full Play → input → gameplay → Stop cycle.
 
-### Phase 7 — Physics (hand-rolled)  ✅ DONE
+### Phase 7 — Physics (hand-rolled)  (DONE)
 - 7A: `RigidBodyComponent` + `ColliderComponent` (box/sphere); `PhysicsWorld`
   semi-implicit Euler + gravity on the fixed step; serialized; falling-box demo.
 - 7B: collision — all-pairs broadphase → narrowphase (AABB/sphere combos) →
@@ -100,7 +100,7 @@ Built **reload-ready, split later** (the Phase 12 DLL split stays mechanical):
 - Notes / future work: O(n²) broadphase (uniform grid / SAP later); boxes are
   axis-aligned (rotation ignored); physics bodies should be top-level.
 
-### Phase 8 — Prefabs & 3D model import  ✅ DONE  *(requested)*
+### Phase 8 — Prefabs & 3D model import  (DONE)  *(requested)*
 - 8A: prefab core — `SceneSerializer` refactored to share per-entity write/parse;
   `savePrefab` (subtree → `.prefab`) / `instantiatePrefab` (additive spawn);
   editor "Save as Prefab" + "Instantiate".
@@ -116,7 +116,7 @@ Built **reload-ready, split later** (the Phase 12 DLL split stays mechanical):
   "Revert" respawns from the prefab (no per-field override tracking yet);
   nested-prefab *links* are flattened into the parent prefab.
 
-### Phase 9 — Audio  ✅ DONE
+### Phase 9 — Audio  (DONE)
 - 9: **hand-rolled mixer over a thin device backend** — miniaudio (vendored,
   `external/miniaudio`) is confined to the audio layer and used *only* as the
   playback device (`AudioEngine`) + file decoder (`AudioLoader`); the voice
@@ -147,12 +147,12 @@ Built **reload-ready, split later** (the Phase 12 DLL split stays mechanical):
   per-source fields; collision contact point is approximated as the pair midpoint
   (fine for sfx/triggers; refine if a use-case needs exact contacts).
 
-### Phase 10 — Editor UX  ✅ DONE
+### Phase 10 — Editor UX  (DONE)
 The "pleasant to use every day" track. Built incrementally — roughly **3
 interrelated features per session**. Groupings below are a guide, not a contract;
 reorder freely. **Finishing this phase closes M1 / Track A.**
 
-- **10A — Select & organize**  ✅ DONE
+- **10A — Select & organize**  (DONE)
   - **Scene picking** — click in the viewport to select the entity under the
     cursor: a camera ray (built from the inverse view matrix, so it's
     mode-agnostic and dodges the Vulkan projection Y-flip) tested against each
@@ -165,7 +165,7 @@ reorder freely. **Finishing this phase closes M1 / Track A.**
     reparent (drop on the empty panel area to unparent); the reparent is applied
     after the tree walk (no mid-iteration mutation) and `setParent`'s cycle guard
     is caught and surfaced as a status message.
-- **10B — Manipulate & history**  ✅ DONE
+- **10B — Manipulate & history**  (DONE)
   - **Gizmos** — translate / rotate / scale handles in the viewport on the
     selected entity via **vendored ImGuizmo** (`external/ImGuizmo`; solved,
     non-differentiating problem — engine logic stays ours). Toolbar switches
@@ -187,7 +187,7 @@ reorder freely. **Finishing this phase closes M1 / Track A.**
     won't survive "undo past the duplicate, then redo" — the entity's id is
     reassigned on re-instantiate. Acceptable edge case for a command-based
     history; an id-remapping or snapshot layer is the eventual fix.
-- **10C — Assets, components & prefabs**  ✅ DONE
+- **10C — Assets, components & prefabs**  (DONE)
   - **Multi-select** — Ctrl-click in the hierarchy or viewport extends the
     selection; `selectedEntity` stays the "primary" (inspector + gizmo target)
     while batch ops act on the whole set. Stale members are pruned each frame.
@@ -209,7 +209,7 @@ reorder freely. **Finishing this phase closes M1 / Track A.**
     deferred (they intersect the renderer + texture hot-reload; better as a
     graphics-side Phase 14 item).
 
-**Phase 10 complete → M1 / Track A is done.** ✅
+**Phase 10 complete → M1 / Track A is done.**
 
 ---
 
@@ -218,30 +218,49 @@ reorder freely. **Finishing this phase closes M1 / Track A.**
 Built on Track A's clean state model. **This is the differentiator; it ships
 before we chase graphics.**
 
-### Phase 11 — Live introspection & state hot reload  (Pillars 1 + 3)
+### Phase 11 — Live introspection & state hot reload  (Pillars 1 + 3)  (IN PROGRESS)
 
-#### Phase 11A — Editor infrastructure polish
-Harden the editor command system before building live introspection on top of it.
-Directly addresses the id-stability limitation noted in Phase 10B/10C.
-- **Transactional command history** — group related mutations into atomic
-  transactions (begin/commit/abort) so a multi-step edit is one undo step and a
-  failed step rolls back cleanly (generalizes the ad-hoc `CompositeCommand`).
-- **Persistent command IDs** — give entities/commands stable identifiers that
-  survive destroy/recreate, so undo/redo no longer breaks when ids are reassigned.
-- **Entity remapping** — on re-instantiate (duplicate/delete undo, prefab
-  respawn), remap old→new ids so later commands referencing those entities keep
-  working (fixes the "undo past a duplicate then redo" edge case).
-- **Command compression** — coalesce contiguous same-target commands (e.g. a
-  drag's many transform steps, or repeated slider tweaks) into one history entry
-  to keep undo granular-but-not-noisy and bound memory.
+#### Phase 11A — Editor infrastructure polish  (DONE)
+Hardened the editor command system (`src/editor/`) before building live
+introspection on top of it. Resolves the id-stability limitation from 10B/10C.
+- **Transactional command history** — `CommandHistory::begin/commit/abort
+  Transaction`; commands pushed inside a transaction accumulate into one atomic
+  undo step, and abort rolls them back. Multi-select duplicate/delete now use it
+  (replacing the ad-hoc `CompositeCommand`).
+- **Persistent command IDs** — each stored history entry gets a stable
+  per-session id (for introspection / future history serialization);
+  `undo`/`redo` return an `EntityRemap` so identity is tracked across recreate.
+- **Entity remapping** — `EditorCommand::remap(old→new)`. When a subtree command
+  re-instantiates a destroyed subtree (duplicate/delete undo↔redo), it builds an
+  old→new id map (zipping serialization order) and the history rewrites every
+  other command's stored ids. Fixes "undo past a duplicate, then redo."
+- **Command compression** — `EditorCommand::tryMerge`; `push` lets the top entry
+  absorb a same-target follow-up (e.g. consecutive `TransformCommand`s on one
+  entity) to keep history granular-but-not-noisy.
+- Verified by an opt-in self-test (`EditorCommandSelfTest`, run with
+  `SUGAR_SELFTEST=1`) covering all three behaviours on a throwaway registry.
+- Known limit: `LambdaCommand` (component add/remove) captures ids in closures
+  and isn't remap-aware — fine since those entities aren't recreated by other
+  commands; revisit if that changes.
 
-#### Phase 11B — Live introspection & time travel
-- Deepen the inspector into a **live state view** of *actual* component data,
-  editable while playing.
-- **Hot-patch component data** at runtime without restart.
-- **Snapshot ring-buffer** (extends 5A) → scrub backward through recent frames =
-  basic **time-travel debugging**. Even a basic version is a huge win.
-- ECS **query/inspector console** ("show all entities with RigidBody where v.y < 0").
+#### Phase 11B — Live introspection & time travel  (IN PROGRESS)
+- **Snapshot ring-buffer + time-travel scrubbing** (DONE) — a `std::deque` of
+  full-scene snapshots (`saveToString`) captured each fixed step in Play (capacity
+  ~600 frames / 10 s, oldest evicted). New editor **Timeline** panel: a scrubber
+  restores any past frame (pauses + `loadFromString`), plus frame **stepping**
+  (`|< Step` / `Step >|`) — within the ring while scrubbing, or advancing the sim
+  one fixed step at the live edge — and **Resume Live**. `SuGarApp` owns the ring
+  + `scrubCursor` (-1 = live); the main loop only advances (and captures) while
+  live-playing. This is the basic time-travel debugging behind M2.
+- **Live state view / hot-patch** (already works) — the inspector edits the live
+  registry directly, including while playing, so component data is hot-patched
+  with no restart. A dedicated "live vs authored" view is a later refinement.
+- ECS **query/inspector console** (NEXT) — "show all entities with RigidBody
+  where v.y < 0".
+- Known limits (future): snapshots are full-scene JSON captured every frame
+  (delta-encoding / downsampling + binary later); restoring reassigns entity ids,
+  so a scrub clears editor selection; scrubbed edits aren't kept (inspection only —
+  a "fork from here" branch is a later nicety).
 
 ### Phase 12 — Code hot reload  (Pillar 1, the hard one)
 - Reloadable **game module**: compile gameplay/behaviors into a hot-swappable unit;
@@ -263,7 +282,7 @@ Directly addresses the id-stability limitation noted in Phase 10B/10C.
 ## Track C — Catch-up (only after the wedge is real)
 
 ### Phase 14+ — Graphics, ecosystem, packaging, platforms
-- ~~stb_image (kill WIC / Windows lock-in)~~ ✅ done early. Remaining: full
+- ~~stb_image (kill WIC / Windows lock-in)~~ (done early). Remaining: full
   cross-platform build (Mac/Linux), glTF PBR pipeline, more lighting, standalone
   game packaging, tests + CI, docs for contributors.
 
@@ -284,7 +303,7 @@ Small, deliberate "later, not now" items so they aren't lost:
 
 ## Milestones
 
-- **M1 — "It's a game engine" (end of Track A):** ✅ **DONE — Track A complete.**
+- **M1 — "It's a game engine" (end of Track A):** **DONE — Track A complete.**
   Press Play → a behavior-driven entity falls under gravity, hits the ground,
   plays a sound → Stop reverts. Authorable, serializable, reloadable — with a
   full editor on top: select/picking, gizmos, undo/redo, duplicate/delete,
@@ -293,4 +312,6 @@ Small, deliberate "later, not now" items so they aren't lost:
 - **M2 — "It's *the* iteration engine" (end of Track B):** Edit a behavior's code
   while the game runs and see it apply live with state preserved; scrub time
   backward to inspect what happened. This is the demo that wins indie devs.
+  *(Progress: time-travel scrubbing + live component hot-patch shipped in 11B;
+  live **code** hot reload with state preserved is Phase 12.)*
 - **M3 — Open-source launch:** M2 + docs + examples + contributor on-ramp.

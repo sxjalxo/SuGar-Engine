@@ -96,6 +96,7 @@ private:
     void beginImGuiFrame();
     void buildEditorUi();
     void drawPlayControls();
+    void drawTimelinePanel();
     void drawHierarchyPanel();
     void drawInspectorPanel();
     void drawAssetBrowserPanel();

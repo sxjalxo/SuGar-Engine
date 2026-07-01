@@ -63,6 +63,7 @@ add_executable(SuGarEngine
     external/ImGuizmo/ImGuizmo.h
     src/editor/EditorCommand.h
     src/editor/EditorCommands.h
+    src/editor/EditorCommandSelfTest.h
     src/audio/AudioClip.h
     src/audio/AudioComponents.h
     src/audio/AudioEngine.h

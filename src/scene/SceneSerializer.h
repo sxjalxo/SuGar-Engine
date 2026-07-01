@@ -29,7 +29,14 @@ public:
     // String variants of the prefab subtree round-trip (same schema, no file I/O).
     // Used by the editor's duplicate/undo so a copied subtree goes through the
     // exact same component + resource-refcount path as prefabs. Empty string /
-    // INVALID_ENTITY on failure.
+    // INVALID_ENTITY on failure. `outCreated`, if given, receives every created
+    // entity in object order (root first) — the editor uses this to build an
+    // old->new id remap when a subtree is recreated.
     static std::string savePrefabToString(const Registry& registry, Entity root);
-    static Entity instantiateFromString(Registry& registry, const std::string& text);
+    static Entity instantiateFromString(Registry& registry, const std::string& text,
+                                        std::vector<Entity>* outCreated = nullptr);
+
+    // Gathers `root` + its descendants in the same order serialization uses
+    // (root first). Lets the editor record the pre-delete id order for remapping.
+    static void collectSubtreeEntities(const Registry& registry, Entity root, std::vector<Entity>& out);
 };

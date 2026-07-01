@@ -1411,6 +1411,7 @@ void Renderer::buildEditorUi() {
     ImGui::End();
 
     drawPlayControls();
+    drawTimelinePanel();
     drawHierarchyPanel();
     drawInspectorPanel();
     drawAssetBrowserPanel();
@@ -1718,7 +1719,8 @@ void Renderer::duplicateSelectedEntity() {
         return;
     }
 
-    auto composite = std::make_unique<CompositeCommand>();
+    // One transaction = one undo step for the whole multi-select duplicate.
+    commandHistory.beginTransaction();
     std::vector<Entity> newRoots;
     for (Entity entity : selectedEntities) {
         if (!registry->transforms.has(entity)) {
@@ -1732,7 +1734,8 @@ void Renderer::duplicateSelectedEntity() {
         if (registry->hierarchy.has(entity)) {
             parent = registry->hierarchy.get(entity).parent;
         }
-        const Entity newRoot = SceneSerializer::instantiateFromString(*registry, data);
+        std::vector<Entity> created;
+        const Entity newRoot = SceneSerializer::instantiateFromString(*registry, data, &created);
         if (newRoot == INVALID_ENTITY) {
             continue;
         }
@@ -1742,16 +1745,16 @@ void Renderer::duplicateSelectedEntity() {
             } catch (...) {
             }
         }
-        composite->add(std::make_unique<CreateSubtreeCommand>(data, parent, newRoot));
+        commandHistory.push(std::make_unique<CreateSubtreeCommand>(data, parent, created));
         newRoots.push_back(newRoot);
     }
+    commandHistory.commitTransaction(*registry);
 
     if (newRoots.empty()) {
         editorStatusMessage = "Duplicate failed.";
         return;
     }
 
-    commandHistory.push(std::move(composite));
     selectedEntities = newRoots;
     selectedEntity = newRoots.back();
     descriptorRefreshRequested = true;
@@ -1763,25 +1766,25 @@ void Renderer::deleteSelectedEntities() {
         return;
     }
 
-    auto composite = std::make_unique<CompositeCommand>();
+    commandHistory.beginTransaction();
     for (Entity entity : selectedEntities) {
         if (!registry->transforms.has(entity)) {
             continue; // already gone (e.g. destroyed as an ancestor's descendant)
         }
         const std::string data = SceneSerializer::savePrefabToString(*registry, entity);
+        std::vector<Entity> order;
+        SceneSerializer::collectSubtreeEntities(*registry, entity, order); // record id order for remap
         Entity parent = INVALID_ENTITY;
         if (registry->hierarchy.has(entity)) {
             parent = registry->hierarchy.get(entity).parent;
         }
         destroyEntitySubtree(*registry, entity);
         if (!data.empty()) {
-            composite->add(std::make_unique<DeleteSubtreeCommand>(data, parent));
+            commandHistory.push(std::make_unique<DeleteSubtreeCommand>(data, parent, order));
         }
     }
+    commandHistory.commitTransaction(*registry);
 
-    if (!composite->empty()) {
-        commandHistory.push(std::move(composite));
-    }
     selectedEntities.clear();
     selectedEntity = INVALID_ENTITY;
     descriptorRefreshRequested = true;
@@ -1841,6 +1844,64 @@ void Renderer::drawPlayControls() {
     const char* label = editing ? "EDIT" : (paused ? "PAUSED" : "PLAYING");
     ImGui::Text("State: %s", label);
     ImGui::TextDisabled("F6 Play/Stop  |  F7 Pause/Resume");
+
+    ImGui::End();
+}
+
+void Renderer::drawTimelinePanel() {
+    ImGui::Begin("Timeline");
+
+    if (app == nullptr) {
+        ImGui::TextUnformatted("No application bound.");
+        ImGui::End();
+        return;
+    }
+
+    if (app->getEngineState() == EngineState::Edit) {
+        ImGui::TextDisabled("Press Play to record a time-travel timeline.");
+        ImGui::End();
+        return;
+    }
+
+    const int count = app->getSnapshotCount();
+    if (count <= 0) {
+        ImGui::TextUnformatted("No frames recorded yet.");
+        ImGui::End();
+        return;
+    }
+
+    const bool scrubbing = app->isScrubbing();
+    int cursor = scrubbing ? app->getScrubCursor() : (count - 1);
+
+    if (scrubbing) {
+        ImGui::TextColored(ImVec4(0.95f, 0.85f, 0.20f, 1.0f), "SCRUBBING (paused)");
+    } else {
+        ImGui::TextColored(ImVec4(0.20f, 0.90f, 0.30f, 1.0f), "LIVE");
+    }
+    ImGui::SameLine();
+    ImGui::Text("Frame %d / %d", cursor, count - 1);
+
+    // Scrubber over the recorded frames — dragging it pauses and restores a
+    // past frame for inspection (basic time-travel debugging).
+    ImGui::SetNextItemWidth(-1.0f);
+    if (ImGui::SliderInt("##timeline", &cursor, 0, count - 1)) {
+        app->scrubTo(cursor);
+    }
+
+    if (ImGui::Button("|< Step")) {
+        app->stepFrame(-1);
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Step >|")) {
+        app->stepFrame(+1);
+    }
+    ImGui::SameLine();
+    ImGui::BeginDisabled(!scrubbing);
+    if (ImGui::Button("Resume Live")) {
+        app->resumeLive();
+    }
+    ImGui::EndDisabled();
+    ImGui::TextDisabled("Scrub to inspect past frames; edits while scrubbing aren't kept.");
 
     ImGui::End();
 }
