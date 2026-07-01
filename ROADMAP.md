@@ -55,6 +55,12 @@ So the DX pillars are cheap to add later instead of expensive retrofits:
   read/write sets. No system reaches into another's internals.
 - **Everything round-trips** through serialization. If it can't be snapshotted,
   it can't exist in gameplay state.
+- **Every subsystem has a confidence self-test.** Not exhaustive — one quick
+  "is this sane?" check each, aggregated into a single headless run
+  (`SUGAR_SELFTEST=1` → `src/SelfTests.h`) that prints a PASS/FAIL table before
+  the editor even launches. Covered today: CommandHistory, EntityQuery,
+  SnapshotStorage, Physics, Serializer (save). Pending a small device harness:
+  Serializer round-trip, ResourceManager (need Vulkan).
 
 ---
 
@@ -265,16 +271,26 @@ introspection on top of it. Resolves the id-stability limitation from 10B/10C.
   ids, so a scrub clears editor selection; scrubbed edits aren't kept (inspection
   only — a "fork from here" branch is a later nicety).
 
-#### Phase 11C — Snapshot backend abstraction  (NEXT)
-The Timeline must not know *how* frames are stored. Introduce an `ISnapshotStorage`
-interface behind the ring buffer so the encoding can evolve without touching the
-UI or `SuGarApp`'s time-travel logic:
-- `JsonSnapshotStorage` — today's full-JSON-per-frame (correct, simple baseline).
-- `BinarySnapshotStorage` — compact binary encoding of the same state.
-- `DeltaSnapshotStorage` — store frame deltas + periodic keyframes; the big memory
-  win (the current 600 x full-scene cost is fine for M2, not for production).
-- **Timeline bookmarks** — tag a frame with a label ("physics exploded") and
-  jump Previous/Next bookmark. Tiny feature, big debugging usability.
+#### Phase 11C — Snapshot backend abstraction  (IN PROGRESS)
+The Timeline must not know *how* frames are stored. An `ISnapshotStorage`
+interface (`src/core/SnapshotStorage.h`) now sits behind the ring so the encoding
+can evolve without touching the UI or `SuGarApp`'s time-travel logic. `SuGarApp`
+holds a `unique_ptr<ISnapshotStorage>` and works only through it.
+- `JsonSnapshotStorage` (DONE) — full-JSON-per-frame baseline; owns the ring +
+  eviction and exposes stable `frameNumber(index)` (survives eviction shifts).
+- **Timeline bookmarks** (DONE) — tag the current frame with a label ("physics
+  exploded"), jump Previous/Next, add/update/remove. Bookmarks key off stable
+  frame numbers and are pruned when their frame scrolls off the window.
+- `BinarySnapshotStorage` (later) — compact binary encoding of the same state.
+- `DeltaSnapshotStorage` (later) — frame deltas + periodic keyframes; the big
+  memory win (600 x full-scene is fine for M2, not for production).
+
+#### Phase 11D — Query language growth  (later)
+The `EntityQuery` parser is a simple tokenizer, deliberately structured to grow:
+- **Compound predicates** — `transform where pos.y > 5 and scale.x > 2` (and/or).
+- **String comparison** — `script where behavior == "PlayerController"`.
+- **Ordering** — `rigidbody order by vel.y desc`.
+Not needed now; noted so the grammar is extended rather than rewritten.
 
 ### Phase 12 — Code hot reload  (Pillar 1, the hard one)
 - Reloadable **game module**: compile gameplay/behaviors into a hot-swappable unit;

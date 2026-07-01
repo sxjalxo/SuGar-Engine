@@ -191,6 +191,9 @@ private:
     std::vector<Entity> queryResults;
     std::string queryError;
     bool queryHasRun = false;
+
+    // Timeline bookmark label being entered.
+    char bookmarkLabelBuffer[64] = "";
     std::string editorStatusMessage;
     std::vector<AssetHandle> deferredResourceReleases;
     

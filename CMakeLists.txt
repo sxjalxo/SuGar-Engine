@@ -40,6 +40,7 @@ add_executable(SuGarEngine
     src/core/Input.h
     src/core/InputActions.cpp
     src/core/InputActions.h
+    src/core/SnapshotStorage.h
     src/SuGarApp.cpp
     src/Renderer.cpp
     src/BasicTrianglePass.cpp
@@ -63,8 +64,8 @@ add_executable(SuGarEngine
     external/ImGuizmo/ImGuizmo.h
     src/editor/EditorCommand.h
     src/editor/EditorCommands.h
-    src/editor/EditorCommandSelfTest.h
     src/editor/EntityQuery.h
+    src/SelfTests.h
     src/audio/AudioClip.h
     src/audio/AudioComponents.h
     src/audio/AudioEngine.h

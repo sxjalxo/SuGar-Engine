@@ -1,8 +1,9 @@
 #pragma once
 
 #include <vulkan/vulkan.h>
-#include <deque>
 #include <memory>
+#include <string>
+#include <unordered_map>
 #include <vector>
 #include "assets/AssetRegistry.h"
 #include "assets/FileWatcher.h"
@@ -10,6 +11,7 @@
 #include <optional>
 #include <string>
 #include "core/EngineState.h"
+#include "core/SnapshotStorage.h"
 #include "ecs/Registry.h"
 #include "physics/PhysicsWorld.h"
 #include "scene/DrawList.h"
@@ -53,7 +55,7 @@ public:
 
     // Time-travel debugging (Phase 11B). A ring buffer of full-scene snapshots is
     // captured each fixed step during Play; the editor Timeline panel drives these.
-    int getSnapshotCount() const { return static_cast<int>(snapshotRing.size()); }
+    int getSnapshotCount() const { return snapshots->count(); }
     bool isScrubbing() const { return scrubCursor >= 0; }
     int getScrubCursor() const { return scrubCursor; }
     // Pauses and restores the snapshot at `index` (clamped) for inspection.
@@ -65,6 +67,15 @@ public:
     void resumeLive();
     // Duration of one recorded frame, so the editor can show timeline seconds.
     float fixedTimestep() const;
+
+    // Timeline bookmarks: tag the current frame with a label and jump between
+    // tagged frames. Bookmarks key off stable frame numbers, so they survive ring
+    // eviction (until the tagged frame itself scrolls off the window).
+    void setBookmark(const std::string& label); // empty label clears the current frame's bookmark
+    bool isFrameBookmarked(int index) const;
+    std::string bookmarkLabel(int index) const;
+    int bookmarkCount() const;
+    void jumpBookmark(int direction); // -1 = previous, +1 = next
 
     // Public getters for Renderer access
     VkDevice getDevice() const { return device; }
@@ -101,10 +112,11 @@ private:
     PhysicsWorld physicsWorld;
     AudioEngine audioEngine;
 
-    // Time-travel ring buffer of serialized scene snapshots, oldest at front.
-    std::deque<std::string> snapshotRing;
-    size_t snapshotCapacity = 600; // ~10 s at 60 Hz
-    int scrubCursor = -1;          // -1 = live; otherwise index into snapshotRing
+    // Time-travel ring: snapshots behind an ISnapshotStorage (encoding-agnostic),
+    // a scrub cursor (-1 = live), and bookmarks keyed by stable frame number.
+    std::unique_ptr<ISnapshotStorage> snapshots = std::make_unique<JsonSnapshotStorage>(600); // ~10 s at 60 Hz
+    int scrubCursor = -1;
+    std::unordered_map<uint64_t, std::string> bookmarks;
 
     void initWindow();
     void initVulkan();
@@ -113,6 +125,7 @@ private:
     void captureSnapshot();
     void advanceOneFixedStep();
     void restoreSnapshot(const std::string& snapshot);
+    int currentFrameIndex() const; // scrub cursor, or newest when live
     void initScene();
     void initRenderer();
     void rebuildDrawList();

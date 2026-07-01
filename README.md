@@ -83,10 +83,13 @@ scrubbing + frame stepping. Next: ECS query console, then code hot reload.
   with a seconds-behind-live readout
 * **Frame stepping** — step through history frame-by-frame, or advance the live
   sim one fixed step at a time; **Resume Live** to return to play
+* **Timeline bookmarks** — tag a frame with a label and jump Previous/Next
 * **Live hot-patch** — the inspector edits the running scene directly, so
   component data changes apply while playing with no restart
 * **ECS query console** — `<component> [where <field> <op> <value>]`
   (e.g. `rigidbody where vel.y < 0`); click a match to select it
+* **Pluggable snapshot backend** (`ISnapshotStorage`) — the Timeline is decoupled
+  from how frames are stored (JSON today; binary/delta later)
 
 ### Rendering
 
@@ -179,6 +182,18 @@ cmake --build build --config Debug --target SuGarEngine --parallel 1
 build\Debug\SuGarEngine.exe
 ```
 
+### Self-tests
+
+Each subsystem has a quick headless confidence test. Run them (no window/Vulkan)
+before launching the editor:
+
+```powershell
+$env:SUGAR_SELFTEST = "1"; build\Debug\SuGarEngine.exe; $env:SUGAR_SELFTEST = ""
+```
+
+Prints a PASS/FAIL table for CommandHistory, EntityQuery, SnapshotStorage,
+Physics, and Serializer.
+
 ---
 
 ## Roadmap
@@ -193,11 +208,11 @@ Full plan in [ROADMAP.md](ROADMAP.md). Summary:
 * **Phase 10** *(done)* — editor UX (10A picking + jitter-free rotation + reparenting;
   10B gizmos + undo/redo + duplicate; 10C multi-select + delete + component
   management + prefab Revert/Apply + thumbnails). **M1 / Track A complete.**
-* **Track B** *(in progress)* — the wedge: 11A editor command infrastructure
-  (transactions, entity remapping, compression) *done*; 11B time-travel scrubbing
-  + frame stepping + ECS query console *done*; next 11C snapshot backend
-  abstraction (binary/delta storage + timeline bookmarks), then Phase 12 code hot
-  reload + in-place state restore
+* **Track B** *(in progress)* — the wedge: 11A editor command infrastructure;
+  11B time-travel scrubbing + frame stepping + ECS query console; 11C snapshot
+  backend abstraction (`ISnapshotStorage`) + timeline bookmarks *done*; later:
+  binary/delta snapshot backends, query-language growth, Phase 12 code hot reload
+  + in-place state restore
 * **Track C** — graphics, cross-platform, packaging, ecosystem
 
 ---

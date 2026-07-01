@@ -2,7 +2,7 @@
 #include "Renderer.h"
 #include "assets/ResourceManager.h"
 #include "audio/AudioSystem.h"
-#include "editor/EditorCommandSelfTest.h"
+#include "SelfTests.h"
 #include "core/Input.h"
 #include "core/InputActions.h"
 #include "rendering/Camera.h"
@@ -23,6 +23,7 @@
 #include <set>
 #include <cstdint>
 #include <cstdlib>
+#include <iterator>
 #include <algorithm>
 #include <chrono>
 #include <thread>
@@ -140,7 +141,7 @@ void SuGarApp::run() {
     // Opt-in editor-command self-test (Phase 11A). Runs and exits early so it can
     // be checked in CI / by hand without spinning up Vulkan.
     if (std::getenv("SUGAR_SELFTEST") != nullptr) {
-        EditorCommandSelfTest::run();
+        SelfTests::run();
         return;
     }
 
@@ -432,7 +433,8 @@ void SuGarApp::play() {
     }
 
     engineState = EngineState::Play;
-    snapshotRing.clear();
+    snapshots->clear();
+    bookmarks.clear();
     scrubCursor = -1;
     captureSnapshot(); // record the initial play state as frame 0
     std::cout << "[Play] entered play mode\n";
@@ -476,7 +478,8 @@ void SuGarApp::stop() {
         std::cerr << "failed to restore scene snapshot\n";
     }
 
-    snapshotRing.clear();
+    snapshots->clear();
+    bookmarks.clear();
     scrubCursor = -1;
     onSceneReplaced();
     engineState = EngineState::Edit;
@@ -488,9 +491,14 @@ void SuGarApp::captureSnapshot() {
     if (snapshot.empty()) {
         return;
     }
-    snapshotRing.push_back(std::move(snapshot));
-    while (snapshotRing.size() > snapshotCapacity) {
-        snapshotRing.pop_front();
+    snapshots->push(snapshot);
+
+    // Drop bookmarks whose frame has scrolled out of the retained window.
+    if (snapshots->count() > 0 && !bookmarks.empty()) {
+        const uint64_t oldest = snapshots->frameNumber(0);
+        for (auto it = bookmarks.begin(); it != bookmarks.end();) {
+            it = (it->first < oldest) ? bookmarks.erase(it) : std::next(it);
+        }
     }
 }
 
@@ -511,10 +519,10 @@ void SuGarApp::advanceOneFixedStep() {
 }
 
 void SuGarApp::scrubTo(int index) {
-    if (snapshotRing.empty()) {
+    if (snapshots->count() == 0) {
         return;
     }
-    index = std::clamp(index, 0, static_cast<int>(snapshotRing.size()) - 1);
+    index = std::clamp(index, 0, snapshots->count() - 1);
     if (index == scrubCursor) {
         return; // avoid re-restoring the same frame while dragging the slider
     }
@@ -523,11 +531,11 @@ void SuGarApp::scrubTo(int index) {
     engineState = EngineState::Paused;
     audioEngine.stopAll();
     audioEngine.setPaused(true);
-    restoreSnapshot(snapshotRing[static_cast<size_t>(index)]);
+    restoreSnapshot(snapshots->get(index));
 }
 
 void SuGarApp::stepFrame(int delta) {
-    if (engineState == EngineState::Edit || snapshotRing.empty()) {
+    if (engineState == EngineState::Edit || snapshots->count() == 0) {
         return;
     }
 
@@ -538,7 +546,7 @@ void SuGarApp::stepFrame(int delta) {
 
     // At the live edge.
     if (delta < 0) {
-        scrubTo(static_cast<int>(snapshotRing.size()) - 2); // step back into history
+        scrubTo(snapshots->count() - 2); // step back into history
     } else {
         engineState = EngineState::Paused; // frame-by-frame forward: advance one step
         audioEngine.setPaused(false);
@@ -552,12 +560,69 @@ float SuGarApp::fixedTimestep() const {
 }
 
 void SuGarApp::resumeLive() {
-    if (scrubCursor >= 0 && !snapshotRing.empty()) {
-        restoreSnapshot(snapshotRing.back());
+    if (scrubCursor >= 0 && snapshots->count() > 0) {
+        restoreSnapshot(snapshots->get(snapshots->count() - 1));
     }
     scrubCursor = -1;
     engineState = EngineState::Play;
     audioEngine.setPaused(false);
+}
+
+int SuGarApp::currentFrameIndex() const {
+    const int total = snapshots->count();
+    if (total == 0) {
+        return -1;
+    }
+    return scrubCursor >= 0 ? scrubCursor : total - 1;
+}
+
+void SuGarApp::setBookmark(const std::string& label) {
+    const int index = currentFrameIndex();
+    if (index < 0) {
+        return;
+    }
+    const uint64_t frame = snapshots->frameNumber(index);
+    if (label.empty()) {
+        bookmarks.erase(frame);
+    } else {
+        bookmarks[frame] = label;
+    }
+}
+
+bool SuGarApp::isFrameBookmarked(int index) const {
+    if (index < 0 || index >= snapshots->count()) {
+        return false;
+    }
+    return bookmarks.count(snapshots->frameNumber(index)) > 0;
+}
+
+std::string SuGarApp::bookmarkLabel(int index) const {
+    if (index < 0 || index >= snapshots->count()) {
+        return {};
+    }
+    const auto it = bookmarks.find(snapshots->frameNumber(index));
+    return it == bookmarks.end() ? std::string{} : it->second;
+}
+
+int SuGarApp::bookmarkCount() const {
+    return static_cast<int>(bookmarks.size());
+}
+
+void SuGarApp::jumpBookmark(int direction) {
+    const int current = currentFrameIndex();
+    if (current < 0) {
+        return;
+    }
+    const int total = snapshots->count();
+    if (direction > 0) {
+        for (int i = current + 1; i < total; ++i) {
+            if (isFrameBookmarked(i)) { scrubTo(i); return; }
+        }
+    } else {
+        for (int i = current - 1; i >= 0; --i) {
+            if (isFrameBookmarked(i)) { scrubTo(i); return; }
+        }
+    }
 }
 
 void SuGarApp::updateSystems(float fixedDeltaTime) {

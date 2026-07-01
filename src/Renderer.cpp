@@ -1908,6 +1908,39 @@ void Renderer::drawTimelinePanel() {
         app->resumeLive();
     }
     ImGui::EndDisabled();
+
+    // Bookmarks: tag the current frame with a label and jump between tags
+    // (e.g. mark the frame where "physics exploded").
+    ImGui::Separator();
+    const bool bookmarked = app->isFrameBookmarked(cursor);
+    ImGui::SetNextItemWidth(180.0f);
+    ImGui::InputTextWithHint("##bookmarkLabel", "bookmark label", bookmarkLabelBuffer, sizeof(bookmarkLabelBuffer));
+    ImGui::SameLine();
+    if (ImGui::Button(bookmarked ? "Update##bm" : "Add##bm")) {
+        app->setBookmark(bookmarkLabelBuffer[0] != '\0' ? bookmarkLabelBuffer : "bookmark");
+    }
+    ImGui::SameLine();
+    ImGui::BeginDisabled(!bookmarked);
+    if (ImGui::Button("Remove##bm")) {
+        app->setBookmark("");
+    }
+    ImGui::EndDisabled();
+
+    if (app->bookmarkCount() > 0) {
+        if (ImGui::Button("|< Bookmark")) {
+            app->jumpBookmark(-1);
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Bookmark >|")) {
+            app->jumpBookmark(+1);
+        }
+        ImGui::SameLine();
+        ImGui::Text("(%d total)", app->bookmarkCount());
+    }
+    if (bookmarked) {
+        ImGui::TextColored(ImVec4(0.95f, 0.85f, 0.20f, 1.0f), "* %s", app->bookmarkLabel(cursor).c_str());
+    }
+
     ImGui::TextDisabled("Scrub to inspect past frames; edits while scrubbing aren't kept.");
 
     ImGui::End();
