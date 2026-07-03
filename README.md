@@ -38,6 +38,10 @@ live when recompiled, state preserved.
   restores it, discarding all gameplay mutations
 * **Fixed 60 Hz gameplay update loop** (`updateSystems`) — deterministic,
   frame-rate independent; rendering stays uncapped
+* **Declared system schedule** (Phase 13A) — the gameplay pipeline (script →
+  physics → collision dispatch → audio) is a `SystemScheduler` of `System`s that
+  each declare their read/write component sets; runs in deterministic order, with
+  independence analysis (`stages()`) as the foundation for future parallelism
 * Editor **Play / Pause / Stop** toolbar with a viewport state tint
 
 ### Gameplay (Track A)
@@ -202,8 +206,8 @@ $env:SUGAR_SELFTEST = "1"; build\Debug\SuGarEngine.exe; $env:SUGAR_SELFTEST = ""
 ```
 
 Prints a per-test PASS/FAIL table (with timings) for CoreBoundary, CommandHistory,
-EntityQuery, SnapshotStorage, Physics, Serializer, BehaviorRegistry, and
-RegistryGraph.
+EntityQuery, SnapshotStorage, Physics, SystemScheduler, Serializer,
+BehaviorRegistry, and RegistryGraph.
 
 ---
 
@@ -224,8 +228,12 @@ Full plan in [ROADMAP.md](ROADMAP.md). Summary:
   backend abstraction + timeline bookmarks *done*. **Phase 12 code hot reload**:
   12A/12B/12C *done* — layered `Editor -> Engine -> Core` (Vulkan-free `SuGarCore`
   shared lib) with gameplay behaviors in a **`SuGarGame` DLL that links only Core**,
-  loaded at runtime and **hot-reloaded live** when recompiled. Later: reload only
-  affected systems, in-place state restore, binary/delta snapshots, query growth
+  loaded at runtime and **hot-reloaded live** when recompiled. **Phase 13A**
+  *done* — opinionated scheduling: the gameplay pipeline is now declared `System`s
+  with read/write sets behind a deterministic `SystemScheduler` (independence
+  analysis in place; parallel execution, incremental rebuilds, and architecture
+  lints later). Also later: reload only affected systems, in-place state restore,
+  binary/delta snapshots, query growth
 * **Track C** — graphics, cross-platform, packaging, ecosystem
 
 ---

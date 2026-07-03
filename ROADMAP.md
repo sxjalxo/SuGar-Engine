@@ -64,8 +64,8 @@ So the DX pillars are cheap to add later instead of expensive retrofits:
   "is this sane?" check each, aggregated into a single headless run
   (`SUGAR_SELFTEST=1` → `src/SelfTests.h`) that prints a per-test PASS/FAIL table
   **with timings** before the editor even launches. Covered today: CommandHistory,
-  EntityQuery, SnapshotStorage, Physics, Serializer (save), BehaviorRegistry,
-  RegistryGraph. Pending a small device harness: Serializer round-trip,
+  EntityQuery, SnapshotStorage, Physics, SystemScheduler, Serializer (save),
+  BehaviorRegistry, RegistryGraph, CoreBoundary. Pending a small device harness: Serializer round-trip,
   ResourceManager (need Vulkan).
 
 ---
@@ -353,11 +353,40 @@ direction.
 - *This is the headline feature and the hardest. The Phase 6 behavior architecture
   decides whether this is easy or impossible.*
 
-### Phase 13 — Opinionated scheduling & architecture  (Pillars 2 + 4 + 5)
-- Systems **declare read/write component sets**; a scheduler orders them and can
-  run independent systems in parallel (async-first, Pillar 5).
+### Phase 13 — Opinionated scheduling & architecture  (Pillars 2 + 4 + 5)  (IN PROGRESS)
+
+#### Phase 13A — System abstraction + deterministic scheduler  (DONE)
+The fixed-step gameplay pipeline stops being a hardcoded call sequence and
+becomes *declared* systems with explicit data dependencies.
+- **`System` + `SystemScheduler`** (Core, `src/ecs/SystemSchedule.h`) — a
+  `ComponentType` enum + `ComponentMask` bitset over Registry's 11 storages; each
+  `System` carries its declared `reads`/`writes` masks and a `run(dt)` closure.
+  The scheduler runs systems in **deterministic registration order** (determinism
+  is the default — it's in tension with async time-travel). Lives in Core: depends
+  only on component-storage *identity*, never the renderer.
+- **`updateSystems` refactored** — the script driver, physics step, collision
+  dispatch, and audio are now four registered `System`s (built lazily, identical
+  order/behavior) instead of an inline sequence. Each declares an honest
+  read/write set; unconstrained script/dispatch systems declare broad writes, so
+  they correctly stay ordered against physics/audio rather than falsely parallel.
+- **Independence analysis** — `systemsConflict` (write-write / read-write / write-read
+  hazards) + `SystemScheduler::stages()` greedily groups mutually-independent
+  systems into ordered stages. This is the **Pillar 5 foundation**: stages *could*
+  run in parallel, but the engine still executes sequentially via `run()` until
+  parallelism is opted in per-system. It's also the seam for **Pillar 4** lints (a
+  system touching an undeclared component is a boundary violation to catch later).
+- Verified by the `SystemScheduler` self-test (`SUGAR_SELFTEST=1`): deterministic
+  order, hazard detection, and stage grouping on synthetic systems.
+
+#### Phase 13B+ — remaining scheduling work  (later)
+- **Parallel execution** — actually run each `stages()` group concurrently, opt-in
+  per-system where it's provably independent (async-first, Pillar 5). Requires
+  narrowing the broad script/dispatch write declarations so real independence
+  appears; today everything conflicts, so the schedule is a single ordered file.
 - **Dependency-aware incremental rebuilds** at system granularity (Pillar 2).
-- Architecture **lints / guard rails** that reject hidden-coupling patterns early (Pillar 4).
+- Architecture **lints / guard rails** — enforce declared access at runtime (a
+  system mutating an undeclared storage is rejected), reject hidden-coupling
+  patterns early (Pillar 4).
 - *Determinism note: async + time-travel are in tension. Default to a deterministic
   ordered schedule; opt into parallelism per-system where it's provably independent.*
 

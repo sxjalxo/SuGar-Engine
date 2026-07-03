@@ -13,6 +13,7 @@
 #include "core/EngineState.h"
 #include "core/SnapshotStorage.h"
 #include "ecs/Registry.h"
+#include "ecs/SystemSchedule.h"
 #include "GameModuleLoader.h"
 #include "physics/PhysicsWorld.h"
 #include "scene/DrawList.h"
@@ -118,6 +119,12 @@ private:
     AudioEngine audioEngine;
     GameModuleLoader gameModule; // hot-swappable behaviors DLL
 
+    // Phase 13A: the fixed-step gameplay pipeline as declared systems (script ->
+    // physics -> collision dispatch -> audio) rather than a hardcoded sequence.
+    // Built lazily on first update; run() executes them in deterministic order.
+    SystemScheduler systemSchedule;
+    bool systemScheduleReady = false;
+
     // Time-travel ring: snapshots behind an ISnapshotStorage (encoding-agnostic),
     // a scrub cursor (-1 = live), and bookmarks keyed by stable frame number.
     std::unique_ptr<ISnapshotStorage> snapshots = std::make_unique<JsonSnapshotStorage>(600); // ~10 s at 60 Hz
@@ -139,6 +146,9 @@ private:
     // Re-derives orbit target, draw list, and GPU resources after the registry
     // contents are replaced wholesale (scene load or Play-mode restore).
     void onSceneReplaced();
+    // Registers the fixed-step gameplay systems (with declared read/write sets)
+    // into systemSchedule. Idempotent; called on first updateSystems.
+    void setupSystemSchedule();
     // Advances gameplay by one fixed step. Runs only while in Play state.
     void updateSystems(float fixedDeltaTime);
     void mainLoop();

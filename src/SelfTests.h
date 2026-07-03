@@ -15,6 +15,7 @@
 #include "core/InputActions.h"
 #include "core/SnapshotStorage.h"
 #include "ecs/Registry.h"
+#include "ecs/SystemSchedule.h"
 #include "editor/EditorCommand.h"
 #include "editor/EditorCommands.h"
 #include "editor/EntityQuery.h"
@@ -278,6 +279,47 @@ inline bool testCoreBoundary() {
     return ok;
 }
 
+// --- SystemScheduler: deterministic order, conflict detection, stage grouping -
+inline bool testSystemScheduler() {
+    bool ok = true;
+
+    { // runs in registration order regardless of declared independence
+        SystemScheduler scheduler;
+        std::string trace;
+        scheduler.add(System{"A", 0, maskOf(ComponentType::Transform),
+                             [&trace](float) { trace += 'A'; }});
+        scheduler.add(System{"B", 0, maskOf(ComponentType::RigidBody),
+                             [&trace](float) { trace += 'B'; }});
+        scheduler.add(System{"C", 0, maskOf(ComponentType::AudioSource),
+                             [&trace](float) { trace += 'C'; }});
+        scheduler.run(1.0f / 60.0f);
+        ok &= trace == "ABC" && scheduler.size() == 3;
+    }
+
+    { // write/read and write/write hazards conflict; disjoint access does not
+        System writer{"W", 0, maskOf(ComponentType::Transform), {}};
+        System reader{"R", maskOf(ComponentType::Transform), 0, {}};
+        System other{"O", 0, maskOf(ComponentType::AudioSource), {}};
+        ok &= systemsConflict(writer, reader);   // write-read
+        ok &= systemsConflict(writer, writer);   // write-write
+        ok &= !systemsConflict(writer, other);   // disjoint
+        ok &= !systemsConflict(reader, other);   // read vs unrelated write
+    }
+
+    { // stages: independent systems share a stage, a conflict opens a new one
+        SystemScheduler scheduler;
+        scheduler.add(System{"A", 0, maskOf(ComponentType::Transform), {}});
+        scheduler.add(System{"B", 0, maskOf(ComponentType::AudioSource), {}}); // indep of A
+        scheduler.add(System{"C", maskOf(ComponentType::Transform), 0, {}});   // reads A's write
+        const auto stages = scheduler.stages();
+        ok &= stages.size() == 2;
+        ok &= stages[0].size() == 2 && stages[0][0] == 0 && stages[0][1] == 1;
+        ok &= stages[1].size() == 1 && stages[1][0] == 2;
+    }
+
+    return ok;
+}
+
 inline bool run() {
     using TestFn = bool (*)();
     struct Case { const char* name; TestFn fn; };
@@ -287,6 +329,7 @@ inline bool run() {
         { "EntityQuery",      testEntityQuery },
         { "SnapshotStorage",  testSnapshotStorage },
         { "Physics",          testPhysics },
+        { "SystemScheduler",  testSystemScheduler },
         { "Serializer",       testSerializer },
         { "BehaviorRegistry", testBehaviorRegistry },
         { "RegistryGraph",    testRegistryGraph },

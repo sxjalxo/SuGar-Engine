@@ -45,6 +45,7 @@ add_library(SuGarCore SHARED
     src/ecs/ComponentStorage.h
     src/ecs/Components.h
     src/ecs/Registry.h
+    src/ecs/SystemSchedule.h
     src/core/Input.cpp
     src/core/Input.h
     src/core/InputActions.cpp

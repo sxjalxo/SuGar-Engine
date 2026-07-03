@@ -636,47 +636,89 @@ void SuGarApp::jumpBookmark(int direction) {
     }
 }
 
-void SuGarApp::updateSystems(float fixedDeltaTime) {
-    // Drive every entity that carries a ScriptComponent through its named
-    // Behavior. Behaviors are stateless and shared; per-entity lifecycle state
-    // (`started`) lives in the component so it survives snapshot/restore.
-    for (auto& [entity, scriptComponent] : registry.scripts.getAll()) {
-        Behavior* behavior = BehaviorRegistry::get(scriptComponent.behavior);
-        if (behavior == nullptr) {
-            continue;
-        }
-
-        if (!scriptComponent.started) {
-            behavior->onStart(registry, entity);
-            scriptComponent.started = true;
-        }
-
-        behavior->onUpdate(registry, entity, fixedDeltaTime);
+void SuGarApp::setupSystemSchedule() {
+    if (systemScheduleReady) {
+        return;
     }
 
-    // Behaviors run first (they may set velocities / apply forces), then physics
-    // integrates and (7B+) resolves collisions on the same fixed step.
-    physicsWorld.step(registry, fixedDeltaTime);
+    // Script driver: runs every entity's named Behavior. Behaviors are
+    // unconstrained gameplay code, so this declares a broad write set — anything
+    // a behavior might touch. That honest declaration is what keeps it ordered
+    // ahead of physics/audio (they conflict) rather than falsely "independent".
+    systemSchedule.add(System{
+        "Script",
+        maskOf(ComponentType::Script, ComponentType::Transform, ComponentType::RigidBody,
+               ComponentType::Collider, ComponentType::AudioSource),
+        maskOf(ComponentType::Script, ComponentType::Transform, ComponentType::RigidBody,
+               ComponentType::AudioSource),
+        [this](float dt) {
+            // Behaviors are stateless and shared; per-entity lifecycle state
+            // (`started`) lives in the component so it survives snapshot/restore.
+            for (auto& [entity, scriptComponent] : registry.scripts.getAll()) {
+                Behavior* behavior = BehaviorRegistry::get(scriptComponent.behavior);
+                if (behavior == nullptr) {
+                    continue;
+                }
+                if (!scriptComponent.started) {
+                    behavior->onStart(registry, entity);
+                    scriptComponent.started = true;
+                }
+                behavior->onUpdate(registry, entity, dt);
+            }
+        }});
 
-    // Dispatch this step's contacts to the behaviors on each involved entity.
-    // Behaviors were already started by the onUpdate loop above, so onCollision
+    // Physics: integrates bodies and resolves collisions on the same fixed step,
+    // accumulating this step's contacts for the dispatch system below.
+    systemSchedule.add(System{
+        "Physics",
+        maskOf(ComponentType::Collider, ComponentType::Transform, ComponentType::RigidBody),
+        maskOf(ComponentType::Transform, ComponentType::RigidBody),
+        [this](float dt) {
+            physicsWorld.step(registry, dt);
+        }});
+
+    // Collision dispatch: routes this step's contacts to the behaviors on each
+    // involved entity. Behaviors were started by the Script system, so onCollision
     // can safely mutate components (e.g. request a one-shot sound) before audio.
-    auto dispatchCollision = [&](Entity entity, const CollisionEvent& event) {
-        if (entity == INVALID_ENTITY || !registry.scripts.has(entity)) {
-            return;
-        }
-        if (Behavior* behavior = BehaviorRegistry::get(registry.scripts.get(entity).behavior)) {
-            behavior->onCollision(registry, entity, event);
-        }
-    };
-    for (const CollisionEvent& event : physicsWorld.getCollisionEvents()) {
-        dispatchCollision(event.a, event);
-        dispatchCollision(event.b, event);
-    }
+    systemSchedule.add(System{
+        "CollisionDispatch",
+        maskOf(ComponentType::Script, ComponentType::Collider, ComponentType::Transform),
+        maskOf(ComponentType::Transform, ComponentType::RigidBody, ComponentType::AudioSource),
+        [this](float) {
+            auto dispatchCollision = [&](Entity entity, const CollisionEvent& event) {
+                if (entity == INVALID_ENTITY || !registry.scripts.has(entity)) {
+                    return;
+                }
+                if (Behavior* behavior = BehaviorRegistry::get(registry.scripts.get(entity).behavior)) {
+                    behavior->onCollision(registry, entity, event);
+                }
+            };
+            for (const CollisionEvent& event : physicsWorld.getCollisionEvents()) {
+                dispatchCollision(event.a, event);
+                dispatchCollision(event.b, event);
+            }
+        }});
 
     // Audio last: positions are final for this step, so spatial attenuation,
     // playOnStart triggers, and collision one-shots use up-to-date state.
-    AudioSystem::update(registry, audioEngine);
+    systemSchedule.add(System{
+        "Audio",
+        maskOf(ComponentType::Transform, ComponentType::AudioListener, ComponentType::AudioSource),
+        maskOf(ComponentType::AudioSource),
+        [this](float) {
+            AudioSystem::update(registry, audioEngine);
+        }});
+
+    systemScheduleReady = true;
+}
+
+void SuGarApp::updateSystems(float fixedDeltaTime) {
+    // Gameplay is a declared pipeline (Phase 13A): script -> physics -> collision
+    // dispatch -> audio, each with its read/write sets. The scheduler runs them in
+    // deterministic registration order; the declared sets drive independence
+    // analysis (stages()) for future parallelism, not reordering.
+    setupSystemSchedule();
+    systemSchedule.run(fixedDeltaTime);
 }
 
 void SuGarApp::initVulkan() {
