@@ -298,7 +298,7 @@ The `EntityQuery` parser is a simple tokenizer, deliberately structured to grow:
 - **Ordering** — `rigidbody order by vel.y desc`.
 Not needed now; noted so the grammar is extended rather than rewritten.
 
-### Phase 12 — Code hot reload  (Pillar 1, the hard one)  (IN PROGRESS)
+### Phase 12 — Code hot reload  (Pillar 1, the hard one)  (CORE DONE)
 
 **Architecture (decided): layered `Editor -> Engine -> Core`.** Core is a shared
 library (so its singletons like `BehaviorRegistry` are shared); the hot-swappable
@@ -328,12 +328,21 @@ direction.
     registry before `FreeLibrary` so DLL-owned behavior instances never dangle.
   - **`CoreBoundary` self-test** added — constructs Registry / BehaviorRegistry /
     InputActions headless; a tripwire for boundary regressions.
-- 12C — **Reloadable game module** (NEXT): recompile the DLL while the engine
-  runs and hot-swap it. Load a *copy* of the DLL (Windows locks a loaded DLL, so
-  the build can overwrite the original); on file-watch change: clear registry,
-  `FreeLibrary`, reload the fresh copy, re-register. State survives because it
-  lives in components (Phase 6 design); ScriptComponents reconnect by name.
-- Reload **only affected systems**, not the whole scene/domain.
+- 12C — **Reloadable game module** (DONE): recompile the DLL while the engine
+  runs and it hot-swaps live. The loader loads a **uniquely-named copy** of the
+  DLL each time (the original stays free for the build to overwrite); on reload it
+  clears the registry, `FreeLibrary`s, and loads the fresh copy. Triggered by a
+  **debounced file-watch** on the source DLL (waits for the build to finish
+  writing) plus manual **F8 / "Reload Scripts"**. The copy retries briefly to
+  ride out post-build locks, and only advances its "loaded" timestamp on success
+  so a failed attempt keeps retrying. State survives because it lives in
+  components (Phase 6 design) and ScriptComponents reconnect by name.
+  *Verified end-to-end:* rebuilt `SuGarGame.dll` with the engine running → auto
+  `hot reload complete`, no crash, no dangling pointers (see the pre-flight audit:
+  the only DLL-owned code pointers are the behavior vtables, destroyed by
+  `clear()` before `FreeLibrary`; every `std::function`/callback is Engine/Core-owned).
+- Remaining Phase 12 refinements (later): reload **only affected systems** (not a
+  full re-register); and **in-place state restore** (below).
 - **In-place state restore (patch, don't rebuild).** Scene/snapshot restore today
   is destroy → reload → rebuild, which reassigns entity ids and wipes editor
   selection / inspector / undo history. Move to *patching component data into the
@@ -397,5 +406,6 @@ Small, deliberate "later, not now" items so they aren't lost:
   while the game runs and see it apply live with state preserved; scrub time
   backward to inspect what happened. This is the demo that wins indie devs.
   *(Progress: time-travel scrubbing + live component hot-patch shipped in 11B;
-  live **code** hot reload with state preserved is Phase 12.)*
+  live **code** hot reload with state preserved now works in Phase 12 — rebuild
+  the game DLL and it auto-swaps. The full M2 demo is essentially in place.)*
 - **M3 — Open-source launch:** M2 + docs + examples + contributor on-ramp.

@@ -69,6 +69,10 @@ public:
     // Duration of one recorded frame, so the editor can show timeline seconds.
     float fixedTimestep() const;
 
+    // Hot-reload the game module DLL (recompiled behaviors) without restarting.
+    // Behaviors reconnect by name and component state is untouched.
+    void reloadGameModule();
+
     // Timeline bookmarks: tag the current frame with a label and jump between
     // tagged frames. Bookmarks key off stable frame numbers, so they survive ring
     // eviction (until the tagged frame itself scrolls off the window).

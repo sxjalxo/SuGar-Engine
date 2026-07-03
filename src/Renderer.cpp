@@ -1845,7 +1845,15 @@ void Renderer::drawPlayControls() {
     ImGui::SameLine();
     const char* label = editing ? "EDIT" : (paused ? "PAUSED" : "PLAYING");
     ImGui::Text("State: %s", label);
-    ImGui::TextDisabled("F6 Play/Stop  |  F7 Pause/Resume");
+
+    // Code hot reload: rebuild SuGarGame.dll, then click (or auto-detected).
+    if (ImGui::Button("Reload Scripts")) {
+        app->reloadGameModule();
+    }
+    ImGui::SameLine();
+    ImGui::TextDisabled("(recompile the game module to hot-swap behaviors)");
+
+    ImGui::TextDisabled("F6 Play/Stop  |  F7 Pause/Resume  |  F8 Reload Scripts");
 
     ImGui::End();
 }

@@ -17,10 +17,12 @@ input system; hand-rolled physics with collision events; prefabs & glTF import;
 quaternion transforms; a hand-rolled audio mixer; and an editor with scene
 picking, gizmos, undo/redo, duplicate/delete, multi-select, hierarchy
 reparenting, and component management — all on top of the Vulkan renderer, asset
-pipeline, hot reload, and shadow mapping. **Track B (the wedge) is now in
-progress**: a hardened editor command system (transactions, entity remapping,
-compression) and **time-travel debugging** — snapshot ring-buffer + timeline
-scrubbing + frame stepping. Next: ECS query console, then code hot reload.
+pipeline, hot reload, and shadow mapping. **Track B (the wedge) is well underway**:
+a hardened editor command system (transactions, entity remapping, compression),
+**time-travel debugging** (snapshot ring-buffer + timeline scrubbing + frame
+stepping), an ECS query console, and — the headline — **code hot reload**: a
+layered `Editor -> Engine -> Core` split with gameplay in a DLL that hot-swaps
+live when recompiled, state preserved.
 
 > Positioning: *"A Vulkan engine designed for instant iteration and debuggable
 > systems — not just rendering power."* Open-source, dev-led, aimed at indie devs.
@@ -86,6 +88,9 @@ scrubbing + frame stepping. Next: ECS query console, then code hot reload.
 * **Timeline bookmarks** — tag a frame with a label and jump Previous/Next
 * **Live hot-patch** — the inspector edits the running scene directly, so
   component data changes apply while playing with no restart
+* **Code hot reload** — gameplay behaviors live in a `SuGarGame` DLL; rebuild it
+  while the engine runs and it auto-swaps (debounced file-watch, or F8 / "Reload
+  Scripts"). Behaviors reconnect by name and component state is preserved
 * **ECS query console** — `<component> [where <field> <op> <value>]`
   (e.g. `rigidbody where vel.y < 0`); click a match to select it
 * **Pluggable snapshot backend** (`ISnapshotStorage`) — the Timeline is decoupled
@@ -157,6 +162,7 @@ scrubbing + frame stepping. Next: ECS query console, then code hot reload.
 | `F5` / `F9` | Save / reload scene |
 | `F6` | Play / Stop |
 | `F7` | Pause / Resume |
+| `F8` | Hot-reload the game module (behaviors) |
 | `Ctrl+Z` / `Ctrl+Y` | Undo / Redo |
 | `Ctrl+D` / `Del` | Duplicate / Delete selected |
 | `Ctrl+Click` | Add to selection (hierarchy / viewport) |
@@ -216,10 +222,10 @@ Full plan in [ROADMAP.md](ROADMAP.md). Summary:
 * **Track B** *(in progress)* — the wedge: 11A editor command infrastructure;
   11B time-travel scrubbing + frame stepping + ECS query console; 11C snapshot
   backend abstraction + timeline bookmarks *done*. **Phase 12 code hot reload**:
-  12A/12B *done* — layered `Editor -> Engine -> Core` (Vulkan-free `SuGarCore`
-  shared lib) with gameplay behaviors in a **`SuGarGame` DLL that links only Core**
-  and is loaded at runtime; next 12C hot-swaps the DLL while running. Later:
-  binary/delta snapshots, query-language growth, in-place state restore
+  12A/12B/12C *done* — layered `Editor -> Engine -> Core` (Vulkan-free `SuGarCore`
+  shared lib) with gameplay behaviors in a **`SuGarGame` DLL that links only Core**,
+  loaded at runtime and **hot-reloaded live** when recompiled. Later: reload only
+  affected systems, in-place state restore, binary/delta snapshots, query growth
 * **Track C** — graphics, cross-platform, packaging, ecosystem
 
 ---

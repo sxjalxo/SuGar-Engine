@@ -189,7 +189,7 @@ void SuGarApp::initScene() {
     // Behaviors now live in the hot-swappable game module DLL; load it and let it
     // register them into Core's BehaviorRegistry. The engine still runs (behaviors
     // just inert) if the module is missing.
-    gameModule.load("SuGarGame.dll");
+    gameModule.load("SuGarGame");
     InputActions::registerDefaults();
     registry.reset();
     sceneLights.clear();
@@ -562,6 +562,14 @@ float SuGarApp::fixedTimestep() const {
     return FIXED_TIMESTEP;
 }
 
+void SuGarApp::reloadGameModule() {
+    if (gameModule.reload()) {
+        std::cout << "[GameModule] hot reload complete\n";
+    } else {
+        std::cerr << "[GameModule] hot reload failed\n";
+    }
+}
+
 void SuGarApp::resumeLive() {
     if (scrubCursor >= 0 && snapshots->count() > 0) {
         restoreSnapshot(snapshots->get(snapshots->count() - 1));
@@ -745,6 +753,12 @@ void SuGarApp::mainLoop() {
         // Fixed-timestep gameplay update. Gameplay advances only in Play state;
         // rendering below stays uncapped. The accumulator is clamped to avoid a
         // spiral of death after a long stall (e.g. window drag / hot reload).
+        // Code hot reload: if the game DLL was recompiled, swap it in live. Done
+        // here (outside the fixed-step update) so no behavior is mid-tick.
+        if (gameModule.sourceChanged()) {
+            reloadGameModule();
+        }
+
         // Advance the sim only while live-playing (not while scrubbing history).
         if (engineState == EngineState::Play && scrubCursor < 0) {
             fixedAccumulator += deltaTime;
@@ -824,6 +838,11 @@ void SuGarApp::processInput(float deltaTime) {
         } else if (engineState == EngineState::Paused) {
             resume();
         }
+    }
+
+    // F8: manually hot-reload the game module DLL (recompiled behaviors).
+    if (!captureKeyboard && Input::isKeyPressed(GLFW_KEY_F8)) {
+        reloadGameModule();
     }
 
     if (!captureKeyboard && Input::isKeyDown(GLFW_KEY_1)) {
