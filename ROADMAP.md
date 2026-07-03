@@ -306,25 +306,33 @@ library (so its singletons like `BehaviorRegistry` are shared); the hot-swappabl
 refactor than an exe-exports DLL split, but a cleaner API boundary, simpler
 cross-platform hot reload, and it matches the engine's dependency-inversion
 direction.
-- 12A — **Core extraction** (in progress):
-  - DONE: **dependency inversion of `Registry`** — the ECS no longer calls the
+- 12A — **Core extraction** (DONE):
+  - **Dependency inversion of `Registry`** — the ECS no longer calls the
     Vulkan-coupled `ResourceManager`; it releases handles through an injected
-    `onReleaseAsset` hook the Engine wires. This is the pattern for every up-call
-    found while moving code into Core. *Refinement (later, not now):* evolve the
-    `std::function` hook into an `IAssetReleaseService` interface — interfaces are
-    easier to mock in tests than raw callbacks.
-  - DONE: **`SuGarCore` library** (`CMakeLists.txt`) — ECS, component data, math,
-    `Behavior` + `BehaviorRegistry`, `InputActions`, `CollisionEvent`,
-    `AssetHandle`, `Material`. Compiles with **no Vulkan** (self-sufficient glm /
-    glfw includes), which is what enforces the boundary; the Engine links it.
-    STATIC for now — flips to SHARED in 12B so the game DLL shares Core singletons.
-  - Next: split the concrete behaviors (Spinner/PlayerController/CollisionSfx) out
-    of Core into the game module; flip Core to SHARED.
-- 12B — **Game module DLL**: move concrete behaviors into a DLL that links only
-  Core and exports `registerGameBehaviors`; the Engine loads a copy so the
-  original can be recompiled while running.
-- 12C — Reloadable game module: on file change, clear registry, unload, reload,
-  re-register; state survives because it lives in components (Phase 6 design).
+    `onReleaseAsset` hook the Engine wires. *Refinement (later, not now):* evolve
+    the `std::function` hook into an `IAssetReleaseService` interface — interfaces
+    are easier to mock in tests than raw callbacks.
+  - **`SuGarCore` library** — ECS, component data, math, `Behavior` +
+    `BehaviorRegistry`, `InputActions`, `CollisionEvent`, `AssetHandle`,
+    `Material`. Compiles with **no Vulkan** (self-sufficient glm/glfw includes),
+    which is what enforces the boundary; the Engine links it.
+- 12B — **Game module DLL** (DONE):
+  - Core flipped to **SHARED** (`WINDOWS_EXPORT_ALL_SYMBOLS`) so `BehaviorRegistry`
+    lives in exactly one module, shared by the engine and the game DLL.
+  - Concrete behaviors (Spinner/PlayerController/CollisionSfx) moved out of Core
+    into **`SuGarGame` (DLL) — `src/game/`** — which links *only* Core and exports
+    `registerGameBehaviors` (verified: building `SuGarGame` pulls in Core, not the
+    engine). Core's `BehaviorRegistry` keeps only the mechanism.
+  - **`GameModuleLoader`** (Windows `LoadLibrary`, confined to one `.cpp`) loads
+    `SuGarGame.dll` at startup and calls the entry point; unload clears the
+    registry before `FreeLibrary` so DLL-owned behavior instances never dangle.
+  - **`CoreBoundary` self-test** added — constructs Registry / BehaviorRegistry /
+    InputActions headless; a tripwire for boundary regressions.
+- 12C — **Reloadable game module** (NEXT): recompile the DLL while the engine
+  runs and hot-swap it. Load a *copy* of the DLL (Windows locks a loaded DLL, so
+  the build can overwrite the original); on file-watch change: clear registry,
+  `FreeLibrary`, reload the fresh copy, re-register. State survives because it
+  lives in components (Phase 6 design); ScriptComponents reconnect by name.
 - Reload **only affected systems**, not the whole scene/domain.
 - **In-place state restore (patch, don't rebuild).** Scene/snapshot restore today
   is destroy → reload → rebuild, which reassigns entity ids and wipes editor
@@ -367,6 +375,15 @@ Small, deliberate "later, not now" items so they aren't lost:
 
 - Transaction groups (CompositeCommand) for logically grouping multi-step editor operations. 
   Deferred to Track B alongside state/history infrastructure.
+
+- **Physically relocate Core-owned files under `src/core/`** — the Core *library*
+  boundary is enforced by CMake/compilation, but the files still live in their
+  original folders. Eventually move them into a `src/core/{ecs,math,assets,
+  components,...}` tree to make the layer legible on disk. Notably `Material.h`
+  is Core (it's data: `AssetHandle` + PBR floats, not rendering) and would sit at
+  `src/core/rendering/Material.h` — a `rendering` namespace that means
+  "rendering-independent data", not Vulkan. Communicates intent; not technically
+  required, so deferred.
 
 ## Milestones
 

@@ -12,6 +12,7 @@
 #include <utility>
 #include <vector>
 
+#include "core/InputActions.h"
 #include "core/SnapshotStorage.h"
 #include "ecs/Registry.h"
 #include "editor/EditorCommand.h"
@@ -217,16 +218,17 @@ inline bool testSerializer() {
 }
 
 // --- BehaviorRegistry: register / resolve by name / clear -------------------
+// Tests Core's registry *mechanism* with a local behavior (concrete behaviors now
+// live in the game module DLL, which isn't loaded in the headless self-test).
 inline bool testBehaviorRegistry() {
+    struct DummyBehavior : Behavior {};
     BehaviorRegistry::clear();
-    BehaviorRegistry::registerBuiltins();
-    bool ok = BehaviorRegistry::has("Spinner") &&
-              BehaviorRegistry::has("PlayerController") &&
-              BehaviorRegistry::has("CollisionSfx") &&
-              BehaviorRegistry::get("Spinner") != nullptr &&
+    BehaviorRegistry::registerBehavior("TestBehavior", std::make_unique<DummyBehavior>());
+    bool ok = BehaviorRegistry::has("TestBehavior") &&
+              BehaviorRegistry::get("TestBehavior") != nullptr &&
               BehaviorRegistry::get("DoesNotExist") == nullptr;
     BehaviorRegistry::clear();
-    ok &= !BehaviorRegistry::has("Spinner");
+    ok &= !BehaviorRegistry::has("TestBehavior");
     return ok;
 }
 
@@ -256,10 +258,31 @@ inline bool testRegistryGraph() {
     return ok;
 }
 
+// --- CoreBoundary: the Core subsystems construct together with no Vulkan -----
+// A regression tripwire for the Editor -> Engine -> Core boundary: if any of
+// these ever pulls in a renderer/Vulkan dependency, Core stops building headless.
+inline bool testCoreBoundary() {
+    Registry registry;
+    const Entity entity = registry.createEntity();
+    registry.transforms.add(entity, {});
+    bool ok = registry.transforms.has(entity);
+
+    struct DummyBehavior : Behavior {};
+    BehaviorRegistry::clear();
+    BehaviorRegistry::registerBehavior("CoreProbe", std::make_unique<DummyBehavior>());
+    ok &= BehaviorRegistry::has("CoreProbe");
+    BehaviorRegistry::clear();
+
+    InputActions::registerDefaults();
+    ok &= InputActions::getAxis("MoveForward") == 0.0f; // defined axis, no input -> 0
+    return ok;
+}
+
 inline bool run() {
     using TestFn = bool (*)();
     struct Case { const char* name; TestFn fn; };
     const Case cases[] = {
+        { "CoreBoundary",     testCoreBoundary },
         { "CommandHistory",   testCommandHistory },
         { "EntityQuery",      testEntityQuery },
         { "SnapshotStorage",  testSnapshotStorage },

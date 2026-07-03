@@ -17,9 +17,6 @@ public:
 
     static bool has(const std::string& name);
 
-    // Registers the engine's built-in behaviors (e.g. "Spinner"). Idempotent.
-    static void registerBuiltins();
-
     static void clear();
 
 private:

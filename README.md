@@ -103,6 +103,10 @@ scrubbing + frame stepping. Next: ECS query console, then code hot reload.
 
 ### Engine Architecture
 
+* **Layered architecture** — `Editor -> Engine -> Core`, where `SuGarCore` is a
+  Vulkan-free shared library (ECS, components, math, behaviors) and gameplay lives
+  in a **`SuGarGame` DLL that links only Core** and is loaded at runtime. The same
+  Core could back multiple games.
 * Fully authoritative **Entity Component System (ECS)**
 * Components: `Transform` (quaternion rotation), `Mesh`, `Material`, `Hierarchy`,
   `Name`, `Script`, `RigidBody`, `Collider`, `PrefabInstance`, `AudioSource`,
@@ -191,7 +195,7 @@ before launching the editor:
 $env:SUGAR_SELFTEST = "1"; build\Debug\SuGarEngine.exe; $env:SUGAR_SELFTEST = ""
 ```
 
-Prints a per-test PASS/FAIL table (with timings) for CommandHistory,
+Prints a per-test PASS/FAIL table (with timings) for CoreBoundary, CommandHistory,
 EntityQuery, SnapshotStorage, Physics, Serializer, BehaviorRegistry, and
 RegistryGraph.
 
@@ -211,10 +215,11 @@ Full plan in [ROADMAP.md](ROADMAP.md). Summary:
   management + prefab Revert/Apply + thumbnails). **M1 / Track A complete.**
 * **Track B** *(in progress)* — the wedge: 11A editor command infrastructure;
   11B time-travel scrubbing + frame stepping + ECS query console; 11C snapshot
-  backend abstraction (`ISnapshotStorage`) + timeline bookmarks *done*. **Phase 12
-  code hot reload** started: layering into `Editor -> Engine -> Core` (a Vulkan-free
-  `SuGarCore` library the future game DLL links). Later: binary/delta snapshot
-  backends, query-language growth, in-place state restore
+  backend abstraction + timeline bookmarks *done*. **Phase 12 code hot reload**:
+  12A/12B *done* — layered `Editor -> Engine -> Core` (Vulkan-free `SuGarCore`
+  shared lib) with gameplay behaviors in a **`SuGarGame` DLL that links only Core**
+  and is loaded at runtime; next 12C hot-swaps the DLL while running. Later:
+  binary/delta snapshots, query-language growth, in-place state restore
 * **Track C** — graphics, cross-platform, packaging, ecosystem
 
 ---

@@ -186,7 +186,10 @@ void SuGarApp::initWindow() {
 }
 
 void SuGarApp::initScene() {
-    BehaviorRegistry::registerBuiltins();
+    // Behaviors now live in the hot-swappable game module DLL; load it and let it
+    // register them into Core's BehaviorRegistry. The engine still runs (behaviors
+    // just inert) if the module is missing.
+    gameModule.load("SuGarGame.dll");
     InputActions::registerDefaults();
     registry.reset();
     sceneLights.clear();

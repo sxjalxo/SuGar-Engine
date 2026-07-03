@@ -13,6 +13,7 @@
 #include "core/EngineState.h"
 #include "core/SnapshotStorage.h"
 #include "ecs/Registry.h"
+#include "GameModuleLoader.h"
 #include "physics/PhysicsWorld.h"
 #include "scene/DrawList.h"
 #include "scene/Light.h"
@@ -111,6 +112,7 @@ private:
     float fixedAccumulator = 0.0f;
     PhysicsWorld physicsWorld;
     AudioEngine audioEngine;
+    GameModuleLoader gameModule; // hot-swappable behaviors DLL
 
     // Time-travel ring: snapshots behind an ISnapshotStorage (encoding-agnostic),
     // a scrub cursor (-1 = live), and bookmarks keyed by stable frame number.

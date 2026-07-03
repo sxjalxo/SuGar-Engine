@@ -6,6 +6,10 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 find_package(Vulkan REQUIRED)
 
+# Colocate the exe and all DLLs (SuGarCore, SuGarGame) in one dir so the Windows
+# loader finds them at runtime. CMake appends the per-config subdir (e.g. /Debug).
+set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
+
 add_subdirectory(external/glfw)
 
 add_library(imgui
@@ -34,7 +38,7 @@ target_link_libraries(imgui PUBLIC
 # through an injected hook). The hot-reloadable game module (Phase 12B) will link
 # only against this. STATIC for now; becomes SHARED once the game DLL needs to
 # share Core singletons (e.g. BehaviorRegistry's table).
-add_library(SuGarCore STATIC
+add_library(SuGarCore SHARED
     src/ecs/Entity.h
     src/ecs/EntityManager.cpp
     src/ecs/EntityManager.h
@@ -63,9 +67,27 @@ target_include_directories(SuGarCore PUBLIC
     external/glfw/include
 )
 
+# Auto-export Core's symbols so the engine and the game DLL can link against it
+# without hand-annotating every declaration. Core's shared singletons (e.g.
+# BehaviorRegistry's table) then live in exactly one module.
+set_target_properties(SuGarCore PROPERTIES WINDOWS_EXPORT_ALL_SYMBOLS ON)
+
+# --- Game module (hot-swappable) --------------------------------------------
+# Concrete gameplay behaviors, compiled into a DLL that links ONLY against Core.
+# The engine loads it at runtime (GameModuleLoader) and calls registerGameBehaviors;
+# recompiling it while the engine runs is the basis for code hot reload (12C).
+add_library(SuGarGame SHARED
+    src/game/GameModule.h
+    src/game/GameBehaviors.cpp
+)
+target_link_libraries(SuGarGame PRIVATE SuGarCore)
+
 add_executable(SuGarEngine
     src/main.cpp
     src/core/SnapshotStorage.h
+    src/GameModuleLoader.h
+    src/GameModuleLoader.cpp
+    src/game/GameModule.h
     src/SuGarApp.cpp
     src/Renderer.cpp
     src/BasicTrianglePass.cpp
@@ -122,6 +144,9 @@ target_link_libraries(SuGarEngine
     imgui
     Vulkan::Vulkan
 )
+
+# The engine loads SuGarGame.dll at runtime (not linked), so ensure it's built.
+add_dependencies(SuGarEngine SuGarGame)
 
 target_include_directories(SuGarEngine PRIVATE
     src
