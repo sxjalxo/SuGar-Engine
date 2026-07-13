@@ -902,6 +902,236 @@ std::vector<Entity> createEntitiesFromObjects(Registry& registry, const std::vec
     return createdEntities;
 }
 
+// Patches one existing entity's components from parsed snapshot data. Mirrors the
+// component semantics of createEntitiesFromObjects (add / update / remove) but
+// never recreates the entity, so its id — and any editor state keyed on it —
+// survives. Resource-backed components reload only when their key changed, so a
+// scrub that only moved transforms doesn't touch the ResourceManager.
+void patchEntity(Registry& registry, Entity entity, const PendingEntityData& data) {
+    if (registry.names.has(entity)) {
+        registry.names.get(entity).name = data.name;
+    } else {
+        registry.names.add(entity, { data.name });
+    }
+
+    // The entity always has a transform (it's how patch candidates are gathered).
+    registry.transforms.get(entity).transform = data.transform;
+
+    // Mesh: reload only when the resource key actually changed.
+    {
+        std::string currentKey;
+        if (registry.meshes.has(entity)) {
+            if (auto mesh = ResourceManager::getMesh(registry.meshes.get(entity).mesh)) {
+                currentKey = mesh->getResourceKey();
+            }
+        }
+        if (data.meshKey != currentKey) {
+            if (registry.meshes.has(entity)) {
+                if (registry.onReleaseAsset) {
+                    registry.onReleaseAsset(registry.meshes.get(entity).mesh);
+                }
+                registry.meshes.remove(entity);
+            }
+            const AssetHandle handle = loadMeshWithFallback(data.meshKey);
+            if (handle != INVALID_HANDLE) {
+                registry.meshes.add(entity, { handle });
+            }
+        }
+    }
+
+    // Material: patched only when the snapshot carries one (non-empty albedo key —
+    // loaded entities always do). Floats are cheap to set; the albedo texture is
+    // reloaded only when its key changed. An empty key means "no material", which
+    // is left untouched to keep the patch free of ResourceManager calls for
+    // hand-built (test/headless) entities.
+    if (!data.albedoKey.empty()) {
+        Material material = registry.materials.has(entity)
+            ? registry.materials.get(entity).material : Material{};
+        std::string currentKey;
+        if (material.albedo != INVALID_HANDLE) {
+            if (auto texture = ResourceManager::getTexture(material.albedo)) {
+                currentKey = texture->getResourceKey();
+            }
+        }
+        if (data.albedoKey != currentKey) {
+            if (material.albedo != INVALID_HANDLE && registry.onReleaseAsset) {
+                registry.onReleaseAsset(material.albedo);
+            }
+            material.albedo = loadTextureWithFallback(data.albedoKey);
+        }
+        material.metallic = data.metallic;
+        material.roughness = data.roughness;
+        material.ao = data.ao;
+        if (registry.materials.has(entity)) {
+            registry.materials.get(entity).material = material;
+        } else {
+            registry.materials.add(entity, { material });
+        }
+    }
+
+    if (!data.script.empty()) {
+        if (registry.scripts.has(entity)) {
+            auto& script = registry.scripts.get(entity);
+            script.behavior = data.script;
+            script.started = false;
+        } else {
+            registry.scripts.add(entity, { data.script, false });
+        }
+    } else if (registry.scripts.has(entity)) {
+        registry.scripts.remove(entity);
+    }
+
+    if (data.hasBody) {
+        if (registry.rigidBodies.has(entity)) {
+            registry.rigidBodies.get(entity) = data.body;
+        } else {
+            registry.rigidBodies.add(entity, data.body);
+        }
+    } else if (registry.rigidBodies.has(entity)) {
+        registry.rigidBodies.remove(entity);
+    }
+
+    if (data.hasCollider) {
+        if (registry.colliders.has(entity)) {
+            registry.colliders.get(entity) = data.collider;
+        } else {
+            registry.colliders.add(entity, data.collider);
+        }
+    } else if (registry.colliders.has(entity)) {
+        registry.colliders.remove(entity);
+    }
+
+    if (!data.prefab.empty()) {
+        if (registry.prefabInstances.has(entity)) {
+            registry.prefabInstances.get(entity).prefab = data.prefab;
+        } else {
+            registry.prefabInstances.add(entity, { data.prefab });
+        }
+    } else if (registry.prefabInstances.has(entity)) {
+        registry.prefabInstances.remove(entity);
+    }
+
+    if (data.hasAudioSource) {
+        AudioSourceComponent source = registry.audioSources.has(entity)
+            ? registry.audioSources.get(entity) : AudioSourceComponent{};
+        std::string currentKey;
+        if (source.clip != INVALID_HANDLE) {
+            if (auto clip = ResourceManager::getAudioClip(source.clip)) {
+                currentKey = clip->getResourceKey();
+            }
+        }
+        if (data.audioClipKey != currentKey) {
+            if (source.clip != INVALID_HANDLE && registry.onReleaseAsset) {
+                registry.onReleaseAsset(source.clip);
+            }
+            source.clip = loadAudioClipWithFallback(data.audioClipKey);
+        }
+        source.volume = data.audioSource.volume;
+        source.pitch = data.audioSource.pitch;
+        source.loop = data.audioSource.loop;
+        source.playOnStart = data.audioSource.playOnStart;
+        source.spatial = data.audioSource.spatial;
+        // Runtime latches always restore to a clean slate (matches load path).
+        source.started = false;
+        source.voice = 0;
+        source.oneShotPending = false;
+        if (registry.audioSources.has(entity)) {
+            registry.audioSources.get(entity) = source;
+        } else {
+            registry.audioSources.add(entity, source);
+        }
+    } else if (registry.audioSources.has(entity)) {
+        if (registry.onReleaseAsset && registry.audioSources.get(entity).clip != INVALID_HANDLE) {
+            registry.onReleaseAsset(registry.audioSources.get(entity).clip);
+        }
+        registry.audioSources.remove(entity);
+    }
+
+    if (data.hasAudioListener) {
+        if (registry.audioListeners.has(entity)) {
+            registry.audioListeners.get(entity) = data.audioListener;
+        } else {
+            registry.audioListeners.add(entity, data.audioListener);
+        }
+    } else if (registry.audioListeners.has(entity)) {
+        registry.audioListeners.remove(entity);
+    }
+}
+
+// In-place restore (Phase 14A). Parses the snapshot, checks it matches the live
+// entity set, then patches each entity by serialization order (sorted id) so ids
+// are preserved. Returns false without mutating on a structural mismatch.
+bool patchSceneFromText(Registry& registry, std::vector<Light>& lights, const std::string& text) {
+    try {
+        const JsonValue rootValue = JsonParser(text).parse();
+        const auto& root = requireObject(rootValue, "scene root");
+
+        int sceneVersion = 1;
+        if (const auto version = root.find("version"); version != root.end()) {
+            sceneVersion = getIntValue(version->second, "version");
+        }
+        if (sceneVersion != 1 && sceneVersion != 2) {
+            return false;
+        }
+
+        const auto& objectValues = requireArray(requireObjectField(root, "objects"), "objects");
+        const auto& lightValues = requireArray(requireObjectField(root, "lights"), "lights");
+
+        // Feasibility gate: same entity count as the snapshot. Serialization order
+        // is sorted entity id, so a matching count lets the i-th object map to the
+        // i-th live entity. A mismatch means a structural change (entity spawned or
+        // destroyed since the snapshot) — bail so the caller does a full rebuild.
+        // Checked before any mutation, so a false return leaves the registry intact.
+        const std::vector<Entity> liveEntities = collectOrderedEntities(registry);
+        if (liveEntities.size() != objectValues.size()) {
+            return false;
+        }
+
+        std::vector<PendingEntityData> pending;
+        pending.reserve(objectValues.size());
+        for (const JsonValue& objectValue : objectValues) {
+            pending.push_back(parseEntityObject(objectValue, sceneVersion));
+        }
+        // Validate parent indices up front so a malformed snapshot can't leave the
+        // registry half-patched.
+        for (const PendingEntityData& entry : pending) {
+            if (entry.parentIndex >= static_cast<int>(liveEntities.size())) {
+                return false;
+            }
+        }
+
+        std::vector<Light> pendingLights;
+        pendingLights.reserve(lightValues.size());
+        for (const JsonValue& lightValue : lightValues) {
+            const auto& lightData = requireObject(lightValue, "light");
+            Light light{};
+            light.position = parseVec3(requireObjectField(lightData, "pos"), "light.pos");
+            light.color = parseVec3(requireObjectField(lightData, "color"), "light.color");
+            pendingLights.push_back(light);
+        }
+
+        for (size_t i = 0; i < liveEntities.size(); i++) {
+            patchEntity(registry, liveEntities[i], pending[i]);
+        }
+
+        // Re-apply hierarchy: detach everything, then wire parents by index. Two
+        // passes so no intermediate state trips setParent's cycle guard.
+        for (Entity entity : liveEntities) {
+            registry.setParent(entity, INVALID_ENTITY);
+        }
+        for (size_t i = 0; i < liveEntities.size(); i++) {
+            if (pending[i].parentIndex >= 0) {
+                registry.setParent(liveEntities[i], liveEntities[static_cast<size_t>(pending[i].parentIndex)]);
+            }
+        }
+
+        lights = std::move(pendingLights);
+        return true;
+    } catch (...) {
+        return false;
+    }
+}
+
 bool loadSceneFromText(Registry& registry, std::vector<Light>& lights, const std::string& text) {
     try {
         const JsonValue rootValue = JsonParser(text).parse();
@@ -988,6 +1218,10 @@ bool SceneSerializer::load(Registry& registry, std::vector<Light>& lights, const
 
 bool SceneSerializer::loadFromString(Registry& registry, std::vector<Light>& lights, const std::string& text) {
     return loadSceneFromText(registry, lights, text);
+}
+
+bool SceneSerializer::patchFromString(Registry& registry, std::vector<Light>& lights, const std::string& text) {
+    return patchSceneFromText(registry, lights, text);
 }
 
 std::string SceneSerializer::savePrefabToString(const Registry& registry, Entity root) {

@@ -68,7 +68,7 @@ So the DX pillars are cheap to add later instead of expensive retrofits:
   (`SUGAR_SELFTEST=1` → `src/SelfTests.h`) that prints a per-test PASS/FAIL table
   **with timings** before the editor even launches. Covered today: CommandHistory,
   EntityQuery, SnapshotStorage, Physics, SystemScheduler, ComponentAccess,
-  Serializer (save), BehaviorRegistry, RegistryGraph, CoreBoundary.
+  SnapshotPatch, Serializer (save), BehaviorRegistry, RegistryGraph, CoreBoundary.
   Pending a small device harness: Serializer round-trip,
   ResourceManager (need Vulkan).
 
@@ -277,9 +277,9 @@ introspection on top of it. Resolves the id-stability limitation from 10B/10C.
   over the authoritative ECS; the "Query" panel lists matches and click-selects
   them. Curated numeric fields per component; ops `< <= > >= == !=`.
 - Known limits (deferred by design → see 11C / Phase 12): snapshots are full-scene
-  JSON every frame (memory: 600 frames x scene size); restoring reassigns entity
-  ids, so a scrub clears editor selection; scrubbed edits aren't kept (inspection
-  only — a "fork from here" branch is a later nicety).
+  JSON every frame (memory: 600 frames x scene size); scrubbed edits aren't kept
+  (inspection only — a "fork from here" branch is a later nicety). *(The scrub-clears-
+  selection limit is fixed in Phase 14A: restore now patches in place, ids preserved.)*
 
 #### Phase 11C — Snapshot backend abstraction  (IN PROGRESS)
 The Timeline must not know *how* frames are stored. An `ISnapshotStorage`
@@ -346,16 +346,10 @@ direction.
   the only DLL-owned code pointers are the behavior vtables, destroyed by
   `clear()` before `FreeLibrary`; every `std::function`/callback is Engine/Core-owned).
 - Remaining Phase 12 refinements (later): reload **only affected systems** (not a
-  full re-register); and **in-place state restore** (below).
-- **In-place state restore (patch, don't rebuild).** Scene/snapshot restore today
-  is destroy → reload → rebuild, which reassigns entity ids and wipes editor
-  selection / inspector / undo history. Move to *patching component data into the
-  existing entities* (no entity recreation) so selection, inspector state, editor
-  windows, and command history all survive a restore/hot-reload/scrub. This also
-  removes the id-reassignment behind the 11A remap machinery and the 11B scrub
-  selection loss.
-- *This is the headline feature and the hardest. The Phase 6 behavior architecture
-  decides whether this is easy or impossible.*
+  full re-register).
+- **In-place state restore** — done in **Phase 14A** (below). Snapshot restore now
+  patches component data into the existing entities instead of destroying and
+  rebuilding, so editor selection / inspector / undo survive a scrub or Stop.
 
 ### Phase 13 — Opinionated scheduling & architecture  (Pillars 2 + 4 + 5)  (IN PROGRESS)
 
@@ -467,11 +461,52 @@ sibling for CI.
 declared, enforced, introspectable, and independence-analyzed; parallel execution
 and incremental rebuilds are deferred with rationale above.
 
+### Phase 14 — In-place state restore  (Pillar 3 / editor-runtime integration)  (IN PROGRESS)
+
+Not scheduler work — editor/runtime integration. The single biggest day-to-day DX
+win left: today Play-mode restore (Stop, and every time-travel scrub) **destroys
+and rebuilds the registry**, reassigning entity ids and wiping editor selection,
+inspector focus, and undo history. That's why scrubbing time backward loses your
+selection and why Stop drops your undo stack.
+
+#### Phase 14A — Patch snapshots into the live entities  (DONE)
+- **`SceneSerializer::patchFromString`** — restores a snapshot by *patching
+  component data into the existing entities* instead of recreating them. Entities
+  are matched by serialization order (sorted entity id), which is stable within a
+  Play session (behaviors mutate components, they don't create/destroy), so **ids
+  are preserved** — and therefore editor selection, inspector state, and undo
+  history survive a restore. Component patching mirrors the load path's add /
+  update / remove semantics; **resource-backed components (mesh, material texture,
+  audio clip) reload only when their key changed**, so a frame-by-frame scrub
+  doesn't churn the ResourceManager's ref counts.
+- **Structural-mismatch fallback** — the patch requires the same entity count as
+  the snapshot; on a mismatch (an entity spawned/destroyed since) it returns false
+  *without mutating*, and the caller (`SuGarApp::restoreSnapshot` / `stop`) falls
+  back to the old destroy-and-rebuild (`loadFromString` + `onSceneReplaced`, which
+  clears editor state). So correctness never depends on the fast path.
+- **`SuGarApp` split** — `refreshSceneVisualsKeepEditor()` (draw list, orbit, GPU
+  resources, audio silence) is now separate from the editor-state wipe;
+  `onSceneReplaced()` = that + `clearEditorState()`. In-place restore calls the
+  former, so selection/undo carry through Stop and scrub.
+- Verified by the `SnapshotPatch` self-test (headless): after a simulated step,
+  patching frame 0 back restores transforms / rigid-body velocity / hierarchy and
+  resets the script `started` latch, **with the same entity ids**, and a structural
+  mismatch declines without touching the registry.
+
+#### Phase 14B — Delete the remap machinery  (later)
+The 11A entity-remap system exists because the *editor-command* recreate path
+(duplicate / delete undo↔redo) re-instantiates subtrees with fresh ids, forcing
+every other command's stored ids to be rewritten. Convert that path to the same
+patch-in-place approach (recreate into the *same* ids) and the remap machinery —
+`EditorCommand::remap`, the old→new id zipping, the history rewrite — can be
+**deleted outright**. New capability removing old complexity; the satisfying kind.
+(Not free in 14A: 14A only covers snapshot restore, a different path.)
+
 ---
 
 ## Track C — Catch-up (only after the wedge is real)
 
-### Phase 14+ — Graphics, ecosystem, packaging, platforms
+### Phase 15+ — Graphics, ecosystem, packaging, platforms
 - ~~stb_image (kill WIC / Windows lock-in)~~ (done early). Remaining: full
   cross-platform build (Mac/Linux), glTF PBR pipeline, more lighting, standalone
   game packaging, tests + CI, docs for contributors.

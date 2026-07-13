@@ -148,7 +148,11 @@ private:
     void rebuildDrawList();
     void updateCameraTargets();
     // Re-derives orbit target, draw list, and GPU resources after the registry
-    // contents are replaced wholesale (scene load or Play-mode restore).
+    // contents change. refreshSceneVisualsKeepEditor leaves editor selection/undo
+    // intact (used by in-place snapshot restore, where entity ids are preserved);
+    // onSceneReplaced additionally clears editor state (used when the registry is
+    // swapped wholesale and ids are reassigned).
+    void refreshSceneVisualsKeepEditor();
     void onSceneReplaced();
     // Registers the fixed-step gameplay systems (with declared read/write sets)
     // into systemSchedule. Idempotent; called on first updateSystems.

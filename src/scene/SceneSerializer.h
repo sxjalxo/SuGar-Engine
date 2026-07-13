@@ -18,6 +18,19 @@ public:
     static std::string saveToString(const Registry& registry, const std::vector<Light>& lights);
     static bool loadFromString(Registry& registry, std::vector<Light>& lights, const std::string& text);
 
+    // Restores a snapshot by *patching component data into the existing entities*
+    // instead of destroying and recreating them (Phase 14A). Entities are matched
+    // by serialization order (sorted entity id), so entity ids are preserved and
+    // editor selection / undo history survive a restore. Resource-backed components
+    // (mesh, material texture, audio clip) are only reloaded when their key actually
+    // changed, so a frame-to-frame scrub doesn't churn ResourceManager ref counts.
+    //
+    // Only valid when the snapshot's structure matches the live registry (same
+    // entity count — true within a Play session, where ids don't change frame to
+    // frame). On a structural mismatch it returns false WITHOUT mutating the
+    // registry, so the caller can fall back to loadFromString (full rebuild).
+    static bool patchFromString(Registry& registry, std::vector<Light>& lights, const std::string& text);
+
     // Prefab = a reusable entity template. savePrefab serializes the subtree
     // rooted at `root` (root + descendants) to a .prefab file (same object schema
     // as a scene, no lights). instantiatePrefab spawns that subtree into the

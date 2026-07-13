@@ -412,20 +412,28 @@ void SuGarApp::updateCameraTargets() {
     renderer->setFollowTargetPosition(targetPosition);
 }
 
-void SuGarApp::onSceneReplaced() {
-    // The registry contents were swapped wholesale; any voices from the old
-    // scene reference entities that no longer exist, so silence them.
+void SuGarApp::refreshSceneVisualsKeepEditor() {
+    // Registry contents changed; re-derive everything downstream of them. Any
+    // voices from the previous state reference stale playback, so silence them.
+    // Deliberately does NOT touch editor selection / undo — entity ids are intact
+    // (in-place restore) or the caller clears editor state separately.
     audioEngine.stopAll();
     orbitParent = findOrbitParentEntity(registry);
     rebuildDrawList();
     if (renderer) {
         renderer->setDrawList(&drawList);
         renderer->refreshDrawListResources();
-        // Entity ids are reassigned on a wholesale registry swap, so the editor's
-        // selection + undo history (which reference ids) must be discarded.
-        renderer->clearEditorState();
     }
     updateCameraTargets();
+}
+
+void SuGarApp::onSceneReplaced() {
+    // The registry contents were swapped wholesale (entity ids reassigned), so the
+    // editor's selection + undo history — which reference ids — must be discarded.
+    refreshSceneVisualsKeepEditor();
+    if (renderer) {
+        renderer->clearEditorState();
+    }
 }
 
 void SuGarApp::play() {
@@ -481,14 +489,20 @@ void SuGarApp::stop() {
         vkDeviceWaitIdle(device);
     }
 
-    if (!SceneSerializer::loadFromString(registry, sceneLights, sceneSnapshot)) {
-        std::cerr << "failed to restore scene snapshot\n";
-    }
-
+    // Phase 14A: patch the pre-play snapshot back into the live entities when the
+    // structure is unchanged (the common case — Play only mutates components), so
+    // the selection and undo history the user had in Edit survive Stop. A
+    // structural change during Play falls back to the full rebuild.
     snapshots->clear();
     bookmarks.clear();
     scrubCursor = -1;
-    onSceneReplaced();
+    if (SceneSerializer::patchFromString(registry, sceneLights, sceneSnapshot)) {
+        refreshSceneVisualsKeepEditor();
+    } else if (SceneSerializer::loadFromString(registry, sceneLights, sceneSnapshot)) {
+        onSceneReplaced();
+    } else {
+        std::cerr << "failed to restore scene snapshot\n";
+    }
     engineState = EngineState::Edit;
     std::cout << "[Stop] restored edit scene\n";
 }
@@ -512,6 +526,14 @@ void SuGarApp::captureSnapshot() {
 void SuGarApp::restoreSnapshot(const std::string& snapshot) {
     if (device != VK_NULL_HANDLE) {
         vkDeviceWaitIdle(device);
+    }
+    // Phase 14A: try to patch the snapshot into the existing entities (preserves
+    // ids, so editor selection / inspector / undo survive a scrub or Stop). Only
+    // a structural change forces the old destroy-and-rebuild path, which clears
+    // editor state because ids are reassigned.
+    if (SceneSerializer::patchFromString(registry, sceneLights, snapshot)) {
+        refreshSceneVisualsKeepEditor();
+        return;
     }
     if (!SceneSerializer::loadFromString(registry, sceneLights, snapshot)) {
         std::cerr << "failed to restore snapshot\n";

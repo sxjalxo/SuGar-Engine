@@ -94,6 +94,10 @@ live when recompiled, state preserved.
   during Play (rolling ~10 s window)
 * **Timeline panel** — scrub backward to restore and inspect any recorded frame,
   with a seconds-behind-live readout
+* **In-place restore** (Phase 14A) — restoring a snapshot (scrub, or Stop) patches
+  component data into the existing entities instead of rebuilding them, so entity
+  ids are preserved and **editor selection, inspector focus, and undo history
+  survive** a scrub or Stop (falls back to a full rebuild only on structural change)
 * **Frame stepping** — step through history frame-by-frame, or advance the live
   sim one fixed step at a time; **Resume Live** to return to play
 * **Timeline bookmarks** — tag a frame with a label and jump Previous/Next
@@ -214,7 +218,7 @@ $env:SUGAR_SELFTEST = "1"; build\Debug\SuGarEngine.exe; $env:SUGAR_SELFTEST = ""
 
 Prints a per-test PASS/FAIL table (with timings) for CoreBoundary, CommandHistory,
 EntityQuery, SnapshotStorage, Physics, SystemScheduler, ComponentAccess,
-Serializer, BehaviorRegistry, and RegistryGraph.
+SnapshotPatch, Serializer, BehaviorRegistry, and RegistryGraph.
 
 ### System access enforcement
 
@@ -255,8 +259,11 @@ Full plan in [ROADMAP.md](ROADMAP.md). Summary:
   **enforced** by the ECS (Warn in-editor, `SUGAR_STRICT` fail-fast for CI), and an
   editor **Systems** panel shows the order, parallel stages, and live violations.
   Parallel execution + incremental rebuilds deferred by design (nothing independent
-  to parallelize yet; async fights time-travel). Also later: reload only affected
-  systems, in-place state restore, binary/delta snapshots, query growth
+  to parallelize yet; async fights time-travel). **Phase 14A** *done* — in-place
+  state restore: snapshot restore patches the live entities instead of rebuilding,
+  so selection/inspector/undo survive scrub + Stop. Later: 14B deletes the 11A
+  remap machinery by converting the editor-command recreate path too; binary/delta
+  snapshots; query growth; reload only affected systems
 * **Track C** — graphics, cross-platform, packaging, ecosystem
 
 ---

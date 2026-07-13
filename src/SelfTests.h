@@ -200,6 +200,63 @@ inline bool testPhysics() {
     return ok;
 }
 
+// --- Snapshot patch: in-place restore preserves entity ids + editor identity
+// (Phase 14A). Uses only device-free components so it runs headless -----------
+inline bool testSnapshotPatch() {
+    bool ok = true;
+
+    // A two-entity scene with a parent/child link, transforms, a rigid body, and a
+    // script — all serializable without a Vulkan device.
+    Registry reg;
+    std::vector<Light> lights;
+    const Entity parent = reg.createEntity();
+    reg.names.add(parent, { "Parent" });
+    reg.transforms.add(parent, { transformAtX(1.0f) });
+    reg.hierarchy.add(parent, {});
+    reg.scripts.add(parent, { "Spinner", true }); // started=true to prove it resets
+
+    const Entity child = reg.createEntity();
+    reg.names.add(child, { "Child" });
+    reg.transforms.add(child, { transformAtX(2.0f) });
+    reg.hierarchy.add(child, {});
+    RigidBodyComponent body{};
+    body.velocity = glm::vec3(0.0f, -4.0f, 0.0f);
+    reg.rigidBodies.add(child, body);
+    reg.setParent(child, parent);
+
+    const std::string frame0 = SceneSerializer::saveToString(reg, lights);
+    ok &= !frame0.empty();
+
+    // Simulate a fixed step: mutate component data in place (ids unchanged).
+    reg.transforms.get(parent).transform = transformAtX(9.0f);
+    reg.transforms.get(child).transform = transformAtX(8.0f);
+    reg.rigidBodies.get(child).velocity = glm::vec3(0.0f, -12.0f, 0.0f);
+    reg.scripts.get(parent).started = true; // patch must reset this to false
+
+    // Patch frame 0 back in. The registry still has exactly these two entities, so
+    // the patch path is taken (not a rebuild).
+    ok &= SceneSerializer::patchFromString(reg, lights, frame0);
+
+    // Same entity ids — the whole point (editor selection keyed on ids survives).
+    ok &= reg.transforms.has(parent) && reg.transforms.has(child);
+    // State restored to frame 0.
+    ok &= xOf(reg, parent) == 1.0f && xOf(reg, child) == 2.0f;
+    ok &= reg.rigidBodies.get(child).velocity.y == -4.0f;
+    // Hierarchy restored.
+    ok &= reg.hierarchy.get(child).parent == parent;
+    // Runtime script latch reset on restore.
+    ok &= reg.scripts.get(parent).started == false;
+
+    // Structural mismatch (extra entity) → patch declines WITHOUT mutating, so the
+    // caller knows to fall back to a full rebuild.
+    const Entity extra = reg.createEntity();
+    reg.transforms.add(extra, { transformAtX(5.0f) });
+    ok &= !SceneSerializer::patchFromString(reg, lights, frame0);
+    ok &= reg.transforms.has(extra) && xOf(reg, extra) == 5.0f; // untouched
+
+    return ok;
+}
+
 // --- Serializer: save produces the expected scene text (round-trip load needs
 // a device, so this is save-only) ------------------------------------------
 inline bool testSerializer() {
@@ -467,6 +524,7 @@ inline bool run() {
         { "Physics",          testPhysics },
         { "SystemScheduler",  testSystemScheduler },
         { "ComponentAccess",  testComponentAccess },
+        { "SnapshotPatch",    testSnapshotPatch },
         { "Serializer",       testSerializer },
         { "BehaviorRegistry", testBehaviorRegistry },
         { "RegistryGraph",    testRegistryGraph },
