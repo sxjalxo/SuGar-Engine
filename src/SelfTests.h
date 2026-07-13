@@ -36,19 +36,7 @@ inline float xOf(Registry& registry, Entity entity) {
     return registry.transforms.get(entity).transform.position.x;
 }
 
-// Test-only command that emits a fixed remap from redo, to exercise the history's
-// remap propagation without the serializer/ResourceManager.
-class RemapEmitter : public EditorCommand {
-public:
-    explicit RemapEmitter(EntityRemap mapping) : mapping(std::move(mapping)) {}
-    EntityRemap undo(Registry&) override { return {}; }
-    EntityRemap redo(Registry&) override { return mapping; }
-
-private:
-    EntityRemap mapping;
-};
-
-// --- CommandHistory: transactions, compression, entity remapping ------------
+// --- CommandHistory: transactions + compression -----------------------------
 inline bool testCommandHistory() {
     bool ok = true;
 
@@ -87,23 +75,36 @@ inline bool testCommandHistory() {
         ok &= xOf(reg, a) == 0.0f;
     }
 
-    { // remap repoints an older command after a recreate reassigns ids
+    return ok;
+}
+
+// --- EntityManager id recycling: recreate a destroyed id in place (Phase 14B).
+// The primitive behind deleting the command remap layer — a destroyed subtree
+// comes back with its original ids, so command references stay valid. ----------
+inline bool testEntityIdRecycling() {
+    bool ok = true;
+
+    { // a destroyed id can be recreated exactly, and isn't handed out twice
         Registry reg;
         const Entity a = reg.createEntity();
         const Entity b = reg.createEntity();
-        reg.transforms.add(a, { transformAtX(0.0f) });
-        reg.transforms.add(b, { transformAtX(0.0f) });
-        CommandHistory history;
-        reg.transforms.get(a).transform = transformAtX(1.0f);
-        history.push(std::make_unique<TransformCommand>(a, transformAtX(0.0f), transformAtX(1.0f)));
-        history.push(std::make_unique<RemapEmitter>(EntityRemap{ { a, b } }));
-        history.undo(reg); // emitter
-        history.undo(reg); // transform (a -> 0)
-        history.redo(reg); // transform (a -> 1)
-        history.redo(reg); // emitter remaps transform a -> b
-        history.undo(reg); // emitter
-        history.undo(reg); // transform now targets b -> 0
-        ok &= xOf(reg, b) == 0.0f && xOf(reg, a) == 1.0f;
+        reg.transforms.add(a, {});
+        reg.transforms.add(b, {});
+        reg.destroyEntity(b);
+
+        const Entity recreated = reg.createEntityWithId(b);
+        ok &= recreated == b;               // same id, as commands rely on
+        ok &= reg.createEntity() != a && reg.createEntity() != b; // never double-issued
+    }
+
+    { // reserving a future id banks the skipped ids for later createEntity()
+        Registry reg;
+        const Entity first = reg.createEntity(); // 1
+        const Entity target = first + 5;
+        ok &= reg.createEntityWithId(target) == target;
+        // The gap (first+1 .. target-1) is now free and gets handed out next.
+        const Entity next = reg.createEntity();
+        ok &= next > first && next < target;
     }
 
     return ok;
@@ -519,6 +520,7 @@ inline bool run() {
     const Case cases[] = {
         { "CoreBoundary",     testCoreBoundary },
         { "CommandHistory",   testCommandHistory },
+        { "EntityIdRecycling", testEntityIdRecycling },
         { "EntityQuery",      testEntityQuery },
         { "SnapshotStorage",  testSnapshotStorage },
         { "Physics",          testPhysics },

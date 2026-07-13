@@ -42,6 +42,13 @@ public:
         return entityManager.createEntity();
     }
 
+    // Recreates an entity with a specific id (Phase 14B) — used to restore a
+    // destroyed subtree into its original ids so editor command references stay
+    // valid without a remap layer. See EntityManager::createEntityWithId.
+    Entity createEntityWithId(Entity id) {
+        return entityManager.createEntityWithId(id);
+    }
+
     void destroyEntity(Entity entity) {
         detachFromParent(entity);
         releaseResources(entity);

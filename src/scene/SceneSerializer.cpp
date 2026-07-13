@@ -827,7 +827,11 @@ PendingEntityData parseEntityObject(const JsonValue& objectValue, int sceneVersi
 // (indices are relative to this array). Does NOT reset the registry, so it is
 // reused both for full scene loads (after a reset) and prefab instantiation
 // (additive). Returns the created entities in object order.
-std::vector<Entity> createEntitiesFromObjects(Registry& registry, const std::vector<JsonValue>& objectValues, int sceneVersion) {
+// When `forcedIds` is non-null it must have one id per object; each entity is
+// recreated with that exact id (Phase 14B — restoring a destroyed subtree into
+// its original ids) instead of a freshly allocated one.
+std::vector<Entity> createEntitiesFromObjects(Registry& registry, const std::vector<JsonValue>& objectValues,
+                                              int sceneVersion, const std::vector<Entity>* forcedIds = nullptr) {
     std::vector<PendingEntityData> pendingEntities;
     pendingEntities.reserve(objectValues.size());
     for (const JsonValue& objectValue : objectValues) {
@@ -837,8 +841,11 @@ std::vector<Entity> createEntitiesFromObjects(Registry& registry, const std::vec
     std::vector<Entity> createdEntities;
     createdEntities.reserve(pendingEntities.size());
 
-    for (const PendingEntityData& pendingEntity : pendingEntities) {
-        const Entity entity = registry.createEntity();
+    for (size_t entityIndex = 0; entityIndex < pendingEntities.size(); entityIndex++) {
+        const PendingEntityData& pendingEntity = pendingEntities[entityIndex];
+        const Entity entity = forcedIds != nullptr
+            ? registry.createEntityWithId((*forcedIds)[entityIndex])
+            : registry.createEntity();
         createdEntities.push_back(entity);
 
         registry.names.add(entity, { pendingEntity.name });
@@ -1277,6 +1284,33 @@ Entity SceneSerializer::instantiateFromString(Registry& registry, const std::str
         if (outCreated != nullptr) {
             *outCreated = created;
         }
+        return created.empty() ? INVALID_ENTITY : created.front();
+    } catch (...) {
+        return INVALID_ENTITY;
+    }
+}
+
+Entity SceneSerializer::instantiateFromStringWithIds(Registry& registry, const std::string& text,
+                                                     const std::vector<Entity>& ids) {
+    try {
+        const JsonValue rootValue = JsonParser(text).parse();
+        const auto& root = requireObject(rootValue, "prefab root");
+
+        int prefabVersion = 2;
+        const auto version = root.find("version");
+        if (version != root.end()) {
+            prefabVersion = getIntValue(version->second, "version");
+        }
+
+        const auto& objectValues = requireArray(requireObjectField(root, "objects"), "objects");
+        // The id list must line up with the serialized objects (they share order:
+        // both are the subtree's DFS order). A mismatch means the caller's stored
+        // ids are stale, so refuse rather than assign the wrong ids.
+        if (ids.size() != objectValues.size()) {
+            return INVALID_ENTITY;
+        }
+
+        const std::vector<Entity> created = createEntitiesFromObjects(registry, objectValues, prefabVersion, &ids);
         return created.empty() ? INVALID_ENTITY : created.front();
     } catch (...) {
         return INVALID_ENTITY;

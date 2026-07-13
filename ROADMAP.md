@@ -67,9 +67,9 @@ So the DX pillars are cheap to add later instead of expensive retrofits:
   "is this sane?" check each, aggregated into a single headless run
   (`SUGAR_SELFTEST=1` → `src/SelfTests.h`) that prints a per-test PASS/FAIL table
   **with timings** before the editor even launches. Covered today: CommandHistory,
-  EntityQuery, SnapshotStorage, Physics, SystemScheduler, ComponentAccess,
-  SnapshotPatch, Serializer (save), BehaviorRegistry, RegistryGraph, CoreBoundary.
-  Pending a small device harness: Serializer round-trip,
+  EntityIdRecycling, EntityQuery, SnapshotStorage, Physics, SystemScheduler,
+  ComponentAccess, SnapshotPatch, Serializer (save), BehaviorRegistry,
+  RegistryGraph, CoreBoundary. Pending a small device harness: Serializer round-trip,
   ResourceManager (need Vulkan).
 
 ---
@@ -199,10 +199,11 @@ reorder freely. **Finishing this phase closes M1 / Track A.**
     round-tripping it through `SceneSerializer::savePrefabToString` +
     `instantiateFromString` (so resource ref-counts are handled exactly like
     prefabs), parents the copy as a sibling, and selects it.
-  - Known limit: a `TransformCommand` recorded against a *duplicated* entity
+  - ~~Known limit: a `TransformCommand` recorded against a *duplicated* entity
     won't survive "undo past the duplicate, then redo" — the entity's id is
-    reassigned on re-instantiate. Acceptable edge case for a command-based
-    history; an id-remapping or snapshot layer is the eventual fix.
+    reassigned on re-instantiate.~~ *(Fixed in 11A via remapping, then more
+    fundamentally in 14B: recreate preserves the original ids, so the reassignment
+    never happens.)*
 - **10C — Assets, components & prefabs**  (DONE)
   - **Multi-select** — Ctrl-click in the hierarchy or viewport extends the
     selection; `selectedEntity` stays the "primary" (inspector + gizmo target)
@@ -244,20 +245,19 @@ introspection on top of it. Resolves the id-stability limitation from 10B/10C.
   undo step, and abort rolls them back. Multi-select duplicate/delete now use it
   (replacing the ad-hoc `CompositeCommand`).
 - **Persistent command IDs** — each stored history entry gets a stable
-  per-session id (for introspection / future history serialization);
-  `undo`/`redo` return an `EntityRemap` so identity is tracked across recreate.
-- **Entity remapping** — `EditorCommand::remap(old→new)`. When a subtree command
-  re-instantiates a destroyed subtree (duplicate/delete undo↔redo), it builds an
-  old→new id map (zipping serialization order) and the history rewrites every
-  other command's stored ids. Fixes "undo past a duplicate, then redo."
+  per-session id (for introspection / future history serialization).
+- **Entity remapping** — *(superseded, then deleted in Phase 14B.)* Originally,
+  when a subtree command re-instantiated a destroyed subtree (duplicate/delete
+  undo↔redo) it built an old→new id map and the history rewrote every other
+  command's stored ids ("undo past a duplicate, then redo"). Phase 14B removed the
+  need: recreation now restores the subtree into its **original** ids
+  (`createEntityWithId`), so references stay valid and the entire remap layer
+  (`EntityRemap`, `EditorCommand::remap`, id-zipping, history rewrite) was deleted.
 - **Command compression** — `EditorCommand::tryMerge`; `push` lets the top entry
   absorb a same-target follow-up (e.g. consecutive `TransformCommand`s on one
   entity) to keep history granular-but-not-noisy.
-- Verified by an opt-in self-test (`EditorCommandSelfTest`, run with
-  `SUGAR_SELFTEST=1`) covering all three behaviours on a throwaway registry.
-- Known limit: `LambdaCommand` (component add/remove) captures ids in closures
-  and isn't remap-aware — fine since those entities aren't recreated by other
-  commands; revisit if that changes.
+- Verified by an opt-in self-test (run with `SUGAR_SELFTEST=1`): transactions +
+  compression (`CommandHistory`), and id recycling (`EntityIdRecycling`).
 
 #### Phase 11B — Live introspection & time travel  (DONE)
 - **Snapshot ring-buffer + time-travel scrubbing** (DONE) — a `std::deque` of
@@ -493,14 +493,28 @@ selection and why Stop drops your undo stack.
   resets the script `started` latch, **with the same entity ids**, and a structural
   mismatch declines without touching the registry.
 
-#### Phase 14B — Delete the remap machinery  (later)
-The 11A entity-remap system exists because the *editor-command* recreate path
-(duplicate / delete undo↔redo) re-instantiates subtrees with fresh ids, forcing
-every other command's stored ids to be rewritten. Convert that path to the same
-patch-in-place approach (recreate into the *same* ids) and the remap machinery —
-`EditorCommand::remap`, the old→new id zipping, the history rewrite — can be
-**deleted outright**. New capability removing old complexity; the satisfying kind.
-(Not free in 14A: 14A only covers snapshot restore, a different path.)
+#### Phase 14B — Delete the remap machinery  (DONE)
+The 11A entity-remap system existed because the *editor-command* recreate path
+(duplicate / delete undo↔redo) re-instantiated subtrees with **fresh** ids,
+forcing every other command's stored ids to be rewritten. 14B recreates the
+subtree into its **original** ids instead, so references stay valid and the whole
+remap layer was **deleted outright** — a new capability removing old complexity.
+- **`EntityManager::createEntityWithId(id)`** (+ `Registry` passthrough) — recreates
+  a specific id: claims it from the free list, or advances the id counter to it and
+  banks the skipped ids. Sound under linear-history semantics: a subtree's original
+  ids are always free at recreate time, because the counterpart destroy always
+  precedes re-allocation (verified by the `EntityIdRecycling` self-test).
+- **`SceneSerializer::instantiateFromStringWithIds`** — recreates a serialized
+  subtree assigning caller-supplied ids (one per object, same DFS order) instead of
+  fresh ones. `CreateSubtreeCommand` / `DeleteSubtreeCommand` capture their ids once
+  at first creation and recreate into them on every undo/redo.
+- **Deleted:** `EntityRemap`, `EditorCommand::remap` (+ every override),
+  `CommandHistory::applyRemap` and its call sites, `buildRemap` / `remapped`, the
+  `TransactionEntry` / `CompositeCommand` remap plumbing, and the `RemapEmitter`
+  self-test. `undo()` / `redo()` now return `void`. Net: **more deleted than added.**
+- Because ids are stable across recreate, `LambdaCommand` (component add/remove)
+  capturing raw ids in its closures is now correct by construction — the old
+  "not remap-aware" caveat is gone.
 
 ---
 

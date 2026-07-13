@@ -24,6 +24,11 @@ compile_commands.json
 # Generated at runtime (ImGui window layout)
 imgui.ini
 
+# Hot-reload: uniquely-named live copies of the game DLL the loader makes each
+# reload (Phase 12C). Normally created in the build output dir, but ignore them
+# anywhere in case the executable is run from elsewhere.
+*_live_*.dll
+
 # OS files
 Thumbs.db
 .DS_Store

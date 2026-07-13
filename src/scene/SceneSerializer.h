@@ -43,11 +43,19 @@ public:
     // Used by the editor's duplicate/undo so a copied subtree goes through the
     // exact same component + resource-refcount path as prefabs. Empty string /
     // INVALID_ENTITY on failure. `outCreated`, if given, receives every created
-    // entity in object order (root first) — the editor uses this to build an
-    // old->new id remap when a subtree is recreated.
+    // entity in object order (root first) — the editor records these as the ids to
+    // recreate the subtree into on a later undo/redo (see instantiateFromStringWithIds).
     static std::string savePrefabToString(const Registry& registry, Entity root);
     static Entity instantiateFromString(Registry& registry, const std::string& text,
                                         std::vector<Entity>* outCreated = nullptr);
+
+    // Like instantiateFromString, but recreates the subtree with the caller-supplied
+    // entity ids (one per serialized object, same DFS order) instead of fresh ones
+    // (Phase 14B). Lets delete-undo / duplicate-redo restore a subtree into its
+    // *original* ids, so editor-command references survive without a remap layer.
+    // Returns the root, or INVALID_ENTITY if `ids` doesn't match the object count.
+    static Entity instantiateFromStringWithIds(Registry& registry, const std::string& text,
+                                               const std::vector<Entity>& ids);
 
     // Gathers `root` + its descendants in the same order serialization uses
     // (root first). Lets the editor record the pre-delete id order for remapping.

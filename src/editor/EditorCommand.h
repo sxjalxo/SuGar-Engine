@@ -2,41 +2,34 @@
 
 #include <cstdint>
 #include <memory>
-#include <unordered_map>
 #include <vector>
 
 #include "ecs/Entity.h"
 
 class Registry;
 
-// Maps old entity ids to new ones after a subtree is destroyed and recreated
-// (duplicate/delete undo, prefab respawn). Returned by undo()/redo() so the
-// history can patch every *other* command that still references the old ids.
-using EntityRemap = std::unordered_map<Entity, Entity>;
-
 // Base for an editor action that can be undone and redone. Commands record an
 // *already-applied* change (the editor mutates the registry, then pushes a
-// command describing how to reverse/replay it). undo()/redo() return an
-// EntityRemap when they reassign entity ids (usually empty).
+// command describing how to reverse/replay it).
+//
+// Since Phase 14B, a destroyed subtree is recreated into its *original* entity
+// ids (see SceneSerializer::instantiateFromStringWithIds), so any raw ids a
+// command stores stay valid across a destroy/recreate — no id-remap layer needed.
 class EditorCommand {
 public:
     virtual ~EditorCommand() = default;
 
-    virtual EntityRemap undo(Registry& registry) = 0;
-    virtual EntityRemap redo(Registry& registry) = 0;
-
-    // Rewrite any entity ids this command stores, given an old->new mapping.
-    virtual void remap(const EntityRemap& mapping) { (void)mapping; }
+    virtual void undo(Registry& registry) = 0;
+    virtual void redo(Registry& registry) = 0;
 
     // Compression: if this command can absorb `next` (same target/kind, applied
     // back-to-back), fold `next` into this one and return true. Default: no.
     virtual bool tryMerge(const EditorCommand& next) { (void)next; return false; }
 };
 
-// Linear undo/redo stack with transactions, command-id stamping, entity
-// remapping, and adjacent-command compression. Cleared when the scene is
-// replaced wholesale (remapping handles *within-session* recreation; a full
-// scene reload is a different identity space).
+// Linear undo/redo stack with transactions, command-id stamping, and
+// adjacent-command compression. Cleared when the scene is replaced wholesale
+// (a full scene reload is a different identity space).
 class CommandHistory {
 public:
     // --- transactions -------------------------------------------------------
@@ -93,14 +86,14 @@ public:
             return;
         }
         --index;
-        applyRemap(entries[index].command->undo(registry), index);
+        entries[index].command->undo(registry);
     }
 
     void redo(Registry& registry) {
         if (!canRedo()) {
             return;
         }
-        applyRemap(entries[index].command->redo(registry), index);
+        entries[index].command->redo(registry);
         ++index;
     }
 
@@ -115,37 +108,24 @@ public:
 
 private:
     // One CompositeCommand-like accumulator used while a transaction is open.
+    // Children undo in reverse of the order they were applied.
     class TransactionEntry : public EditorCommand {
     public:
         void add(std::unique_ptr<EditorCommand> command) { children.push_back(std::move(command)); }
         bool empty() const { return children.empty(); }
 
-        EntityRemap undo(Registry& registry) override {
-            EntityRemap combined;
+        void undo(Registry& registry) override {
             for (auto it = children.rbegin(); it != children.rend(); ++it) {
-                mergeRemap(combined, (*it)->undo(registry));
+                (*it)->undo(registry);
             }
-            return combined;
         }
-        EntityRemap redo(Registry& registry) override {
-            EntityRemap combined;
+        void redo(Registry& registry) override {
             for (auto& child : children) {
-                mergeRemap(combined, child->redo(registry));
-            }
-            return combined;
-        }
-        void remap(const EntityRemap& mapping) override {
-            for (auto& child : children) {
-                child->remap(mapping);
+                child->redo(registry);
             }
         }
 
     private:
-        static void mergeRemap(EntityRemap& into, const EntityRemap& from) {
-            for (const auto& [oldId, newId] : from) {
-                into[oldId] = newId;
-            }
-        }
         std::vector<std::unique_ptr<EditorCommand>> children;
     };
 
@@ -158,19 +138,6 @@ private:
         entries.resize(index); // discard any redoable tail
         entries.push_back(Entry{std::move(command), ++nextCommandId});
         index = entries.size();
-    }
-
-    // Patch every command except the one at `sourceIndex` with the id remap a
-    // recreate produced, so references stay valid across destroy/recreate.
-    void applyRemap(const EntityRemap& mapping, size_t sourceIndex) {
-        if (mapping.empty()) {
-            return;
-        }
-        for (size_t i = 0; i < entries.size(); ++i) {
-            if (i != sourceIndex) {
-                entries[i].command->remap(mapping);
-            }
-        }
     }
 
     std::vector<Entry> entries;

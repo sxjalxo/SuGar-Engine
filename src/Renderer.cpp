@@ -1777,7 +1777,7 @@ void Renderer::deleteSelectedEntities() {
         }
         const std::string data = SceneSerializer::savePrefabToString(*registry, entity);
         std::vector<Entity> order;
-        SceneSerializer::collectSubtreeEntities(*registry, entity, order); // record id order for remap
+        SceneSerializer::collectSubtreeEntities(*registry, entity, order); // ids to recreate into on undo
         Entity parent = INVALID_ENTITY;
         if (registry->hierarchy.has(entity)) {
             parent = registry->hierarchy.get(entity).parent;

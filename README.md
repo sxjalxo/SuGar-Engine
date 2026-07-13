@@ -18,11 +18,12 @@ quaternion transforms; a hand-rolled audio mixer; and an editor with scene
 picking, gizmos, undo/redo, duplicate/delete, multi-select, hierarchy
 reparenting, and component management — all on top of the Vulkan renderer, asset
 pipeline, hot reload, and shadow mapping. **Track B (the wedge) is well underway**:
-a hardened editor command system (transactions, entity remapping, compression),
+a hardened editor command system (transactions, id-stable recreate, compression),
 **time-travel debugging** (snapshot ring-buffer + timeline scrubbing + frame
-stepping), an ECS query console, and — the headline — **code hot reload**: a
-layered `Editor -> Engine -> Core` split with gameplay in a DLL that hot-swaps
-live when recompiled, state preserved.
+stepping) with in-place restore that keeps your selection/undo, an ECS query
+console, and — the headline — **code hot reload**: a layered
+`Editor -> Engine -> Core` split with gameplay in a DLL that hot-swaps live when
+recompiled, state preserved.
 
 > Positioning: *"A Vulkan engine designed for instant iteration and debuggable
 > systems — not just rendering power."* Open-source, dev-led, aimed at indie devs.
@@ -217,8 +218,8 @@ $env:SUGAR_SELFTEST = "1"; build\Debug\SuGarEngine.exe; $env:SUGAR_SELFTEST = ""
 ```
 
 Prints a per-test PASS/FAIL table (with timings) for CoreBoundary, CommandHistory,
-EntityQuery, SnapshotStorage, Physics, SystemScheduler, ComponentAccess,
-SnapshotPatch, Serializer, BehaviorRegistry, and RegistryGraph.
+EntityIdRecycling, EntityQuery, SnapshotStorage, Physics, SystemScheduler,
+ComponentAccess, SnapshotPatch, Serializer, BehaviorRegistry, and RegistryGraph.
 
 ### System access enforcement
 
@@ -261,9 +262,10 @@ Full plan in [ROADMAP.md](ROADMAP.md). Summary:
   Parallel execution + incremental rebuilds deferred by design (nothing independent
   to parallelize yet; async fights time-travel). **Phase 14A** *done* — in-place
   state restore: snapshot restore patches the live entities instead of rebuilding,
-  so selection/inspector/undo survive scrub + Stop. Later: 14B deletes the 11A
-  remap machinery by converting the editor-command recreate path too; binary/delta
-  snapshots; query growth; reload only affected systems
+  so selection/inspector/undo survive scrub + Stop. **Phase 14B** *done* — recreate
+  preserves original entity ids (`createEntityWithId`), so the entire 11A id-remap
+  layer was deleted (more code removed than added). Later: binary/delta snapshots;
+  query growth; reload only affected systems
 * **Track C** — graphics, cross-platform, packaging, ecosystem
 
 ---

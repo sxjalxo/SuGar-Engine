@@ -38,35 +38,17 @@ inline void destroyEntitySubtree(Registry& registry, Entity root) {
     }
 }
 
-inline Entity remapped(const EntityRemap& mapping, Entity entity) {
-    const auto it = mapping.find(entity);
-    return it == mapping.end() ? entity : it->second;
-}
-
-// Builds an old->new id map by zipping two id lists that share an order (the
-// serialization object order). Entries that didn't change are omitted.
-inline EntityRemap buildRemap(const std::vector<Entity>& oldIds, const std::vector<Entity>& newIds) {
-    EntityRemap mapping;
-    const size_t count = std::min(oldIds.size(), newIds.size());
-    for (size_t i = 0; i < count; ++i) {
-        if (oldIds[i] != newIds[i]) {
-            mapping.emplace(oldIds[i], newIds[i]);
-        }
-    }
-    return mapping;
-}
-
 // A command defined by two closures. Used for small, self-contained edits (e.g.
-// adding/removing a value-only component). NOTE: it captures entity ids in its
-// closures, so it is not remap-aware — fine for edits on entities that aren't
-// destroyed/recreated by other commands in the same history.
+// adding/removing a value-only component). It captures entity ids in its closures;
+// since Phase 14B recreation preserves ids, those references stay valid across a
+// destroy/recreate.
 class LambdaCommand : public EditorCommand {
 public:
     LambdaCommand(std::function<void(Registry&)> redoFn, std::function<void(Registry&)> undoFn)
         : redoFn(std::move(redoFn)), undoFn(std::move(undoFn)) {}
 
-    EntityRemap undo(Registry& registry) override { if (undoFn) undoFn(registry); return {}; }
-    EntityRemap redo(Registry& registry) override { if (redoFn) redoFn(registry); return {}; }
+    void undo(Registry& registry) override { if (undoFn) undoFn(registry); }
+    void redo(Registry& registry) override { if (redoFn) redoFn(registry); }
 
 private:
     std::function<void(Registry&)> redoFn;
@@ -82,47 +64,31 @@ public:
     bool empty() const { return children.empty(); }
     size_t size() const { return children.size(); }
 
-    EntityRemap undo(Registry& registry) override {
-        EntityRemap combined;
+    void undo(Registry& registry) override {
         for (auto it = children.rbegin(); it != children.rend(); ++it) {
-            merge(combined, (*it)->undo(registry));
+            (*it)->undo(registry);
         }
-        return combined;
     }
-    EntityRemap redo(Registry& registry) override {
-        EntityRemap combined;
+    void redo(Registry& registry) override {
         for (auto& child : children) {
-            merge(combined, child->redo(registry));
-        }
-        return combined;
-    }
-    void remap(const EntityRemap& mapping) override {
-        for (auto& child : children) {
-            child->remap(mapping);
+            child->redo(registry);
         }
     }
 
 private:
-    static void merge(EntityRemap& into, const EntityRemap& from) {
-        for (const auto& [oldId, newId] : from) {
-            into[oldId] = newId;
-        }
-    }
     std::vector<std::unique_ptr<EditorCommand>> children;
 };
 
-// Transform edit from the gizmo or the inspector. Entity persists across the
-// edit; remap keeps the reference valid if the entity is later recreated, and
-// tryMerge coalesces back-to-back edits of the same entity into one step.
+// Transform edit from the gizmo or the inspector. The entity's id is stable across
+// destroy/recreate (Phase 14B), so the stored reference stays valid; tryMerge
+// coalesces back-to-back edits of the same entity into one step.
 class TransformCommand : public EditorCommand {
 public:
     TransformCommand(Entity entity, const Transform& before, const Transform& after)
         : entity(entity), before(before), after(after) {}
 
-    EntityRemap undo(Registry& registry) override { apply(registry, before); return {}; }
-    EntityRemap redo(Registry& registry) override { apply(registry, after); return {}; }
-
-    void remap(const EntityRemap& mapping) override { entity = remapped(mapping, entity); }
+    void undo(Registry& registry) override { apply(registry, before); }
+    void redo(Registry& registry) override { apply(registry, after); }
 
     bool tryMerge(const EditorCommand& next) override {
         const auto* other = dynamic_cast<const TransformCommand*>(&next);
@@ -151,14 +117,8 @@ public:
     ReparentCommand(Entity child, Entity oldParent, Entity newParent)
         : child(child), oldParent(oldParent), newParent(newParent) {}
 
-    EntityRemap undo(Registry& registry) override { trySetParent(registry, oldParent); return {}; }
-    EntityRemap redo(Registry& registry) override { trySetParent(registry, newParent); return {}; }
-
-    void remap(const EntityRemap& mapping) override {
-        child = remapped(mapping, child);
-        oldParent = remapped(mapping, oldParent);
-        newParent = remapped(mapping, newParent);
-    }
+    void undo(Registry& registry) override { trySetParent(registry, oldParent); }
+    void redo(Registry& registry) override { trySetParent(registry, newParent); }
 
 private:
     void trySetParent(Registry& registry, Entity parent) {
@@ -174,86 +134,63 @@ private:
 };
 
 // Creation of an entity subtree (duplicate). Stored serialized so redo
-// re-instantiates through the same path as prefabs. `currentEntities` tracks the
-// subtree's ids (object order, root first); on each recreate it yields an
-// old->new remap so other commands referencing this subtree stay valid.
+// re-instantiates through the same path as prefabs. `entities` are the subtree's
+// ids in object order (root first), captured at first creation; redo recreates
+// into those *same* ids (Phase 14B), so any other command referencing this
+// subtree stays valid with no remap.
 class CreateSubtreeCommand : public EditorCommand {
 public:
     CreateSubtreeCommand(std::string serialized, Entity parent, std::vector<Entity> created)
-        : serialized(std::move(serialized)), parent(parent), currentEntities(std::move(created)) {}
+        : serialized(std::move(serialized)), parent(parent), entities(std::move(created)) {}
 
-    EntityRemap undo(Registry& registry) override {
+    void undo(Registry& registry) override {
         destroyEntitySubtree(registry, root());
-        return {}; // ids kept in currentEntities as the "old" side for the next redo
     }
 
-    EntityRemap redo(Registry& registry) override {
-        std::vector<Entity> created;
-        const Entity newRoot = SceneSerializer::instantiateFromString(registry, serialized, &created);
+    void redo(Registry& registry) override {
+        const Entity newRoot = SceneSerializer::instantiateFromStringWithIds(registry, serialized, entities);
         if (newRoot != INVALID_ENTITY && parent != INVALID_ENTITY && registry.transforms.has(parent)) {
             try {
                 registry.setParent(newRoot, parent);
             } catch (...) {
             }
         }
-        EntityRemap mapping = buildRemap(currentEntities, created);
-        currentEntities = std::move(created);
-        return mapping;
-    }
-
-    void remap(const EntityRemap& mapping) override {
-        parent = remapped(mapping, parent);
-        for (Entity& entity : currentEntities) {
-            entity = remapped(mapping, entity);
-        }
     }
 
 private:
-    Entity root() const { return currentEntities.empty() ? INVALID_ENTITY : currentEntities.front(); }
+    Entity root() const { return entities.empty() ? INVALID_ENTITY : entities.front(); }
 
     std::string serialized;
     Entity parent;
-    std::vector<Entity> currentEntities;
+    std::vector<Entity> entities;
 };
 
 // Deletion of an entity subtree — the mirror of CreateSubtreeCommand. The caller
 // has already destroyed the subtree (after recording its serialized form and id
-// order), so undo re-instantiates + remaps, and redo destroys again.
+// order), so undo re-instantiates into the original ids and redo destroys again.
 class DeleteSubtreeCommand : public EditorCommand {
 public:
     DeleteSubtreeCommand(std::string serialized, Entity parent, std::vector<Entity> deletedOrder)
-        : serialized(std::move(serialized)), parent(parent), currentEntities(std::move(deletedOrder)) {}
+        : serialized(std::move(serialized)), parent(parent), entities(std::move(deletedOrder)) {}
 
-    EntityRemap undo(Registry& registry) override {
-        std::vector<Entity> created;
-        const Entity newRoot = SceneSerializer::instantiateFromString(registry, serialized, &created);
+    void undo(Registry& registry) override {
+        const Entity newRoot = SceneSerializer::instantiateFromStringWithIds(registry, serialized, entities);
         if (newRoot != INVALID_ENTITY && parent != INVALID_ENTITY && registry.transforms.has(parent)) {
             try {
                 registry.setParent(newRoot, parent);
             } catch (...) {
             }
         }
-        EntityRemap mapping = buildRemap(currentEntities, created);
-        currentEntities = std::move(created);
-        return mapping;
     }
 
-    EntityRemap redo(Registry& registry) override {
+    void redo(Registry& registry) override {
         destroyEntitySubtree(registry, root());
-        return {};
-    }
-
-    void remap(const EntityRemap& mapping) override {
-        parent = remapped(mapping, parent);
-        for (Entity& entity : currentEntities) {
-            entity = remapped(mapping, entity);
-        }
     }
 
 private:
-    Entity root() const { return currentEntities.empty() ? INVALID_ENTITY : currentEntities.front(); }
+    Entity root() const { return entities.empty() ? INVALID_ENTITY : entities.front(); }
 
     std::string serialized;
     Entity parent;
-    std::vector<Entity> currentEntities;
+    std::vector<Entity> entities;
 };
