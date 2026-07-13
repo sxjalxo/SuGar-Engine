@@ -57,15 +57,19 @@ So the DX pillars are cheap to add later instead of expensive retrofits:
   in private fields of a behavior object. (This is what makes hot reload + time
   travel possible at all.)
 - **Systems are pure-ish functions** `(World, dt) → mutations`, with declared
-  read/write sets. No system reaches into another's internals.
+  read/write sets. No system reaches into another's internals. *(Enforced since
+  Phase 13B: the ECS records every component access and the scheduler flags
+  anything a system didn't declare — Warn on by default in Debug / editor Systems
+  panel, `SUGAR_STRICT=1` for fail-fast CI.)*
 - **Everything round-trips** through serialization. If it can't be snapshotted,
   it can't exist in gameplay state.
 - **Every subsystem has a confidence self-test.** Not exhaustive — one quick
   "is this sane?" check each, aggregated into a single headless run
   (`SUGAR_SELFTEST=1` → `src/SelfTests.h`) that prints a per-test PASS/FAIL table
   **with timings** before the editor even launches. Covered today: CommandHistory,
-  EntityQuery, SnapshotStorage, Physics, SystemScheduler, Serializer (save),
-  BehaviorRegistry, RegistryGraph, CoreBoundary. Pending a small device harness: Serializer round-trip,
+  EntityQuery, SnapshotStorage, Physics, SystemScheduler, ComponentAccess,
+  Serializer (save), BehaviorRegistry, RegistryGraph, CoreBoundary.
+  Pending a small device harness: Serializer round-trip,
   ResourceManager (need Vulkan).
 
 ---
@@ -378,17 +382,90 @@ becomes *declared* systems with explicit data dependencies.
 - Verified by the `SystemScheduler` self-test (`SUGAR_SELFTEST=1`): deterministic
   order, hazard detection, and stage grouping on synthetic systems.
 
-#### Phase 13B+ — remaining scheduling work  (later)
-- **Parallel execution** — actually run each `stages()` group concurrently, opt-in
-  per-system where it's provably independent (async-first, Pillar 5). Requires
-  narrowing the broad script/dispatch write declarations so real independence
-  appears; today everything conflicts, so the schedule is a single ordered file.
-- **Dependency-aware incremental rebuilds** at system granularity (Pillar 2).
-- Architecture **lints / guard rails** — enforce declared access at runtime (a
-  system mutating an undeclared storage is rejected), reject hidden-coupling
-  patterns early (Pillar 4).
+#### Phase 13B — Access enforcement & architecture guard rails  (DONE)  *(Pillar 4)*
+13A let systems *declare* their read/write sets; nothing checked the declarations
+were true. 13B makes the ECS report what each system actually touches and flags
+anything it didn't declare — the "you can't easily write bad architecture here"
+pillar, and the prerequisite for trusting the masks enough to parallelize on them.
+- **`ComponentAccess`** (Core, `src/ecs/ComponentAccess.{h,cpp}`) — `ComponentType`
+  / `ComponentMask` moved here; a `ComponentTraits<T>` map from component struct →
+  type bit (specialized in `Registry.h`, in lockstep with the storages); a
+  `ComponentAccessTracker` accumulating **touched** and **mutated** masks; and a
+  scoped, DLL-shared active-tracker slot (a function-local `thread_local` in Core's
+  `.cpp` — a header inline variable would give the exe and each DLL their own copy
+  under MSVC COMDAT folding, the same trap `BehaviorRegistry` avoids).
+- **`ComponentStorage` instrumented** — const paths (`get() const`, `has`,
+  `getAll() const`) record a **read**; mutating paths (`add`/`remove`/`clear`/
+  non-const `get`/`getAll`) hand out a mutable reference and record a **write**.
+  This is what makes reading through a `const Registry&` load-bearing: it's how a
+  read-only system *proves* it is one.
+- **`SystemScheduler` enforcement** — `setEnforcement(Warn)` runs each system inside
+  a tracker scope and reports `touched & ~(reads|writes)` (undeclared coupling) and
+  `mutated & ~writes` (declared read-only, mutated anyway). Warn, not halt: a wrong
+  declaration shouldn't kill the session you're debugging. Each distinct violation
+  is reported once per system, not every fixed step. Enabled with `SUGAR_STRICT=1`.
+- **Zero release cost** — all recording is behind `SUGAR_ACCESS_TRACKING`, set by
+  CMake on Core as `PUBLIC` for Debug only (PUBLIC because `ComponentStorage` is a
+  header template also instantiated in the engine and the game DLL; all three
+  modules must agree). Release keeps the bare storage ops; enforcement is inert.
+- **It immediately found a real bug in 13A's declarations**: the Audio system
+  resolves spatial positions via `getWorldPosition`, which walks parent transforms
+  — an undeclared `Hierarchy` read. Fixed, along with const read paths in
+  `PhysicsWorld` (colliders), `AudioSystem` (listeners), and collision dispatch
+  (script names) that were reporting reads as writes.
+- Verified by the `ComponentAccess` self-test: read/write recording, a compliant
+  system reporting nothing, undeclared-access and mutated-read-only violations each
+  caught with the exact storages at fault, once-per-signature reporting, and the
+  **real `PhysicsWorld::step` staying inside the Physics system's declared masks**.
+
+#### Phase 13C — Editor Systems panel + always-on guard rail  (DONE)  *(Pillar 4)*
+Makes the 13B guard rail *visible*: the enforcement result becomes an editor view
+instead of a stderr line, and the pipeline's structure (order, access, parallel
+stages) is inspectable at a glance — the "make devs faster" tie-breaker.
+- **`Systems` panel** (`Renderer::drawSystemsPanel`) — three collapsing sections:
+  *Order & access* (each system with its `R:`/`W:` masks via `describeComponentMask`),
+  *Parallel stages* (`SystemScheduler::stages()`, a stage of >1 highlighted as
+  parallelizable — today each stage is one system, so the payoff of narrowing
+  declarations is visible as it lands), and *Access guard rail* (green when clean,
+  the exact undeclared storages per system when not; says "compiled out" in Release).
+- **Enforcement on by default in Debug** — `setupSystemSchedule` enables
+  `AccessEnforcement::Warn` whenever tracking is compiled in, so the panel
+  populates with no env var. Violations feed a bounded log on the scheduler
+  (`violationLog()`); `SUGAR_STRICT=1` additionally mirrors them to stderr for
+  headless/CI. Release keeps the bare storage ops (inert).
+- **Schedule built at construction** — `SuGarApp` builds the pipeline in its ctor
+  (was lazy on first update) so the editor can introspect it before Play; the
+  Renderer gets a `const SystemScheduler*` view.
+
+#### Phase 13D — Strict fail-fast enforcement  (DONE)  *(Pillar 4)*
+Completes the guard rail: Warn (editor default, panel-only) now has a fail-fast
+sibling for CI.
+- **`AccessEnforcement::Strict`** — the first undeclared access throws
+  `AccessViolationError` (a `std::logic_error` carrying the offending system +
+  storages), after the stderr report. In the engine it propagates out of the
+  fixed-step loop to `main`, surfacing as a nonzero exit. Enabled with
+  `SUGAR_STRICT=1`; the editor keeps Warn so a bad declaration never kills a live
+  session. Verified by the `ComponentAccess` self-test (rogue system throws,
+  compliant system doesn't).
+
+#### Phase 13E+ — remaining scheduling work  (later, low priority)
+- **Parallel execution (Pillar 5) — deferred by design, not just unbuilt.** The
+  four gameplay systems all conflict (Audio *reads* Transform, Physics *writes* it;
+  Script/CollisionDispatch declare broad writes because behaviors are
+  unconstrained), so `stages()` yields one system per stage — parallelism buys
+  nothing until behaviors can be split into narrowed-declaration systems. And async
+  is in direct tension with the time-travel wedge (see determinism note). So a
+  thread-pool executor is real infrastructure with no current payoff; revisit only
+  when a genuinely independent, hot system pair exists to justify it.
+- **Dependency-aware incremental rebuilds** at system granularity (Pillar 2) — the
+  C++ build is external (CMake/MSBuild) and the game DLL already rebuilds fast, so
+  system-granular native rebuild is low-value here; revisit if build times grow.
 - *Determinism note: async + time-travel are in tension. Default to a deterministic
   ordered schedule; opt into parallelism per-system where it's provably independent.*
+
+**Phase 13 core (Pillars 4 + the Pillar 5 foundation) complete.** Systems are
+declared, enforced, introspectable, and independence-analyzed; parallel execution
+and incremental rebuilds are deferred with rationale above.
 
 ---
 

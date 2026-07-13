@@ -42,6 +42,8 @@ add_library(SuGarCore SHARED
     src/ecs/Entity.h
     src/ecs/EntityManager.cpp
     src/ecs/EntityManager.h
+    src/ecs/ComponentAccess.cpp
+    src/ecs/ComponentAccess.h
     src/ecs/ComponentStorage.h
     src/ecs/Components.h
     src/ecs/Registry.h
@@ -72,6 +74,13 @@ target_include_directories(SuGarCore PUBLIC
 # without hand-annotating every declaration. Core's shared singletons (e.g.
 # BehaviorRegistry's table) then live in exactly one module.
 set_target_properties(SuGarCore PROPERTIES WINDOWS_EXPORT_ALL_SYMBOLS ON)
+
+# Component access tracking (Phase 13B) — the ECS reports every storage access so
+# the scheduler can enforce each system's declared read/write sets. A development
+# guard rail: Debug only, so release builds keep the bare storage ops. PUBLIC
+# because ComponentStorage is a header template instantiated in the engine and the
+# game DLL too; all three modules must agree on whether tracking is compiled in.
+target_compile_definitions(SuGarCore PUBLIC $<$<CONFIG:Debug>:SUGAR_ACCESS_TRACKING>)
 
 # --- Game module (hot-swappable) --------------------------------------------
 # Concrete gameplay behaviors, compiled into a DLL that links ONLY against Core.

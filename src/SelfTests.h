@@ -320,6 +320,142 @@ inline bool testSystemScheduler() {
     return ok;
 }
 
+// --- ComponentAccess: the ECS reports access; the scheduler enforces the
+// declared read/write sets (Phase 13B guard rail) -----------------------------
+inline bool testComponentAccess() {
+    // Tracking is compiled out of release builds, so enforcement is inert there.
+    // Report the mechanism as sane rather than failing a check it cannot observe.
+    if (!ComponentAccess::trackingEnabled()) {
+        return true;
+    }
+
+    bool ok = true;
+
+    { // const paths record reads, non-const paths record writes
+        Registry reg;
+        const Entity e = reg.createEntity();
+        ComponentAccessTracker tracker;
+        {
+            ComponentAccess::Scope scope(&tracker);
+            reg.transforms.add(e, {});                      // write Transform
+            const Registry& readOnly = reg;
+            (void)readOnly.transforms.get(e);               // read Transform
+            (void)readOnly.rigidBodies.has(e);              // read RigidBody
+        }
+        ok &= tracker.touched() == maskOf(ComponentType::Transform, ComponentType::RigidBody);
+        ok &= tracker.mutated() == maskOf(ComponentType::Transform);
+    }
+
+    { // a compliant system reports nothing; violations are surfaced with the
+      // exact storages at fault
+        Registry reg;
+        const Entity e = reg.createEntity();
+        reg.transforms.add(e, {});
+        reg.rigidBodies.add(e, RigidBodyComponent{});
+
+        std::vector<AccessViolation> violations;
+        SystemScheduler scheduler;
+        scheduler.setEnforcement(AccessEnforcement::Warn);
+        scheduler.setViolationHandler([&violations](const AccessViolation& v) { violations.push_back(v); });
+
+        // Declares what it does: reads Transform, writes RigidBody.
+        scheduler.add(System{"Compliant",
+                             maskOf(ComponentType::Transform),
+                             maskOf(ComponentType::RigidBody),
+                             [&reg, e](float) {
+                                 const Registry& readOnly = reg;
+                                 (void)readOnly.transforms.get(e);
+                                 reg.rigidBodies.get(e).mass = 2.0f;
+                             }});
+        // Reaches into Transform without declaring it at all.
+        scheduler.add(System{"Coupled", 0, maskOf(ComponentType::RigidBody),
+                             [&reg, e](float) {
+                                 reg.transforms.get(e).transform.position.x = 1.0f;
+                             }});
+        // Declares Transform read-only, then mutates it.
+        scheduler.add(System{"LyingReader", maskOf(ComponentType::Transform), 0,
+                             [&reg, e](float) {
+                                 reg.transforms.get(e).transform.position.y = 1.0f;
+                             }});
+
+        scheduler.run(1.0f / 60.0f);
+        ok &= violations.size() == 2;
+        if (violations.size() == 2) {
+            ok &= violations[0].system == "Coupled" &&
+                  violations[0].undeclaredAccess == maskOf(ComponentType::Transform) &&
+                  violations[0].undeclaredWrites == maskOf(ComponentType::Transform);
+            ok &= violations[1].system == "LyingReader" &&
+                  violations[1].undeclaredAccess == 0 && // Transform was declared...
+                  violations[1].undeclaredWrites == maskOf(ComponentType::Transform); // ...but read-only
+        }
+
+        // A repeated violation is reported once, not every fixed step.
+        violations.clear();
+        scheduler.run(1.0f / 60.0f);
+        ok &= violations.empty();
+    }
+
+    { // Strict enforcement throws on the first violation (fail-fast for CI)
+        Registry reg;
+        const Entity e = reg.createEntity();
+        reg.transforms.add(e, {});
+
+        SystemScheduler scheduler;
+        scheduler.setEnforcement(AccessEnforcement::Strict);
+        scheduler.add(System{"Rogue", 0, maskOf(ComponentType::RigidBody),
+                             [&reg, e](float) { reg.transforms.get(e).transform.position.x = 1.0f; }});
+        bool threw = false;
+        try {
+            scheduler.run(1.0f / 60.0f);
+        } catch (const AccessViolationError&) {
+            threw = true;
+        }
+        ok &= threw;
+
+        // A compliant system under Strict runs without throwing.
+        SystemScheduler clean;
+        clean.setEnforcement(AccessEnforcement::Strict);
+        clean.add(System{"Clean", 0, maskOf(ComponentType::Transform),
+                        [&reg, e](float) { reg.transforms.get(e).transform.position.y = 2.0f; }});
+        bool threwClean = false;
+        try {
+            clean.run(1.0f / 60.0f);
+        } catch (const AccessViolationError&) {
+            threwClean = true;
+        }
+        ok &= !threwClean;
+    }
+
+    { // the real physics step honors the Physics system's declared access:
+      // reads Collider, writes Transform + RigidBody, touches nothing else
+        Registry reg;
+        PhysicsWorld world;
+        const Entity e = reg.createEntity();
+        Transform t;
+        t.position = glm::vec3(0.0f, 10.0f, 0.0f);
+        reg.transforms.add(e, { t });
+        reg.rigidBodies.add(e, RigidBodyComponent{});
+        ColliderComponent collider{};
+        collider.type = ColliderType::Box;
+        collider.halfExtents = glm::vec3(0.5f);
+        reg.colliders.add(e, collider);
+
+        ComponentAccessTracker tracker;
+        {
+            ComponentAccess::Scope scope(&tracker);
+            world.step(reg, 1.0f / 60.0f);
+        }
+        const ComponentMask declaredReads =
+            maskOf(ComponentType::Collider, ComponentType::Transform, ComponentType::RigidBody);
+        const ComponentMask declaredWrites = maskOf(ComponentType::Transform, ComponentType::RigidBody);
+        ok &= (tracker.touched() & ~declaredReads) == 0;
+        ok &= (tracker.mutated() & ~declaredWrites) == 0;
+        ok &= (tracker.touched() & componentBit(ComponentType::Collider)) != 0; // it really did read them
+    }
+
+    return ok;
+}
+
 inline bool run() {
     using TestFn = bool (*)();
     struct Case { const char* name; TestFn fn; };
@@ -330,6 +466,7 @@ inline bool run() {
         { "SnapshotStorage",  testSnapshotStorage },
         { "Physics",          testPhysics },
         { "SystemScheduler",  testSystemScheduler },
+        { "ComponentAccess",  testComponentAccess },
         { "Serializer",       testSerializer },
         { "BehaviorRegistry", testBehaviorRegistry },
         { "RegistryGraph",    testRegistryGraph },

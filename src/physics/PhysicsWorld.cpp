@@ -147,7 +147,10 @@ Contact narrowphase(const WorldShape& a, const WorldShape& b) {
     return contact;
 }
 
-float inverseMass(Registry& registry, Entity entity) {
+// These three only inspect bodies, so they take a const Registry: the ECS records
+// access through the const path as a read, which is what lets the Physics system
+// prove it doesn't mutate anything it declared read-only (Phase 13B).
+float inverseMass(const Registry& registry, Entity entity) {
     if (!registry.rigidBodies.has(entity)) {
         return 0.0f; // collider with no body == immovable
     }
@@ -158,11 +161,11 @@ float inverseMass(Registry& registry, Entity entity) {
     return 1.0f / body.mass;
 }
 
-float restitutionOf(Registry& registry, Entity entity) {
+float restitutionOf(const Registry& registry, Entity entity) {
     return registry.rigidBodies.has(entity) ? registry.rigidBodies.get(entity).restitution : 0.0f;
 }
 
-float frictionOf(Registry& registry, Entity entity) {
+float frictionOf(const Registry& registry, Entity entity) {
     return registry.rigidBodies.has(entity) ? registry.rigidBodies.get(entity).friction : 0.0f;
 }
 
@@ -248,14 +251,17 @@ void PhysicsWorld::step(Registry& registry, float deltaTime) {
     }
 
     // 2) Broadphase: gather world shapes (all-pairs; fine for small scenes, a
-    //    uniform grid / sweep-and-prune can replace this later).
+    //    uniform grid / sweep-and-prune can replace this later). Read through a
+    //    const view so colliders are recorded as a read, not a write — physics
+    //    declares Collider read-only (Phase 13B).
+    const Registry& readOnly = registry;
     std::vector<WorldShape> shapes;
-    shapes.reserve(registry.colliders.getAll().size());
-    for (const auto& [entity, collider] : registry.colliders.getAll()) {
-        if (!registry.transforms.has(entity)) {
+    shapes.reserve(readOnly.colliders.getAll().size());
+    for (const auto& [entity, collider] : readOnly.colliders.getAll()) {
+        if (!readOnly.transforms.has(entity)) {
             continue;
         }
-        shapes.push_back(makeWorldShape(entity, registry.transforms.get(entity).transform, collider));
+        shapes.push_back(makeWorldShape(entity, readOnly.transforms.get(entity).transform, collider));
     }
 
     // 3) Narrowphase + resolution. Every hit becomes a CollisionEvent so gameplay

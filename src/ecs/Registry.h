@@ -5,10 +5,36 @@
 #include <stdexcept>
 #include "assets/AssetHandle.h"
 #include "audio/AudioComponents.h"
+#include "ecs/ComponentAccess.h"
 #include "ecs/ComponentStorage.h"
 #include "ecs/Components.h"
 #include "ecs/EntityManager.h"
 #include "physics/PhysicsComponents.h"
+
+// Component type -> ComponentType bit, so ComponentStorage can report access
+// against the same identities systems declare (Phase 13B). One entry per storage
+// on Registry below; adding a storage without a trait means it silently escapes
+// access enforcement, so keep the two lists in step.
+#define SUGAR_TRACK_COMPONENT(StructName, EnumName)                       \
+    template <>                                                           \
+    struct ComponentTraits<StructName> {                                  \
+        static constexpr bool tracked = true;                             \
+        static constexpr ComponentType type = ComponentType::EnumName;    \
+    }
+
+SUGAR_TRACK_COMPONENT(NameComponent, Name);
+SUGAR_TRACK_COMPONENT(TransformComponent, Transform);
+SUGAR_TRACK_COMPONENT(MeshComponent, Mesh);
+SUGAR_TRACK_COMPONENT(MaterialComponent, Material);
+SUGAR_TRACK_COMPONENT(HierarchyComponent, Hierarchy);
+SUGAR_TRACK_COMPONENT(ScriptComponent, Script);
+SUGAR_TRACK_COMPONENT(RigidBodyComponent, RigidBody);
+SUGAR_TRACK_COMPONENT(ColliderComponent, Collider);
+SUGAR_TRACK_COMPONENT(PrefabInstanceComponent, PrefabInstance);
+SUGAR_TRACK_COMPONENT(AudioSourceComponent, AudioSource);
+SUGAR_TRACK_COMPONENT(AudioListenerComponent, AudioListener);
+
+#undef SUGAR_TRACK_COMPONENT
 
 class Registry {
 public:

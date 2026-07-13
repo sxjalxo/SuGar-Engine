@@ -131,7 +131,11 @@ static void updateWindowTitle(GLFWwindow* window, double fps) {
 
 // --- SuGarApp Implementation ---
 
-SuGarApp::SuGarApp() {}
+SuGarApp::SuGarApp() {
+    // Build the gameplay pipeline up front so the editor can introspect it (the
+    // Systems panel) before Play ever runs. Idempotent.
+    setupSystemSchedule();
+}
 
 SuGarApp::~SuGarApp() {
     cleanup();
@@ -682,14 +686,17 @@ void SuGarApp::setupSystemSchedule() {
     // can safely mutate components (e.g. request a one-shot sound) before audio.
     systemSchedule.add(System{
         "CollisionDispatch",
-        maskOf(ComponentType::Script, ComponentType::Collider, ComponentType::Transform),
+        maskOf(ComponentType::Script, ComponentType::Transform, ComponentType::AudioSource),
         maskOf(ComponentType::Transform, ComponentType::RigidBody, ComponentType::AudioSource),
         [this](float) {
             auto dispatchCollision = [&](Entity entity, const CollisionEvent& event) {
                 if (entity == INVALID_ENTITY || !registry.scripts.has(entity)) {
                     return;
                 }
-                if (Behavior* behavior = BehaviorRegistry::get(registry.scripts.get(entity).behavior)) {
+                // Read the behavior name through a const view: dispatch inspects
+                // ScriptComponent, it doesn't mutate it (Phase 13B enforcement).
+                const Registry& readOnly = registry;
+                if (Behavior* behavior = BehaviorRegistry::get(readOnly.scripts.get(entity).behavior)) {
                     behavior->onCollision(registry, entity, event);
                 }
             };
@@ -701,13 +708,31 @@ void SuGarApp::setupSystemSchedule() {
 
     // Audio last: positions are final for this step, so spatial attenuation,
     // playOnStart triggers, and collision one-shots use up-to-date state.
+    // Hierarchy is declared because spatial attenuation resolves world positions
+    // via getWorldPosition, which walks parent transforms — a real dependency that
+    // 13A's declaration missed and 13B's enforcement surfaced.
     systemSchedule.add(System{
         "Audio",
-        maskOf(ComponentType::Transform, ComponentType::AudioListener, ComponentType::AudioSource),
+        maskOf(ComponentType::Transform, ComponentType::Hierarchy,
+               ComponentType::AudioListener, ComponentType::AudioSource),
         maskOf(ComponentType::AudioSource),
         [this](float) {
             AudioSystem::update(registry, audioEngine);
         }});
+
+    // Guard rail on by default in Debug (tracking is compiled out of Release, so
+    // this is inert there). Default is Warn: violations surface in the editor
+    // Systems panel without halting the session. SUGAR_STRICT escalates to
+    // fail-fast — the first undeclared access throws (with a stderr message),
+    // which surfaces as a nonzero exit for headless/CI runs.
+    if (ComponentAccess::trackingEnabled()) {
+        if (std::getenv("SUGAR_STRICT") != nullptr) {
+            systemSchedule.setEnforcement(AccessEnforcement::Strict);
+        } else {
+            systemSchedule.setEnforcement(AccessEnforcement::Warn);
+            systemSchedule.setViolationHandler([](const AccessViolation&) {}); // panel-only, no stderr
+        }
+    }
 
     systemScheduleReady = true;
 }
@@ -741,6 +766,7 @@ void SuGarApp::initRenderer() {
     renderer->setWindow(window);
     renderer->setAssetRegistry(&assetRegistry);
     renderer->setRegistry(&registry);
+    renderer->setSystemSchedule(&systemSchedule);
     renderer->setDrawList(&drawList);
     renderer->init();
     updateCameraTargets();

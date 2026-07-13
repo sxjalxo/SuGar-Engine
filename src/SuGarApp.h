@@ -74,6 +74,10 @@ public:
     // Behaviors reconnect by name and component state is untouched.
     void reloadGameModule();
 
+    // The gameplay system pipeline, for the editor Systems panel (read-only view
+    // of declared read/write sets, parallel stages, and access violations).
+    const SystemScheduler& getSystemSchedule() const { return systemSchedule; }
+
     // Timeline bookmarks: tag the current frame with a label and jump between
     // tagged frames. Bookmarks key off stable frame numbers, so they survive ring
     // eviction (until the tagged frame itself scrolls off the window).

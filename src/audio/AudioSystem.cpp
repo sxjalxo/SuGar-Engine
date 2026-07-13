@@ -24,7 +24,10 @@ struct ListenerState {
     bool exists = false;
 };
 
-ListenerState findListener(Registry& registry) {
+// const Registry: the listener lookup only reads, and the ECS records const
+// access as a read — which is what lets the Audio system declare AudioListener,
+// Transform, and Hierarchy read-only and have that verified (Phase 13B).
+ListenerState findListener(const Registry& registry) {
     ListenerState state;
     for (const auto& [entity, listener] : registry.audioListeners.getAll()) {
         if (!registry.transforms.has(entity)) {

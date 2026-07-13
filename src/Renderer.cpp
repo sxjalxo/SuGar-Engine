@@ -10,6 +10,7 @@
 #include "rendering/Camera.h"
 #include "editor/EditorCommands.h"
 #include "editor/EntityQuery.h"
+#include "ecs/SystemSchedule.h"
 #include <cmath>
 #include <cstdio>
 #include <memory>
@@ -1417,6 +1418,7 @@ void Renderer::buildEditorUi() {
     drawInspectorPanel();
     drawAssetBrowserPanel();
     drawQueryConsolePanel();
+    drawSystemsPanel();
 
     ImGui::Begin("Viewport");
 
@@ -1986,6 +1988,82 @@ void Renderer::drawQueryConsolePanel() {
                 const std::string label = getEntityLabel(*registry, entity) + "##q" + std::to_string(entity);
                 if (ImGui::Selectable(label.c_str(), isSelected(entity))) {
                     selectSingle(entity);
+                }
+            }
+        }
+    }
+
+    ImGui::End();
+}
+
+void Renderer::drawSystemsPanel() {
+    ImGui::Begin("Systems");
+
+    if (systemSchedule == nullptr) {
+        ImGui::TextUnformatted("No schedule bound.");
+        ImGui::End();
+        return;
+    }
+
+    ImGui::TextDisabled("Fixed-step gameplay pipeline (deterministic order)");
+
+    const auto& systems = systemSchedule->systems();
+    if (ImGui::CollapsingHeader("Order & access", ImGuiTreeNodeFlags_DefaultOpen)) {
+        for (std::size_t i = 0; i < systems.size(); ++i) {
+            const System& system = systems[i];
+            ImGui::Text("%zu. %s", i, system.name.c_str());
+            ImGui::SameLine();
+            ImGui::TextDisabled("R:%s  W:%s",
+                                describeComponentMask(system.reads).c_str(),
+                                describeComponentMask(system.writes).c_str());
+        }
+    }
+
+    // Independence analysis: systems in one stage are provably disjoint and could
+    // run in parallel. Today everything conflicts, so each stage is one system —
+    // shown so the payoff of narrowing declarations is visible as it happens.
+    if (ImGui::CollapsingHeader("Parallel stages", ImGuiTreeNodeFlags_DefaultOpen)) {
+        const auto stages = systemSchedule->stages();
+        for (std::size_t s = 0; s < stages.size(); ++s) {
+            std::string members;
+            for (std::size_t idx : stages[s]) {
+                if (!members.empty()) {
+                    members += ", ";
+                }
+                members += systems[idx].name;
+            }
+            if (stages[s].size() > 1) {
+                ImGui::TextColored(ImVec4(0.5f, 0.85f, 0.5f, 1.0f),
+                                   "Stage %zu (parallel): %s", s, members.c_str());
+            } else {
+                ImGui::Text("Stage %zu: %s", s, members.c_str());
+            }
+        }
+    }
+
+    // Guard rail (Phase 13B): Debug-only. Tracking compiled out of Release, so the
+    // panel says so rather than implying a check that isn't running.
+    if (ImGui::CollapsingHeader("Access guard rail", ImGuiTreeNodeFlags_DefaultOpen)) {
+        if (!ComponentAccess::trackingEnabled()) {
+            ImGui::TextDisabled("Compiled out (Release build).");
+        } else if (systemSchedule->enforcement() == AccessEnforcement::Off) {
+            ImGui::TextDisabled("Enforcement off.");
+        } else {
+            ImGui::TextDisabled("Mode: %s", systemSchedule->enforcement() == AccessEnforcement::Strict ? "Strict (throws)" : "Warn");
+            const auto& violations = systemSchedule->violationLog();
+            if (violations.empty()) {
+                ImGui::TextColored(ImVec4(0.5f, 0.85f, 0.5f, 1.0f), "All systems within declared access.");
+            } else {
+                ImGui::TextColored(ImVec4(0.95f, 0.5f, 0.4f, 1.0f), "%zu violation(s):", violations.size());
+                for (const AccessViolation& v : violations) {
+                    if (v.undeclaredAccess != 0) {
+                        ImGui::BulletText("%s touched undeclared: %s", v.system.c_str(),
+                                          describeComponentMask(v.undeclaredAccess).c_str());
+                    }
+                    if (v.undeclaredWrites != 0) {
+                        ImGui::BulletText("%s mutated read-only: %s", v.system.c_str(),
+                                          describeComponentMask(v.undeclaredWrites).c_str());
+                    }
                 }
             }
         }

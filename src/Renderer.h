@@ -18,6 +18,7 @@ class AssetRegistry;
 class BasicTrianglePass;
 class RenderPass;
 class Registry;
+class SystemScheduler;
 class SuGarApp;
 enum class CameraMode : uint8_t;
 struct DrawList;
@@ -36,6 +37,7 @@ public:
     void setDrawList(const DrawList* drawList);
     void setAssetRegistry(AssetRegistry* assetRegistry) { this->assetRegistry = assetRegistry; }
     void setRegistry(Registry* registry) { this->registry = registry; }
+    void setSystemSchedule(const SystemScheduler* schedule) { this->systemSchedule = schedule; }
     void refreshDrawListResources();
     void moveCameraForward(float deltaTime);
     void moveCameraBackward(float deltaTime);
@@ -98,6 +100,7 @@ private:
     void drawPlayControls();
     void drawTimelinePanel();
     void drawQueryConsolePanel();
+    void drawSystemsPanel();
     void drawHierarchyPanel();
     void drawInspectorPanel();
     void drawAssetBrowserPanel();
@@ -149,6 +152,7 @@ private:
     GLFWwindow* window = nullptr;
     AssetRegistry* assetRegistry = nullptr;
     Registry* registry = nullptr;
+    const SystemScheduler* systemSchedule = nullptr;
     const DrawList* drawList = nullptr;
     uint32_t currentFrame = 0;
     std::unique_ptr<RenderPass> mainRenderPass;

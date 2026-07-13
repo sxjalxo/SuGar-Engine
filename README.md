@@ -42,6 +42,13 @@ live when recompiled, state preserved.
   physics → collision dispatch → audio) is a `SystemScheduler` of `System`s that
   each declare their read/write component sets; runs in deterministic order, with
   independence analysis (`stages()`) as the foundation for future parallelism
+* **Enforced system access** (Phase 13B) — the ECS records every component read
+  and write, and the scheduler flags any storage a system touched but never
+  declared (or mutated while declaring read-only). Hidden coupling becomes a
+  message, not a mystery. Debug-only, on by default; zero release cost
+* **Editor Systems panel** (Phase 13C) — a live view of the gameplay pipeline:
+  each system's declared read/write masks, the computed parallel stages, and any
+  access violations (green when every system stays within its declaration)
 * Editor **Play / Pause / Stop** toolbar with a viewport state tint
 
 ### Gameplay (Track A)
@@ -206,8 +213,22 @@ $env:SUGAR_SELFTEST = "1"; build\Debug\SuGarEngine.exe; $env:SUGAR_SELFTEST = ""
 ```
 
 Prints a per-test PASS/FAIL table (with timings) for CoreBoundary, CommandHistory,
-EntityQuery, SnapshotStorage, Physics, SystemScheduler, Serializer,
-BehaviorRegistry, and RegistryGraph.
+EntityQuery, SnapshotStorage, Physics, SystemScheduler, ComponentAccess,
+Serializer, BehaviorRegistry, and RegistryGraph.
+
+### System access enforcement
+
+Debug builds verify that every gameplay system only touches the component
+storages it declared. It's on by default there (Warn mode), surfaced in the editor
+**Systems** panel (green when clean, the offending storages named when not).
+`SUGAR_STRICT=1` escalates to fail-fast: the first undeclared access throws and the
+process exits nonzero — for headless/CI runs:
+
+```powershell
+$env:SUGAR_STRICT = "1"; build\Debug\SuGarEngine.exe; $env:SUGAR_STRICT = ""
+```
+
+Release builds compile the tracking out entirely, so this costs nothing to ship.
 
 ---
 
@@ -228,12 +249,14 @@ Full plan in [ROADMAP.md](ROADMAP.md). Summary:
   backend abstraction + timeline bookmarks *done*. **Phase 12 code hot reload**:
   12A/12B/12C *done* — layered `Editor -> Engine -> Core` (Vulkan-free `SuGarCore`
   shared lib) with gameplay behaviors in a **`SuGarGame` DLL that links only Core**,
-  loaded at runtime and **hot-reloaded live** when recompiled. **Phase 13A**
-  *done* — opinionated scheduling: the gameplay pipeline is now declared `System`s
-  with read/write sets behind a deterministic `SystemScheduler` (independence
-  analysis in place; parallel execution, incremental rebuilds, and architecture
-  lints later). Also later: reload only affected systems, in-place state restore,
-  binary/delta snapshots, query growth
+  loaded at runtime and **hot-reloaded live** when recompiled. **Phase 13A–D**
+  *done* — opinionated scheduling: the gameplay pipeline is declared `System`s with
+  read/write sets behind a deterministic `SystemScheduler`, those declarations are
+  **enforced** by the ECS (Warn in-editor, `SUGAR_STRICT` fail-fast for CI), and an
+  editor **Systems** panel shows the order, parallel stages, and live violations.
+  Parallel execution + incremental rebuilds deferred by design (nothing independent
+  to parallelize yet; async fights time-travel). Also later: reload only affected
+  systems, in-place state restore, binary/delta snapshots, query growth
 * **Track C** — graphics, cross-platform, packaging, ecosystem
 
 ---
