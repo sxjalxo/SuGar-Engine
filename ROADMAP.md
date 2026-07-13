@@ -67,9 +67,9 @@ So the DX pillars are cheap to add later instead of expensive retrofits:
   "is this sane?" check each, aggregated into a single headless run
   (`SUGAR_SELFTEST=1` → `src/SelfTests.h`) that prints a per-test PASS/FAIL table
   **with timings** before the editor even launches. Covered today: CommandHistory,
-  EntityIdRecycling, EntityQuery, SnapshotStorage, Physics, SystemScheduler,
-  ComponentAccess, SnapshotPatch, Serializer (save), BehaviorRegistry,
-  RegistryGraph, CoreBoundary. Pending a small device harness: Serializer round-trip,
+  EntityIdRecycling, EntityQuery, SnapshotStorage, Physics, PhysicsBroadphase,
+  SystemScheduler, ComponentAccess, SnapshotPatch, Serializer (save),
+  BehaviorRegistry, RegistryGraph, CoreBoundary. Pending a small device harness: Serializer round-trip,
   ResourceManager (need Vulkan).
 
 ---
@@ -113,8 +113,9 @@ Built **reload-ready, split later** (the Phase 12 DLL split stays mechanical):
   positional correction + restitution impulse; static ground.
 - 7C: Coulomb friction (clamped tangential impulse); rigid-body/collider/script
   inspector panels; bouncy-box demo (restitution + friction).
-- Notes / future work: O(n²) broadphase (uniform grid / SAP later); boxes are
-  axis-aligned (rotation ignored); physics bodies should be top-level.
+- Notes / future work: ~~O(n²) broadphase~~ (replaced by a uniform grid in
+  Phase 15); boxes are axis-aligned (rotation ignored); physics bodies should be
+  top-level.
 
 ### Phase 8 — Prefabs & 3D model import  (DONE)  *(requested)*
 - 8A: prefab core — `SceneSerializer` refactored to share per-entity write/parse;
@@ -547,14 +548,35 @@ Query 0.017 ms, physics step 0.8 ms (500 ent, O(n²) broadphase), scheduler run
   save cost by encoding only changed components. Revisit `BinarySnapshotStorage`
   (11C) with this as the acceptance criterion — measure the same table again.
 - Nothing else needs attention yet: query, scheduler, and physics are all cheap at
-  these sizes (physics O(n²) is the next to watch as scenes grow — the roadmap's
-  uniform-grid note).
+  these sizes. *(The physics O(n²) flagged here was addressed next — Phase 15's
+  uniform grid.)*
 
 ---
 
 ## Track C — Catch-up (only after the wedge is real)
 
-### Phase 15+ — Graphics, ecosystem, packaging, platforms
+### Phase 15 — Physics broadphase: uniform grid  (DONE)  *(Track A follow-up)*
+Evidence-driven (see Phase 14C): the profiler flagged the physics step's all-pairs
+broadphase as the O(n²) that would dominate first as scenes grow. Replaced it with
+a **uniform-grid spatial hash** in `PhysicsWorld` — a solved, non-differentiating
+problem kept deliberately simple (not a BVH / SAP / dynamic AABB tree), which suits
+SuGar: no persistent state, deterministic, nothing to serialize.
+- Each shape is bucketed into the grid cells its AABB overlaps; only shapes sharing
+  a cell become candidate pairs (then AABB-rejected before narrowphase). Cell size
+  derives from the largest shape, so occupancy stays low. Grid is rebuilt every
+  step and owns no state.
+- **Deterministic:** candidate pairs are emitted as `a<b` and **sorted**, so
+  narrowphase + resolution run in a stable order — actually *more* deterministic
+  than the old code, which paired in the collider map's unordered iteration order.
+- Narrowphase and impulse resolution are untouched, so contact behavior is
+  unchanged; only which pairs reach narrowphase differs.
+- Measured (Release, dense touching-box scene — near worst case): **500 entities
+  0.81 → 0.40 ms; 2000 entities 1.9 ms** (all-pairs would be ~13 ms at that count).
+- Verified by the `PhysicsBroadphase` self-test: exactly the overlapping pairs are
+  found (no spurious, no missed) across separated clusters + an isolated body, and
+  a repeated step yields identical event order.
+
+### Phase 16+ — Graphics, ecosystem, packaging, platforms
 - ~~stb_image (kill WIC / Windows lock-in)~~ (done early). Remaining: full
   cross-platform build (Mac/Linux), glTF PBR pipeline, more lighting, standalone
   game packaging, tests + CI, docs for contributors.

@@ -59,8 +59,9 @@ recompiled, state preserved.
 * **Input mapping** — named actions/axes over raw input; behaviors never touch
   GLFW key codes
 * **Hand-rolled physics** — semi-implicit Euler integration, gravity, box/sphere
-  collision (broadphase → narrowphase → impulse resolution), restitution +
-  Coulomb friction, on the fixed step
+  collision (uniform-grid broadphase → narrowphase → impulse resolution),
+  restitution + Coulomb friction, on the fixed step. Deterministic; the grid keeps
+  the broadphase near-linear (2000 bodies ≈ 1.9 ms vs ~13 ms all-pairs)
 * **Prefabs** — save an entity subtree to `.prefab`, instantiate additively,
   revert instances to source
 * **3D model import** — glTF/glb via tinygltf (parse-only, isolated); nodes →
@@ -218,8 +219,9 @@ $env:SUGAR_SELFTEST = "1"; build\Debug\SuGarEngine.exe; $env:SUGAR_SELFTEST = ""
 ```
 
 Prints a per-test PASS/FAIL table (with timings) for CoreBoundary, CommandHistory,
-EntityIdRecycling, EntityQuery, SnapshotStorage, Physics, SystemScheduler,
-ComponentAccess, SnapshotPatch, Serializer, BehaviorRegistry, and RegistryGraph.
+EntityIdRecycling, EntityQuery, SnapshotStorage, Physics, PhysicsBroadphase,
+SystemScheduler, ComponentAccess, SnapshotPatch, Serializer, BehaviorRegistry, and
+RegistryGraph.
 
 ### System access enforcement
 
@@ -285,6 +287,9 @@ Full plan in [ROADMAP.md](ROADMAP.md). Summary:
   cost (not memory) is what breaks first as scenes grow — evidence gating
   binary/delta snapshots. Later: binary/delta snapshots; query growth; reload only
   affected systems
+* **Phase 15** *(done)* — physics broadphase replaced with a deterministic
+  uniform-grid spatial hash (the O(n²) the 14C profiler flagged); 2000 bodies
+  ≈ 1.9 ms
 * **Track C** — graphics, cross-platform, packaging, ecosystem
 
 ---

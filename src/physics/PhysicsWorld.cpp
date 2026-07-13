@@ -3,6 +3,10 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
+#include <unordered_map>
+#include <unordered_set>
+#include <utility>
 #include <vector>
 #include <glm/glm.hpp>
 
@@ -227,6 +231,103 @@ float resolveContact(Registry& registry, const WorldShape& a, const WorldShape& 
     return j; // normal impulse magnitude (>= 0 here)
 }
 
+// World-space AABB of a shape (boxes are axis-aligned; spheres use their radius).
+void shapeAabb(const WorldShape& shape, glm::vec3& outMin, glm::vec3& outMax) {
+    const glm::vec3 radius = shape.type == ColliderType::Box ? shape.halfExtents : glm::vec3(shape.radius);
+    outMin = shape.center - radius;
+    outMax = shape.center + radius;
+}
+
+// Uniform-grid (spatial-hash) broadphase (Phase 15). Replaces the old O(n^2)
+// all-pairs scan: each shape is bucketed into the grid cells its AABB overlaps,
+// and only shapes sharing a cell become candidate pairs. Cell size is derived from
+// the largest shape so every shape spans ~1-2 cells per axis, keeping bucket
+// occupancy low. The grid is rebuilt every step and owns no persistent state, so
+// it stays deterministic and needs no serialization. Returned pairs are (a<b) and
+// sorted, so contact resolution order is stable run-to-run (it was previously the
+// unordered_map's iteration order).
+std::vector<std::pair<size_t, size_t>> broadphasePairs(const std::vector<WorldShape>& shapes) {
+    std::vector<std::pair<size_t, size_t>> pairs;
+    const size_t count = shapes.size();
+    if (count < 2) {
+        return pairs;
+    }
+
+    float maxExtent = 0.0f;
+    for (const WorldShape& shape : shapes) {
+        const float extent = shape.type == ColliderType::Box
+            ? std::max({shape.halfExtents.x, shape.halfExtents.y, shape.halfExtents.z})
+            : shape.radius;
+        maxExtent = std::max(maxExtent, extent);
+    }
+    const float cellSize = std::max(maxExtent * 2.0f, 1e-3f);
+    const float invCell = 1.0f / cellSize;
+
+    // Pack a signed cell coordinate (21 bits/axis) into one key. Coordinates far
+    // beyond +/-1e6 cells wrap rather than crash — fine for gameplay-scale scenes.
+    auto cellKey = [](int x, int y, int z) -> int64_t {
+        constexpr int64_t mask = 0x1FFFFF;
+        return (static_cast<int64_t>(x) & mask)
+             | ((static_cast<int64_t>(y) & mask) << 21)
+             | ((static_cast<int64_t>(z) & mask) << 42);
+    };
+    auto cellCoord = [invCell](float v) { return static_cast<int>(std::floor(v * invCell)); };
+
+    std::unordered_map<int64_t, std::vector<int>> grid;
+    grid.reserve(count * 2);
+    for (size_t i = 0; i < count; ++i) {
+        glm::vec3 lo, hi;
+        shapeAabb(shapes[i], lo, hi);
+        for (int z = cellCoord(lo.z); z <= cellCoord(hi.z); ++z) {
+            for (int y = cellCoord(lo.y); y <= cellCoord(hi.y); ++y) {
+                for (int x = cellCoord(lo.x); x <= cellCoord(hi.x); ++x) {
+                    grid[cellKey(x, y, z)].push_back(static_cast<int>(i));
+                }
+            }
+        }
+    }
+
+    // For each shape, gather partners from the cells it covers, dedup each pair
+    // (it may share several cells), and AABB-reject before it reaches narrowphase.
+    std::unordered_set<int64_t> seen;
+    for (size_t i = 0; i < count; ++i) {
+        glm::vec3 lo, hi;
+        shapeAabb(shapes[i], lo, hi);
+        for (int z = cellCoord(lo.z); z <= cellCoord(hi.z); ++z) {
+            for (int y = cellCoord(lo.y); y <= cellCoord(hi.y); ++y) {
+                for (int x = cellCoord(lo.x); x <= cellCoord(hi.x); ++x) {
+                    const auto bucket = grid.find(cellKey(x, y, z));
+                    if (bucket == grid.end()) {
+                        continue;
+                    }
+                    for (int otherInt : bucket->second) {
+                        const size_t other = static_cast<size_t>(otherInt);
+                        if (other <= i) {
+                            continue; // only emit each unordered pair once, as a<b
+                        }
+                        const int64_t pairId = static_cast<int64_t>(i) * static_cast<int64_t>(count) + static_cast<int64_t>(other);
+                        if (!seen.insert(pairId).second) {
+                            continue;
+                        }
+                        glm::vec3 olo, ohi;
+                        shapeAabb(shapes[other], olo, ohi);
+                        const bool overlap = lo.x <= ohi.x && hi.x >= olo.x &&
+                                             lo.y <= ohi.y && hi.y >= olo.y &&
+                                             lo.z <= ohi.z && hi.z >= olo.z;
+                        if (overlap) {
+                            pairs.emplace_back(i, other);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Sort so narrowphase + resolution run in a deterministic order.
+    std::sort(pairs.begin(), pairs.end());
+    return pairs;
+}
+
 } // namespace
 
 void PhysicsWorld::step(Registry& registry, float deltaTime) {
@@ -250,9 +351,9 @@ void PhysicsWorld::step(Registry& registry, float deltaTime) {
         body.accumulatedForce = glm::vec3(0.0f);
     }
 
-    // 2) Broadphase: gather world shapes (all-pairs; fine for small scenes, a
-    //    uniform grid / sweep-and-prune can replace this later). Read through a
-    //    const view so colliders are recorded as a read, not a write — physics
+    // 2) Broadphase: gather world shapes, then let the uniform grid produce only
+    //    the candidate pairs that share a cell (was O(n^2) all-pairs). Read through
+    //    a const view so colliders are recorded as a read, not a write — physics
     //    declares Collider read-only (Phase 13B).
     const Registry& readOnly = registry;
     std::vector<WorldShape> shapes;
@@ -264,25 +365,24 @@ void PhysicsWorld::step(Registry& registry, float deltaTime) {
         shapes.push_back(makeWorldShape(entity, readOnly.transforms.get(entity).transform, collider));
     }
 
-    // 3) Narrowphase + resolution. Every hit becomes a CollisionEvent so gameplay
-    //    (behaviors) can react; the contact point is approximated as the midpoint
-    //    of the two centers (good enough for triggers/sfx; refine if needed).
-    for (size_t i = 0; i < shapes.size(); ++i) {
-        for (size_t k = i + 1; k < shapes.size(); ++k) {
-            const Contact contact = narrowphase(shapes[i], shapes[k]);
-            if (!contact.hit) {
-                continue;
-            }
-
-            const float impulse = resolveContact(registry, shapes[i], shapes[k], contact);
-
-            CollisionEvent event;
-            event.a = shapes[i].entity;
-            event.b = shapes[k].entity;
-            event.point = 0.5f * (shapes[i].center + shapes[k].center);
-            event.normal = contact.normal;
-            event.impulse = impulse;
-            collisionEvents.push_back(event);
+    // 3) Narrowphase + resolution over the broadphase's candidate pairs (sorted, so
+    //    resolution order is deterministic). Every hit becomes a CollisionEvent so
+    //    gameplay (behaviors) can react; the contact point is approximated as the
+    //    midpoint of the two centers (good enough for triggers/sfx; refine if needed).
+    for (const auto& [i, k] : broadphasePairs(shapes)) {
+        const Contact contact = narrowphase(shapes[i], shapes[k]);
+        if (!contact.hit) {
+            continue;
         }
+
+        const float impulse = resolveContact(registry, shapes[i], shapes[k], contact);
+
+        CollisionEvent event;
+        event.a = shapes[i].entity;
+        event.b = shapes[k].entity;
+        event.point = 0.5f * (shapes[i].center + shapes[k].center);
+        event.normal = contact.normal;
+        event.impulse = impulse;
+        collisionEvents.push_back(event);
     }
 }

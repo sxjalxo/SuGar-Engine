@@ -201,6 +201,62 @@ inline bool testPhysics() {
     return ok;
 }
 
+// --- Physics broadphase: the uniform grid finds exactly the overlapping pairs
+// (no spurious, no missed) and does so deterministically (Phase 15) -----------
+inline bool testPhysicsBroadphase() {
+    // A helper to drop a static unit box (spans center +/- 0.5 on each axis).
+    auto addBox = [](Registry& reg, float x) {
+        const Entity e = reg.createEntity();
+        Transform t;
+        t.position = glm::vec3(x, 0.0f, 0.0f);
+        reg.transforms.add(e, { t });
+        RigidBodyComponent body{};
+        body.isStatic = true;
+        body.useGravity = false;
+        reg.rigidBodies.add(e, body);
+        ColliderComponent collider{};
+        collider.type = ColliderType::Box;
+        collider.halfExtents = glm::vec3(0.5f);
+        reg.colliders.add(e, collider);
+        return e;
+    };
+
+    Registry reg;
+    // Two overlapping clusters far apart, plus a loner — only two pairs collide.
+    const Entity a0 = addBox(reg, 0.0f);
+    const Entity a1 = addBox(reg, 0.5f);   // overlaps a0
+    const Entity b0 = addBox(reg, 10.0f);
+    const Entity b1 = addBox(reg, 10.4f);  // overlaps b0
+    (void)addBox(reg, 100.0f);             // isolated: no partner in its cells
+
+    PhysicsWorld world;
+    world.step(reg, 1.0f / 60.0f);
+    const auto& events = world.getCollisionEvents();
+
+    bool ok = events.size() == 2;
+
+    auto hasPair = [&](Entity x, Entity y) {
+        for (const CollisionEvent& e : events) {
+            if ((e.a == x && e.b == y) || (e.a == y && e.b == x)) {
+                return true;
+            }
+        }
+        return false;
+    };
+    ok &= hasPair(a0, a1) && hasPair(b0, b1);
+
+    // Deterministic: a second identical step yields the same event order.
+    PhysicsWorld world2;
+    world2.step(reg, 1.0f / 60.0f);
+    const auto& events2 = world2.getCollisionEvents();
+    ok &= events2.size() == events.size();
+    for (size_t i = 0; i < events.size() && i < events2.size(); ++i) {
+        ok &= events[i].a == events2[i].a && events[i].b == events2[i].b;
+    }
+
+    return ok;
+}
+
 // --- Snapshot patch: in-place restore preserves entity ids + editor identity
 // (Phase 14A). Uses only device-free components so it runs headless -----------
 inline bool testSnapshotPatch() {
@@ -524,6 +580,7 @@ inline bool run() {
         { "EntityQuery",      testEntityQuery },
         { "SnapshotStorage",  testSnapshotStorage },
         { "Physics",          testPhysics },
+        { "PhysicsBroadphase", testPhysicsBroadphase },
         { "SystemScheduler",  testSystemScheduler },
         { "ComponentAccess",  testComponentAccess },
         { "SnapshotPatch",    testSnapshotPatch },
