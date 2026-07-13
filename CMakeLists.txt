@@ -122,6 +122,7 @@ add_executable(SuGarEngine
     src/editor/EditorCommands.h
     src/editor/EntityQuery.h
     src/SelfTests.h
+    src/Benchmarks.h
     src/audio/AudioClip.h
     src/audio/AudioEngine.h
     src/audio/AudioEngine.cpp

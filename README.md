@@ -235,6 +235,22 @@ $env:SUGAR_STRICT = "1"; build\Debug\SuGarEngine.exe; $env:SUGAR_STRICT = ""
 
 Release builds compile the tracking out entirely, so this costs nothing to ship.
 
+### Profiling (Phase 14C)
+
+Headless profiler over a representative scene: snapshot size, 600-frame ring
+memory, save time, patch restore, query, physics step, scheduler overhead.
+`SUGAR_BENCH_ENTITIES=N` scales the scene. Build Release for honest timings
+(memory is config-independent):
+
+```powershell
+$env:SUGAR_BENCH = "1"; build\Release\SuGarEngine.exe; $env:SUGAR_BENCH = ""
+```
+
+Baseline (Release, ~636 B/entity/frame): 50 ent → 18 MiB ring / 0.6 ms save;
+500 → 182 MiB / 5.6 ms; 2000 → 730 MiB / 26 ms. Per-frame **save cost** grows into
+the 60 Hz budget before memory does — the evidence gating binary/delta snapshots.
+Hot-reload swap latency logs live (`[GameModule] hot reload complete (N ms swap)`).
+
 ---
 
 ## Roadmap
@@ -264,8 +280,11 @@ Full plan in [ROADMAP.md](ROADMAP.md). Summary:
   state restore: snapshot restore patches the live entities instead of rebuilding,
   so selection/inspector/undo survive scrub + Stop. **Phase 14B** *done* — recreate
   preserves original entity ids (`createEntityWithId`), so the entire 11A id-remap
-  layer was deleted (more code removed than added). Later: binary/delta snapshots;
-  query growth; reload only affected systems
+  layer was deleted (more code removed than added). **Phase 14C** *done* — measured
+  the baseline (`SUGAR_BENCH`): JSON snapshots fine ≤~50 entities, per-frame save
+  cost (not memory) is what breaks first as scenes grow — evidence gating
+  binary/delta snapshots. Later: binary/delta snapshots; query growth; reload only
+  affected systems
 * **Track C** — graphics, cross-platform, packaging, ecosystem
 
 ---

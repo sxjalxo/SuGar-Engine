@@ -291,9 +291,10 @@ holds a `unique_ptr<ISnapshotStorage>` and works only through it.
 - **Timeline bookmarks** (DONE) — tag the current frame with a label ("physics
   exploded"), jump Previous/Next, add/update/remove. Bookmarks key off stable
   frame numbers and are pruned when their frame scrolls off the window.
-- `BinarySnapshotStorage` (later) — compact binary encoding of the same state.
-- `DeltaSnapshotStorage` (later) — frame deltas + periodic keyframes; the big
-  memory win (600 x full-scene is fine for M2, not for production).
+- `BinarySnapshotStorage` / `DeltaSnapshotStorage` (later) — compact binary
+  encoding / frame-deltas + keyframes. **Now evidence-gated, not assumed** — see
+  the Phase 14C measurements below: warranted past a few hundred entities, where
+  the primary driver turns out to be per-frame *save cost*, not just memory.
 
 #### Phase 11D — Query language growth  (later)
 The `EntityQuery` parser is a simple tokenizer, deliberately structured to grow:
@@ -515,6 +516,39 @@ remap layer was **deleted outright** — a new capability removing old complexit
 - Because ids are stable across recreate, `LambdaCommand` (component add/remove)
   capturing raw ids in its closures is now correct by construction — the old
   "not remap-aware" caveat is gone.
+
+#### Phase 14C — Measure, don't assume  (DONE)
+14A/14B removed enough restore/remap complexity to leave a stable baseline, so
+before building `BinarySnapshotStorage` we *measured* whether it's needed. Opt-in
+headless profiler (`SUGAR_BENCH=1` → `src/Benchmarks.h`, `SUGAR_BENCH_ENTITIES=N`
+to scale) over a representative device-free scene (transform + rigidbody + collider
++ script + hierarchy): snapshot size, 600-frame ring memory, save time, patch
+restore, query, physics step, scheduler overhead. Hot-reload swap latency is
+instrumented live instead (`reloadGameModule` logs "N ms swap").
+
+Findings (Release; memory is config-independent, ~636 B/entity/frame, linear):
+
+| Scene | 600-frame ring | Save / frame | Patch restore |
+|------:|---------------:|-------------:|--------------:|
+| 50    | **18 MiB**     | 0.6 ms       | 1.8 ms        |
+| 500   | 182 MiB        | 5.6 ms       | 27 ms         |
+| 2000  | 730 MiB        | 25.8 ms      | 138 ms        |
+
+Query 0.017 ms, physics step 0.8 ms (500 ent, O(n²) broadphase), scheduler run
+~0 (tracking compiled out in Release). Conclusions:
+- **Small scenes (≤~50 entities): JSON is fine** — 18 MiB, sub-2 ms. Binary would
+  be premature. (The "18 MB?" hypothesis was right on the nose.)
+- **The first thing that breaks is per-frame *save cost*, not memory.** Capture
+  runs every fixed step during Play; at 500 entities 5.6 ms is a third of the
+  16.6 ms 60 Hz budget, and at 2000 entities (25.8 ms) capture alone exceeds a
+  whole frame — so you can't sustain 60 Hz Play *while recording*.
+- **Binary/delta snapshots are warranted past a few hundred entities**, and the
+  target is encode/decode speed (save + parse) as much as RAM. Delta also cuts
+  save cost by encoding only changed components. Revisit `BinarySnapshotStorage`
+  (11C) with this as the acceptance criterion — measure the same table again.
+- Nothing else needs attention yet: query, scheduler, and physics are all cheap at
+  these sizes (physics O(n²) is the next to watch as scenes grow — the roadmap's
+  uniform-grid note).
 
 ---
 

@@ -3,6 +3,7 @@
 #include "assets/ResourceManager.h"
 #include "audio/AudioSystem.h"
 #include "SelfTests.h"
+#include "Benchmarks.h"
 #include "core/Input.h"
 #include "core/InputActions.h"
 #include "rendering/Camera.h"
@@ -15,6 +16,7 @@
 #include "imgui.h"
 #include <stdexcept>
 #include <iostream>
+#include <iomanip>
 #include <fstream>
 #include <memory>
 #include <string>
@@ -146,6 +148,14 @@ void SuGarApp::run() {
     // be checked in CI / by hand without spinning up Vulkan.
     if (std::getenv("SUGAR_SELFTEST") != nullptr) {
         SelfTests::run();
+        return;
+    }
+
+    // Opt-in headless profiling (Phase 14C). Measures snapshot memory / restore /
+    // query / physics / scheduler on a representative scene, then exits — the
+    // evidence for whether binary/delta snapshots are worth building.
+    if (std::getenv("SUGAR_BENCH") != nullptr) {
+        Benchmarks::run();
         return;
     }
 
@@ -589,8 +599,16 @@ float SuGarApp::fixedTimestep() const {
 }
 
 void SuGarApp::reloadGameModule() {
-    if (gameModule.reload()) {
-        std::cout << "[GameModule] hot reload complete\n";
+    // Time the swap itself (copy + FreeLibrary + LoadLibrary + re-register), i.e.
+    // the latency the engine owns — the compile that precedes it isn't ours to
+    // measure. This is the live counterpart to the headless SUGAR_BENCH numbers.
+    const auto start = std::chrono::high_resolution_clock::now();
+    const bool ok = gameModule.reload();
+    const double milliseconds =
+        std::chrono::duration<double, std::milli>(std::chrono::high_resolution_clock::now() - start).count();
+    if (ok) {
+        std::cout << "[GameModule] hot reload complete (" << std::fixed << std::setprecision(2)
+                  << milliseconds << " ms swap)\n";
     } else {
         std::cerr << "[GameModule] hot reload failed\n";
     }
