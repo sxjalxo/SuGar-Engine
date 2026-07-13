@@ -348,6 +348,37 @@ Avoid changes that merely increase feature count.
 
 ---
 
+# Rule 21 — Runtime Systems Must Not Own Hidden Authoritative State
+
+Any runtime state that affects gameplay, determinism, replay, hot reload, or time
+travel must either:
+
+- live in ECS components, **or**
+- be **fully reconstructible from serialized ECS state**.
+
+The distinction is **authoritative state vs derived state**:
+
+- **Authoritative state** — what gameplay logic reads and acts on. Must survive
+  snapshots / time travel / hot reload. Belongs in ECS (or must be serializable).
+- **Derived state** — caches recomputed from authoritative state (e.g. an animation
+  graph cache, an RmlUi layout cache). May be rebuilt freely; need not be serialized.
+
+This protects the guarantees already built — snapshots, replay, hot reload, stable
+IDs, time travel. A runtime system that hides authoritative state in private fields
+reintroduces exactly the class of bug those systems eliminated:
+
+```
+Animator { float currentTime; }   // hidden authoritative state
+        ↓ snapshot → restore
+animation jumps                    // regression, hard to reason about later
+```
+
+Applies to **everything**: animation, runtime UI, particles, navigation, AI. When
+adding a runtime subsystem, first classify its state as authoritative or derived, and
+route authoritative state through ECS / serialization.
+
+---
+
 # Decision Checklist
 
 Before merging any major feature, ask:

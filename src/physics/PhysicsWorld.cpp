@@ -271,7 +271,20 @@ std::vector<std::pair<size_t, size_t>> broadphasePairs(const std::vector<WorldSh
              | ((static_cast<int64_t>(y) & mask) << 21)
              | ((static_cast<int64_t>(z) & mask) << 42);
     };
-    auto cellCoord = [invCell](float v) { return static_cast<int>(std::floor(v * invCell)); };
+    // Clamp before the int cast so extreme or NaN positions can't overflow it
+    // (that would be UB). Correctness is unaffected — the exact AABB test is the
+    // arbiter; this only bounds the bucket index (distant shapes may alias, which
+    // just costs a rejected candidate).
+    auto cellCoord = [invCell](float v) -> int {
+        const float c = std::floor(v * invCell);
+        if (c >= 2.0e9f) {
+            return 2000000000;
+        }
+        if (c <= -2.0e9f || !(c == c)) { // second test catches NaN
+            return -2000000000;
+        }
+        return static_cast<int>(c);
+    };
 
     std::unordered_map<int64_t, std::vector<int>> grid;
     grid.reserve(count * 2);

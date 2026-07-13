@@ -17,8 +17,12 @@
 #include <chrono>
 #include <cstdint>
 #include <cstdlib>
+#include <ctime>
+#include <fstream>
 #include <iomanip>
 #include <iostream>
+#include <ostream>
+#include <sstream>
 #include <string>
 #include <vector>
 
@@ -56,12 +60,61 @@ inline double timeBest(int iterations, Fn&& fn) {
     return best;
 }
 
-inline void printRow(const std::string& name, const std::string& value) {
-    std::string label = name;
-    while (label.size() < 26) {
-        label += '.';
+// One measured number. `value` is the raw quantity in `unit` so machine formats
+// (CSV/JSON) stay comparable across runs; `human` is the pre-formatted display
+// string for the text table (it may fold in extras like B/entity).
+struct Metric {
+    std::string key;    // machine-stable snake_case name
+    double value;       // raw number in `unit`
+    std::string unit;   // "MiB", "ms", "us", "B", "KiB"
+    std::string human;  // display string for the text table
+};
+
+inline std::string buildLabel() {
+#ifdef NDEBUG
+    return "release";
+#else
+    return "debug";
+#endif
+}
+
+inline std::string trimNum(double v, int width = 6) {
+    std::string s = std::to_string(v);
+    return s.size() > static_cast<size_t>(width) ? s.substr(0, width) : s;
+}
+
+inline void emitText(std::ostream& out, const std::vector<Metric>& metrics, int entities) {
+    out << "[bench] scene: " << entities
+        << " entities (transform + rigidbody + collider + script + hierarchy)\n";
+    for (const Metric& m : metrics) {
+        std::string label = m.key;
+        while (label.size() < 26) {
+            label += '.';
+        }
+        out << "[bench] " << label << ' ' << m.human << "\n";
     }
-    std::cout << "[bench] " << label << ' ' << value << "\n";
+}
+
+inline void emitCsv(std::ostream& out, const std::vector<Metric>& metrics, int entities) {
+    out << "metric,value,unit,entities,build\n";
+    for (const Metric& m : metrics) {
+        out << m.key << ',' << m.value << ',' << m.unit << ',' << entities << ',' << buildLabel() << "\n";
+    }
+}
+
+inline void emitJson(std::ostream& out, const std::vector<Metric>& metrics, int entities) {
+    out << "{\n";
+    out << "  \"timestamp\": " << static_cast<long long>(std::time(nullptr)) << ",\n";
+    out << "  \"build\": \"" << buildLabel() << "\",\n";
+    out << "  \"entities\": " << entities << ",\n";
+    out << "  \"metrics\": {\n";
+    for (size_t i = 0; i < metrics.size(); ++i) {
+        out << "    \"" << metrics[i].key << "\": { \"value\": " << metrics[i].value
+            << ", \"unit\": \"" << metrics[i].unit << "\" }"
+            << (i + 1 < metrics.size() ? "," : "") << "\n";
+    }
+    out << "  }\n";
+    out << "}\n";
 }
 
 // A representative gameplay scene: a flat field of dynamic bodies (transform +
@@ -108,19 +161,28 @@ inline void run() {
         }
     }
 
+    // Output format: text table (default) | csv | json. SUGAR_BENCH_OUT redirects
+    // machine formats to a file (e.g. benchmarks/2026-08-14.json) for regression
+    // tracking over time; text always goes to stdout.
+    std::string format = "text";
+    if (const char* fmt = std::getenv("SUGAR_BENCH_FORMAT")) {
+        format = fmt;
+    }
+
     Registry registry;
     std::vector<Light> lights;
     buildScene(registry, entityCount);
 
-    std::cout << "[bench] scene: " << entityCount << " entities "
-              << "(transform + rigidbody + collider + script + hierarchy)\n";
+    std::vector<Metric> metrics;
+    auto add = [&](const std::string& key, double value, const std::string& unit, const std::string& human) {
+        metrics.push_back(Metric{ key, value, unit, human });
+    };
 
     // --- Snapshot size: the number that decides the binary/delta question -------
     const std::string oneSnapshot = SceneSerializer::saveToString(registry, lights);
     const double snapshotKiB = static_cast<double>(oneSnapshot.size()) / 1024.0;
-    printRow("snapshot size (1 frame)",
-             std::to_string(snapshotKiB).substr(0, 6) + " KiB (" +
-             std::to_string(oneSnapshot.size() / std::max(1, entityCount)) + " B/entity)");
+    add("snapshot_size", snapshotKiB, "KiB",
+        trimNum(snapshotKiB) + " KiB (" + std::to_string(oneSnapshot.size() / std::max(1, entityCount)) + " B/entity)");
 
     // The Play-mode ring holds 600 frames (~10 s at 60 Hz). Fill it and measure
     // actual retained bytes — this is the "18 MB or 600 MB?" answer.
@@ -134,7 +196,7 @@ inline void run() {
         ringBytes += ring.get(i).size();
     }
     const double ringMiB = static_cast<double>(ringBytes) / (1024.0 * 1024.0);
-    printRow("snapshot ring (600 frames)", std::to_string(ringMiB).substr(0, 6) + " MiB total");
+    add("snapshot_ring_600", ringMiB, "MiB", trimNum(ringMiB) + " MiB total");
 
     // --- Timings ----------------------------------------------------------------
     // A sink the results feed into, so the compiler can't elide the measured work.
@@ -143,27 +205,27 @@ inline void run() {
     const double saveMs = timeBest(50, [&] {
         sink += SceneSerializer::saveToString(registry, lights).size();
     });
-    printRow("snapshot save", std::to_string(saveMs).substr(0, 6) + " ms");
+    add("snapshot_save", saveMs, "ms", trimNum(saveMs) + " ms");
 
     // In-place restore (Phase 14A) over the whole scene.
     const double patchMs = timeBest(50, [&] {
         sink += SceneSerializer::patchFromString(registry, lights, oneSnapshot) ? 1u : 0u;
     });
-    printRow("patch restore (14A)", std::to_string(patchMs).substr(0, 6) + " ms");
+    add("patch_restore", patchMs, "ms", trimNum(patchMs) + " ms");
 
     // Query execution over the authoritative ECS.
     const double queryMs = timeBest(200, [&] {
         sink += EntityQuery::run(registry, "rigidbody where vel.y < 0").entities.size();
     });
-    printRow("query (rigidbody where...)", std::to_string(queryMs).substr(0, 6) + " ms");
+    add("query", queryMs, "ms", trimNum(queryMs) + " ms");
 
-    // Physics step — the real per-frame hot system (all-pairs broadphase, so this
-    // also shows the O(n^2) the roadmap flagged for a future uniform grid).
+    // Physics step — the real per-frame hot system (uniform-grid broadphase since
+    // Phase 15; this is where its win shows up as scenes grow).
     PhysicsWorld physics;
     const double physicsMs = timeBest(50, [&] {
         physics.step(registry, 1.0f / 60.0f);
     });
-    printRow("physics step", std::to_string(physicsMs).substr(0, 6) + " ms");
+    add("physics_step", physicsMs, "ms", trimNum(physicsMs) + " ms");
 
     // Scheduler overhead: run four no-op systems and compare enforcement off vs on,
     // isolating the per-step cost the scheduler itself adds (tracker scopes under
@@ -176,14 +238,41 @@ inline void run() {
     const double schedOff = timeBest(1000, [&] { scheduler.run(1.0f / 60.0f); });
     scheduler.setEnforcement(AccessEnforcement::Warn);
     const double schedOn = timeBest(1000, [&] { scheduler.run(1.0f / 60.0f); });
-    printRow("scheduler run (enforce off)", std::to_string(schedOff * 1000.0).substr(0, 6) + " us");
-    printRow("scheduler run (enforce on)", std::to_string(schedOn * 1000.0).substr(0, 6) + " us" +
-             (ComponentAccess::trackingEnabled() ? "" : " (tracking compiled out)"));
+    add("scheduler_off", schedOff * 1000.0, "us", trimNum(schedOff * 1000.0) + " us");
+    add("scheduler_on", schedOn * 1000.0, "us",
+        trimNum(schedOn * 1000.0) + " us" + (ComponentAccess::trackingEnabled() ? "" : " (tracking compiled out)"));
 
+    if (sink == 0xFFFFFFFFFFFFFFFFull) {
+        std::cout << ""; // keep `sink` observably live so the work isn't elided
+    }
+
+    // --- Emit -------------------------------------------------------------------
+    if (format == "csv" || format == "json") {
+        std::ostringstream body;
+        if (format == "csv") {
+            emitCsv(body, metrics, entityCount);
+        } else {
+            emitJson(body, metrics, entityCount);
+        }
+        if (const char* path = std::getenv("SUGAR_BENCH_OUT")) {
+            std::ofstream file(path);
+            if (file) {
+                file << body.str();
+                std::cout << "[bench] wrote " << format << " to " << path << "\n";
+            } else {
+                std::cerr << "[bench] failed to open " << path << "; writing to stdout\n" << body.str();
+            }
+        } else {
+            std::cout << body.str();
+        }
+        return;
+    }
+
+    emitText(std::cout, metrics, entityCount);
     std::cout << "[bench] hot-reload swap latency: run the editor + F8 (see "
                  "'[GameModule] hot reload complete (N ms swap)')\n";
-    std::cout << "[bench] done — decide binary/delta snapshots from the 600-frame MiB above"
-              << (sink == 0xFFFFFFFFFFFFFFFFull ? " ." : "") << "\n"; // keep `sink` live
+    std::cout << "[bench] done — machine formats: SUGAR_BENCH_FORMAT=csv|json "
+                 "(+ SUGAR_BENCH_OUT=path)\n";
 }
 
 } // namespace Benchmarks

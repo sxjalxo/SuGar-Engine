@@ -9,7 +9,7 @@ big engines. See [ROADMAP.md](ROADMAP.md) for the full vision and plan.
 
 ## Current Status
 
-**M1 / Track A done; Track B underway** ("the iteration engine")
+**M1 + M2 done; M3 (Engine Platform Complete) in progress** ("the iteration engine")
 
 The engine is a working runtime with a full editor on top: a clean **Edit → Play
 → Stop** cycle with snapshot/restore and a fixed-timestep loop; a behavior +
@@ -17,13 +17,14 @@ input system; hand-rolled physics with collision events; prefabs & glTF import;
 quaternion transforms; a hand-rolled audio mixer; and an editor with scene
 picking, gizmos, undo/redo, duplicate/delete, multi-select, hierarchy
 reparenting, and component management — all on top of the Vulkan renderer, asset
-pipeline, hot reload, and shadow mapping. **Track B (the wedge) is well underway**:
+pipeline, hot reload, and shadow mapping. **M2 (the iteration wedge) is complete**:
 a hardened editor command system (transactions, id-stable recreate, compression),
 **time-travel debugging** (snapshot ring-buffer + timeline scrubbing + frame
 stepping) with in-place restore that keeps your selection/undo, an ECS query
 console, and — the headline — **code hot reload**: a layered
 `Editor -> Engine -> Core` split with gameplay in a DLL that hot-swaps live when
-recompiled, state preserved.
+recompiled, state preserved. **Next (M3): Runtime UI (RmlUi)** — the platform's
+missing player-facing half.
 
 > Positioning: *"A Vulkan engine designed for instant iteration and debuggable
 > systems — not just rendering power."* Open-source, dev-led, aimed at indie devs.
@@ -209,6 +210,20 @@ cmake --build build --config Debug --target SuGarEngine --parallel 1
 build\Debug\SuGarEngine.exe
 ```
 
+### Validate (one command)
+
+`SUGAR_VALIDATE=1` runs every correctness gate — self-tests **and** stress tests —
+and exits nonzero if any fail, so it drops straight into CI:
+
+```powershell
+$env:SUGAR_VALIDATE = "1"; build\Release\SuGarEngine.exe; $env:SUGAR_VALIDATE = ""
+# ... [validate] === 19/19 checks passed, 0 failure(s) ===
+```
+
+Benchmarks are intentionally excluded — they're measurements, not pass/fail gates
+(run them separately under `SUGAR_BENCH`). The individual harnesses below still run
+standalone when you want just one.
+
 ### Self-tests
 
 Each subsystem has a quick headless confidence test. Run them (no window/Vulkan)
@@ -220,8 +235,19 @@ $env:SUGAR_SELFTEST = "1"; build\Debug\SuGarEngine.exe; $env:SUGAR_SELFTEST = ""
 
 Prints a per-test PASS/FAIL table (with timings) for CoreBoundary, CommandHistory,
 EntityIdRecycling, EntityQuery, SnapshotStorage, Physics, PhysicsBroadphase,
-SystemScheduler, ComponentAccess, SnapshotPatch, Serializer, BehaviorRegistry, and
-RegistryGraph.
+SystemScheduler, ComponentAccess, SnapshotPatch, RuntimeUI, Serializer,
+BehaviorRegistry, and RegistryGraph.
+
+### Stress / QA harness
+
+Where the self-tests check each subsystem is *sane*, `SUGAR_STRESS=1` hammers the
+load-bearing ones at scale and at edge inputs — most notably validating the physics
+grid broadphase against a brute-force O(n²) oracle, plus determinism, in-place
+restore over many cycles (no id drift/leak), id recycling churn, and ring overflow:
+
+```powershell
+$env:SUGAR_STRESS = "1"; build\Release\SuGarEngine.exe; $env:SUGAR_STRESS = ""
+```
 
 ### System access enforcement
 
@@ -237,7 +263,7 @@ $env:SUGAR_STRICT = "1"; build\Debug\SuGarEngine.exe; $env:SUGAR_STRICT = ""
 
 Release builds compile the tracking out entirely, so this costs nothing to ship.
 
-### Profiling (Phase 14C)
+### Profiling
 
 Headless profiler over a representative scene: snapshot size, 600-frame ring
 memory, save time, patch restore, query, physics step, scheduler overhead.
@@ -253,44 +279,61 @@ Baseline (Release, ~636 B/entity/frame): 50 ent → 18 MiB ring / 0.6 ms save;
 the 60 Hz budget before memory does — the evidence gating binary/delta snapshots.
 Hot-reload swap latency logs live (`[GameModule] hot reload complete (N ms swap)`).
 
+For regression tracking over time, emit machine-readable output:
+`SUGAR_BENCH_FORMAT=csv|json` (+ `SUGAR_BENCH_OUT=benchmarks/2026-08-14.json` to
+write a file), then diff runs across commits.
+
 ---
 
 ## Roadmap
 
-Full plan in [ROADMAP.md](ROADMAP.md). Summary:
+Full plan in **[ROADMAP.md](ROADMAP.md)**; architectural constraints in
+**[RULES.md](RULES.md)**; dependency boundaries in
+**[REQUIREMENTS_AND_SCOPE.md](REQUIREMENTS_AND_SCOPE.md)**. Milestone summary:
 
-* **Phase 1–4** *(done)* — Vulkan setup, renderer (swapchain/depth/materials),
-  ECS, editor, asset pipeline, hot reload, advanced lighting + shadows, optimization
-* **Phase 5** *(done)* — Runtime foundation (Play mode: snapshot/restore + update loop)
-* **Phase 6–9** *(done)* — behaviors + input mapping, hand-rolled physics, prefabs +
-  glTF import, quaternion transforms, hand-rolled audio
-* **Phase 10** *(done)* — editor UX (10A picking + jitter-free rotation + reparenting;
-  10B gizmos + undo/redo + duplicate; 10C multi-select + delete + component
-  management + prefab Revert/Apply + thumbnails). **M1 / Track A complete.**
-* **Track B** *(in progress)* — the wedge: 11A editor command infrastructure;
-  11B time-travel scrubbing + frame stepping + ECS query console; 11C snapshot
-  backend abstraction + timeline bookmarks *done*. **Phase 12 code hot reload**:
-  12A/12B/12C *done* — layered `Editor -> Engine -> Core` (Vulkan-free `SuGarCore`
-  shared lib) with gameplay behaviors in a **`SuGarGame` DLL that links only Core**,
-  loaded at runtime and **hot-reloaded live** when recompiled. **Phase 13A–D**
-  *done* — opinionated scheduling: the gameplay pipeline is declared `System`s with
-  read/write sets behind a deterministic `SystemScheduler`, those declarations are
-  **enforced** by the ECS (Warn in-editor, `SUGAR_STRICT` fail-fast for CI), and an
-  editor **Systems** panel shows the order, parallel stages, and live violations.
-  Parallel execution + incremental rebuilds deferred by design (nothing independent
-  to parallelize yet; async fights time-travel). **Phase 14A** *done* — in-place
-  state restore: snapshot restore patches the live entities instead of rebuilding,
-  so selection/inspector/undo survive scrub + Stop. **Phase 14B** *done* — recreate
-  preserves original entity ids (`createEntityWithId`), so the entire 11A id-remap
-  layer was deleted (more code removed than added). **Phase 14C** *done* — measured
-  the baseline (`SUGAR_BENCH`): JSON snapshots fine ≤~50 entities, per-frame save
-  cost (not memory) is what breaks first as scenes grow — evidence gating
-  binary/delta snapshots. Later: binary/delta snapshots; query growth; reload only
-  affected systems
-* **Phase 15** *(done)* — physics broadphase replaced with a deterministic
-  uniform-grid spatial hash (the O(n²) the 14C profiler flagged); 2000 bodies
-  ≈ 1.9 ms
-* **Track C** — graphics, cross-platform, packaging, ecosystem
+* **M1 — Engine Foundation** *(done)* — Vulkan renderer + shadows, ECS, editor, asset
+  pipeline, physics, audio, prefabs + glTF, serialization.
+* **M2 — Developer Iteration** *(done)* — time travel (snapshot ring + scrubbing +
+  bookmarks), ECS query console, native code hot reload (`Editor → Engine → Core` +
+  hot-swappable `SuGarGame` DLL), deterministic scheduler + access enforcement,
+  in-place restore, stable entity recreation (id-remap layer *deleted*), uniform-grid
+  physics broadphase, and the self-test / stress / benchmark harnesses
+  (`SUGAR_VALIDATE`).
+* **M3 — Engine Platform Complete** *(in progress)* — the platform is "complete" when
+  a developer can build a typical indie game **without extending the engine**. The
+  missing floor: **Runtime UI (RmlUi)** — its ECS-authoritative *model layer* (16A)
+  is done and snapshot-safe; the RmlUi *view* (16B) is next — plus Animation,
+  Navigation, Asset-pipeline maturity, Packaging, Build pipeline. Explicitly *not* required: AAA rendering,
+  networking, console ports, world streaming, marketplace.
+  * **The platform's missing half:** SuGar has a complete *developer* UI (Dear ImGui,
+    permanently reserved for tooling) but intentionally **no *player* UI**. Runtime UI
+    begins with RmlUi — it completes half the engine, so it leads M3.
+* **M4 — Dogfood** — build real games (sandbox → platformer → shooter) as validation;
+  after this, engine work is driven by real projects, not speculation.
+
+---
+
+## Floating point & world scale
+
+SuGar uses **32-bit floating point** for world coordinates (positions, transforms,
+collider math). At very large coordinates, floating-point *precision* — not the
+engine — becomes the limiting factor: near `X = 8,000,000` a `float`'s spacing
+(ULP) is already ~0.5 units, so sub-unit colliders degenerate and collisions/
+transforms lose accuracy. This is expected **IEEE-754** behavior, not an engine
+bug; every 32-bit engine (including commercial ones) has the same wall, which is
+why open-world engines rebase the origin.
+
+Practically: keep gameplay within roughly ±100,000 units of the origin and
+precision is a non-issue. The physics broadphase is hardened against extreme/NaN
+coordinates (it won't crash or corrupt), but it can't manufacture precision the
+`float` type doesn't have.
+
+Future large-world support could add, in rough order of cost:
+- **origin rebasing** — periodically shift the world so the camera stays near 0
+- **double-precision transforms** — 64-bit positions, floats for rendering
+- **hierarchical / sector coordinates** — integer sector + local float offset
+
+Deferred until a real project needs it (see the roadmap's evidence-first stance).
 
 ---
 

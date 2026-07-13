@@ -59,6 +59,10 @@ add_library(SuGarCore SHARED
     src/scene/TransformMath.h
     src/physics/CollisionEvent.h
     src/physics/PhysicsComponents.h
+    src/ui/UIComponents.h
+    src/ui/UIIntent.h
+    src/ui/RuntimeUISystem.h
+    src/ui/RuntimeUISystem.cpp
     src/audio/AudioComponents.h
     src/assets/AssetHandle.h
     src/rendering/Material.h
@@ -123,6 +127,7 @@ add_executable(SuGarEngine
     src/editor/EntityQuery.h
     src/SelfTests.h
     src/Benchmarks.h
+    src/StressTests.h
     src/audio/AudioClip.h
     src/audio/AudioEngine.h
     src/audio/AudioEngine.cpp

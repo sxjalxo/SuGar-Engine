@@ -23,6 +23,8 @@
 #include "scene/BehaviorRegistry.h"
 #include "scene/Light.h"
 #include "scene/SceneSerializer.h"
+#include "ui/RuntimeUISystem.h"
+#include "ui/UIIntent.h"
 
 namespace SelfTests {
 
@@ -314,6 +316,73 @@ inline bool testSnapshotPatch() {
     return ok;
 }
 
+// --- RuntimeUI: intents drive the authoritative UI model deterministically, and
+// that model survives a snapshot restore in place (Phase 16A / Rule 21) ---------
+inline bool testRuntimeUI() {
+    bool ok = true;
+
+    { // intents mutate the screen stack + focus in queue order; queue is drained
+        Registry reg;
+        const Entity uiRoot = reg.createEntity();
+        reg.uiScreens.add(uiRoot, {});
+        reg.focus.add(uiRoot, {});
+
+        UIIntentQueue queue;
+        queue.push(UIIntent::openScreen("HUD"));
+        queue.push(UIIntent::openScreen("Inventory")); // opens over HUD
+        queue.push(UIIntent::setFocus("SlotA"));
+        RuntimeUISystem::update(reg, queue);
+
+        const auto& screen = reg.uiScreens.get(uiRoot);
+        ok &= screen.screenStack.size() == 2 && screen.active() == "Inventory";
+        ok &= reg.focus.get(uiRoot).focusedElement == "SlotA";
+        ok &= queue.empty(); // drained
+
+        queue.push(UIIntent::popScreen());  // back to HUD
+        queue.push(UIIntent::clearFocus());
+        RuntimeUISystem::update(reg, queue);
+        ok &= reg.uiScreens.get(uiRoot).active() == "HUD";
+        ok &= reg.focus.get(uiRoot).focusedElement.empty();
+
+        // Pop past the bottom must not underflow.
+        queue.push(UIIntent::popScreen());
+        queue.push(UIIntent::popScreen());
+        RuntimeUISystem::update(reg, queue);
+        ok &= reg.uiScreens.get(uiRoot).screenStack.empty();
+    }
+
+    { // UI state survives an in-place snapshot restore with the same entity id —
+      // the Rule 21 guarantee that makes UI = f(ECS, input) worthwhile. The UIRoot
+      // carries a transform so it participates in serialization like any entity.
+        Registry reg;
+        std::vector<Light> lights;
+        const Entity uiRoot = reg.createEntity();
+        reg.transforms.add(uiRoot, {});
+        reg.hierarchy.add(uiRoot, {});
+        UIScreenComponent screen;
+        screen.screenStack = { "MainMenu", "Settings" };
+        reg.uiScreens.add(uiRoot, screen);
+        reg.focus.add(uiRoot, { "AudioTab" });
+
+        const std::string frame = SceneSerializer::saveToString(reg, lights);
+        ok &= !frame.empty();
+
+        // Simulate the game running: navigate away.
+        reg.uiScreens.get(uiRoot).screenStack = { "HUD" };
+        reg.focus.get(uiRoot).focusedElement = "Crosshair";
+
+        // Scrub back — patch in place.
+        ok &= SceneSerializer::patchFromString(reg, lights, frame);
+        ok &= reg.uiScreens.has(uiRoot); // same id preserved
+        const auto& restored = reg.uiScreens.get(uiRoot);
+        ok &= restored.screenStack.size() == 2 &&
+              restored.screenStack[0] == "MainMenu" && restored.screenStack[1] == "Settings";
+        ok &= reg.focus.get(uiRoot).focusedElement == "AudioTab";
+    }
+
+    return ok;
+}
+
 // --- Serializer: save produces the expected scene text (round-trip load needs
 // a device, so this is save-only) ------------------------------------------
 inline bool testSerializer() {
@@ -570,7 +639,8 @@ inline bool testComponentAccess() {
     return ok;
 }
 
-inline bool run() {
+// Returns {passed, total}. Prints the per-test table as a side effect.
+inline std::pair<int, int> run() {
     using TestFn = bool (*)();
     struct Case { const char* name; TestFn fn; };
     const Case cases[] = {
@@ -584,12 +654,14 @@ inline bool run() {
         { "SystemScheduler",  testSystemScheduler },
         { "ComponentAccess",  testComponentAccess },
         { "SnapshotPatch",    testSnapshotPatch },
+        { "RuntimeUI",        testRuntimeUI },
         { "Serializer",       testSerializer },
         { "BehaviorRegistry", testBehaviorRegistry },
         { "RegistryGraph",    testRegistryGraph },
     };
 
-    bool allOk = true;
+    int passed = 0;
+    const int total = static_cast<int>(sizeof(cases) / sizeof(cases[0]));
     for (const Case& test : cases) {
         const auto start = std::chrono::high_resolution_clock::now();
         const bool ok = test.fn();
@@ -602,11 +674,11 @@ inline bool run() {
         }
         std::cout << "[selftest] " << label << ' ' << (ok ? "PASS" : "FAIL")
                   << " (" << std::fixed << std::setprecision(2) << milliseconds << " ms)\n";
-        allOk &= ok;
+        passed += ok ? 1 : 0;
     }
     std::cout << "[selftest] ResourceManager.. SKIPPED (needs Vulkan device)\n";
-    std::cout << "[selftest] " << (allOk ? "ALL PASS" : "FAILURES PRESENT") << "\n";
-    return allOk;
+    std::cout << "[selftest] " << (passed == total ? "ALL PASS" : "FAILURES PRESENT") << "\n";
+    return { passed, total };
 }
 
 } // namespace SelfTests

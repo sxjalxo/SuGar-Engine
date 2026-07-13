@@ -31,6 +31,8 @@ enum class ComponentType : uint32_t {
     PrefabInstance,
     AudioSource,
     AudioListener,
+    UIScreen,
+    Focus,
     Count
 };
 

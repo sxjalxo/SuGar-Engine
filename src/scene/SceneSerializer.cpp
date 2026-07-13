@@ -479,15 +479,25 @@ void writeEntityObject(std::ostream& output, const Registry& registry, Entity en
     const bool hasAudioSource = registry.audioSources.has(entity) &&
                                 registry.audioSources.get(entity).clip != INVALID_HANDLE;
     const bool hasAudioListener = registry.audioListeners.has(entity);
+    // Runtime UI state (Phase 16A). Authoritative → serialized, so it survives
+    // snapshot restore / time travel (RULES.md Rule 21). Only the UIRoot-style
+    // entities carry these; everything else omits them.
+    const bool hasUIScreen = registry.uiScreens.has(entity);
+    const bool hasFocus = registry.focus.has(entity);
 
     // Optional components are emitted in a comma-chain; each one needs to know
     // whether any later optional follows it. `tailAfter*` capture that.
     const bool tailAfterMaterial = hasScript || hasBody || hasCollider || hasPrefab ||
-                                   hasAudioSource || hasAudioListener;
-    const bool tailAfterScript = hasBody || hasCollider || hasPrefab || hasAudioSource || hasAudioListener;
-    const bool tailAfterBody = hasCollider || hasPrefab || hasAudioSource || hasAudioListener;
-    const bool tailAfterCollider = hasPrefab || hasAudioSource || hasAudioListener;
-    const bool tailAfterPrefab = hasAudioSource || hasAudioListener;
+                                   hasAudioSource || hasAudioListener || hasUIScreen || hasFocus;
+    const bool tailAfterScript = hasBody || hasCollider || hasPrefab || hasAudioSource ||
+                                 hasAudioListener || hasUIScreen || hasFocus;
+    const bool tailAfterBody = hasCollider || hasPrefab || hasAudioSource || hasAudioListener ||
+                               hasUIScreen || hasFocus;
+    const bool tailAfterCollider = hasPrefab || hasAudioSource || hasAudioListener || hasUIScreen || hasFocus;
+    const bool tailAfterPrefab = hasAudioSource || hasAudioListener || hasUIScreen || hasFocus;
+    const bool tailAfterAudioSource = hasAudioListener || hasUIScreen || hasFocus;
+    const bool tailAfterAudioListener = hasUIScreen || hasFocus;
+    const bool tailAfterUIScreen = hasFocus;
 
     writeIndent(output, 3);
     output << (tailAfterMaterial ? "},\n" : "}\n");
@@ -571,7 +581,7 @@ void writeEntityObject(std::ostream& output, const Registry& registry, Entity en
         writeIndent(output, 4);
         output << "\"spatial\": " << (source.spatial ? "true" : "false") << "\n";
         writeIndent(output, 3);
-        output << "}" << (hasAudioListener ? ",\n" : "\n");
+        output << "}" << (tailAfterAudioSource ? ",\n" : "\n");
     }
 
     // Optional: audio listener.
@@ -582,7 +592,27 @@ void writeEntityObject(std::ostream& output, const Registry& registry, Entity en
         writeIndent(output, 4);
         output << "\"gain\": " << listener.gain << "\n";
         writeIndent(output, 3);
-        output << "}\n";
+        output << "}" << (tailAfterAudioListener ? ",\n" : "\n");
+    }
+
+    // Optional: runtime UI screen stack (Phase 16A) — a JSON array of screen ids.
+    if (hasUIScreen) {
+        const auto& screen = registry.uiScreens.get(entity);
+        writeIndent(output, 3);
+        output << "\"uiscreen\": [";
+        for (size_t i = 0; i < screen.screenStack.size(); i++) {
+            output << "\"" << escapeJsonString(screen.screenStack[i]) << "\"";
+            if (i + 1 < screen.screenStack.size()) {
+                output << ", ";
+            }
+        }
+        output << "]" << (tailAfterUIScreen ? ",\n" : "\n");
+    }
+
+    // Optional: keyboard/gamepad focus.
+    if (hasFocus) {
+        writeIndent(output, 3);
+        output << "\"focus\": \"" << escapeJsonString(registry.focus.get(entity).focusedElement) << "\"\n";
     }
 
     writeIndent(output, 2);
@@ -685,6 +715,10 @@ struct PendingEntityData {
     std::string audioClipKey;
     bool hasAudioListener = false;
     AudioListenerComponent audioListener{};
+    bool hasUIScreen = false;
+    UIScreenComponent uiScreen{};
+    bool hasFocus = false;
+    FocusComponent focus{};
 };
 
 // Parses one object entry from the JSON. `sceneVersion` selects modern vs. the
@@ -820,6 +854,20 @@ PendingEntityData parseEntityObject(const JsonValue& objectValue, int sceneVersi
         }
     }
 
+    if (const JsonValue* screenValue = findObjectField(objectData, "uiscreen")) {
+        const auto& screenArray = requireArray(*screenValue, "object.uiscreen");
+        pendingEntity.hasUIScreen = true;
+        pendingEntity.uiScreen.screenStack.reserve(screenArray.size());
+        for (const JsonValue& id : screenArray) {
+            pendingEntity.uiScreen.screenStack.push_back(getStringValue(id, "uiscreen[]"));
+        }
+    }
+
+    if (const JsonValue* focusValue = findObjectField(objectData, "focus")) {
+        pendingEntity.hasFocus = true;
+        pendingEntity.focus.focusedElement = getStringValue(*focusValue, "object.focus");
+    }
+
     return pendingEntity;
 }
 
@@ -890,6 +938,14 @@ std::vector<Entity> createEntitiesFromObjects(Registry& registry, const std::vec
 
         if (pendingEntity.hasAudioListener) {
             registry.audioListeners.add(entity, pendingEntity.audioListener);
+        }
+
+        if (pendingEntity.hasUIScreen) {
+            registry.uiScreens.add(entity, pendingEntity.uiScreen);
+        }
+
+        if (pendingEntity.hasFocus) {
+            registry.focus.add(entity, pendingEntity.focus);
         }
     }
 
@@ -1062,6 +1118,26 @@ void patchEntity(Registry& registry, Entity entity, const PendingEntityData& dat
         }
     } else if (registry.audioListeners.has(entity)) {
         registry.audioListeners.remove(entity);
+    }
+
+    if (data.hasUIScreen) {
+        if (registry.uiScreens.has(entity)) {
+            registry.uiScreens.get(entity) = data.uiScreen;
+        } else {
+            registry.uiScreens.add(entity, data.uiScreen);
+        }
+    } else if (registry.uiScreens.has(entity)) {
+        registry.uiScreens.remove(entity);
+    }
+
+    if (data.hasFocus) {
+        if (registry.focus.has(entity)) {
+            registry.focus.get(entity) = data.focus;
+        } else {
+            registry.focus.add(entity, data.focus);
+        }
+    } else if (registry.focus.has(entity)) {
+        registry.focus.remove(entity);
     }
 }
 

@@ -4,6 +4,7 @@
 #include "audio/AudioSystem.h"
 #include "SelfTests.h"
 #include "Benchmarks.h"
+#include "StressTests.h"
 #include "core/Input.h"
 #include "core/InputActions.h"
 #include "rendering/Camera.h"
@@ -157,6 +158,36 @@ void SuGarApp::run() {
     if (std::getenv("SUGAR_BENCH") != nullptr) {
         Benchmarks::run();
         return;
+    }
+
+    // Opt-in QA / stress harness (Phase QA): invariant checks at scale + edge
+    // inputs (grid vs brute force, determinism, patch/id churn). Headless, exits.
+    if (std::getenv("SUGAR_STRESS") != nullptr) {
+        StressTests::run();
+        return;
+    }
+
+    // Single confidence entry point: run every correctness gate and exit nonzero
+    // if any failed (for CI). Deliberately only aggregates real pass/fail gates —
+    // self-tests + stress; benchmarks are measurements, not gates, so they stay
+    // separate under SUGAR_BENCH.
+    if (std::getenv("SUGAR_VALIDATE") != nullptr) {
+        std::cout << "=== SuGar validate: correctness gates ===\n";
+        const auto self = SelfTests::run();
+        std::cout << "\n";
+        const auto stress = StressTests::run();
+
+        const int passed = self.first + stress.first;
+        const int total = self.second + stress.second;
+        const int failures = total - passed;
+        std::cout << "\n[validate] self-tests:   " << self.first << "/" << self.second
+                  << (self.first == self.second ? "  PASS" : "  FAIL") << "\n";
+        std::cout << "[validate] stress-tests: " << stress.first << "/" << stress.second
+                  << (stress.first == stress.second ? "  PASS" : "  FAIL") << "\n";
+        std::cout << "[validate] benchmarks:   measurement only (run SUGAR_BENCH=1)\n";
+        std::cout << "[validate] === " << passed << "/" << total << " checks passed, "
+                  << failures << " failure(s) ===\n";
+        std::exit(failures == 0 ? 0 : 1);
     }
 
     initWindow();

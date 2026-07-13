@@ -13,6 +13,8 @@ const char* componentTypeName(ComponentType type) {
         case ComponentType::PrefabInstance: return "PrefabInstance";
         case ComponentType::AudioSource:    return "AudioSource";
         case ComponentType::AudioListener:  return "AudioListener";
+        case ComponentType::UIScreen:       return "UIScreen";
+        case ComponentType::Focus:          return "Focus";
         case ComponentType::Count:          break;
     }
     return "<unknown>";

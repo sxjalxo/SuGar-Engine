@@ -10,6 +10,7 @@
 #include "ecs/Components.h"
 #include "ecs/EntityManager.h"
 #include "physics/PhysicsComponents.h"
+#include "ui/UIComponents.h"
 
 // Component type -> ComponentType bit, so ComponentStorage can report access
 // against the same identities systems declare (Phase 13B). One entry per storage
@@ -33,6 +34,8 @@ SUGAR_TRACK_COMPONENT(ColliderComponent, Collider);
 SUGAR_TRACK_COMPONENT(PrefabInstanceComponent, PrefabInstance);
 SUGAR_TRACK_COMPONENT(AudioSourceComponent, AudioSource);
 SUGAR_TRACK_COMPONENT(AudioListenerComponent, AudioListener);
+SUGAR_TRACK_COMPONENT(UIScreenComponent, UIScreen);
+SUGAR_TRACK_COMPONENT(FocusComponent, Focus);
 
 #undef SUGAR_TRACK_COMPONENT
 
@@ -73,6 +76,8 @@ public:
         prefabInstances.remove(entity);
         audioSources.remove(entity);
         audioListeners.remove(entity);
+        uiScreens.remove(entity);
+        focus.remove(entity);
         entityManager.destroyEntity(entity);
     }
 
@@ -124,6 +129,8 @@ public:
         prefabInstances.clear();
         audioSources.clear();
         audioListeners.clear();
+        uiScreens.clear();
+        focus.clear();
         entityManager.reset();
     }
 
@@ -138,6 +145,8 @@ public:
     ComponentStorage<PrefabInstanceComponent> prefabInstances;
     ComponentStorage<AudioSourceComponent> audioSources;
     ComponentStorage<AudioListenerComponent> audioListeners;
+    ComponentStorage<UIScreenComponent> uiScreens;
+    ComponentStorage<FocusComponent> focus;
 
     // Injected by the Engine layer to release GPU/asset handles when an entity is
     // destroyed. Keeps the ECS (Core layer) free of any ResourceManager / Vulkan
