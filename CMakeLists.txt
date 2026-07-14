@@ -12,6 +12,33 @@ set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
 
 add_subdirectory(external/glfw)
 
+# --- RmlUi (runtime player UI, Phase 16B) -----------------------------------
+# Player-facing UI (HTML/CSS), separate from the Dear ImGui editor. Linked into the
+# engine executable only -- never into SuGarCore (Rule 15 keeps Core free of platform
+# UI). RmlUi needs a font engine even for headless initialisation, so FreeType is
+# vendored below and the built-in FreeType font engine stays enabled.
+set(RMLUI_SAMPLES OFF CACHE BOOL "" FORCE)
+set(RMLUI_LUA_BINDINGS OFF CACHE BOOL "" FORCE)
+set(RMLUI_FONT_ENGINE "freetype" CACHE STRING "" FORCE)
+set(BUILD_TESTING OFF CACHE BOOL "" FORCE)
+set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
+
+# FreeType: RmlUi's font rasterizer (solved-infrastructure dep, RULES-compliant).
+# Built from external/freetype and exposed under the target name RmlUi expects.
+# Optional FreeType deps (zlib/png/harfbuzz/brotli) stay disabled -- not needed for
+# glyph rasterization.
+set(FT_DISABLE_ZLIB ON CACHE BOOL "" FORCE)
+set(FT_DISABLE_BZIP2 ON CACHE BOOL "" FORCE)
+set(FT_DISABLE_PNG ON CACHE BOOL "" FORCE)
+set(FT_DISABLE_HARFBUZZ ON CACHE BOOL "" FORCE)
+set(FT_DISABLE_BROTLI ON CACHE BOOL "" FORCE)
+add_subdirectory(external/freetype)
+if(NOT TARGET Freetype::Freetype)
+    add_library(Freetype::Freetype ALIAS freetype)
+endif()
+
+add_subdirectory(external/RmlUi)
+
 add_library(imgui
     external/imgui/imgui.cpp
     external/imgui/imgui_draw.cpp
@@ -79,7 +106,7 @@ target_include_directories(SuGarCore PUBLIC
 # BehaviorRegistry's table) then live in exactly one module.
 set_target_properties(SuGarCore PROPERTIES WINDOWS_EXPORT_ALL_SYMBOLS ON)
 
-# Component access tracking (Phase 13B) — the ECS reports every storage access so
+# Component access tracking (Phase 13B) -- the ECS reports every storage access so
 # the scheduler can enforce each system's declared read/write sets. A development
 # guard rail: Debug only, so release builds keep the bare storage ops. PUBLIC
 # because ComponentStorage is a header template instantiated in the engine and the
@@ -128,6 +155,10 @@ add_executable(SuGarEngine
     src/SelfTests.h
     src/Benchmarks.h
     src/StressTests.h
+    src/ui/RmlSystemInterface.h
+    src/ui/RmlSystemInterface.cpp
+    src/ui/RuntimeUIView.h
+    src/ui/RuntimeUIView.cpp
     src/audio/AudioClip.h
     src/audio/AudioEngine.h
     src/audio/AudioEngine.cpp
@@ -158,6 +189,7 @@ target_link_libraries(SuGarEngine
     SuGarCore
     glfw
     imgui
+    RmlUi::Core
     Vulkan::Vulkan
 )
 

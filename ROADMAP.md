@@ -185,9 +185,20 @@ this unblock building a game at all?*):
      Verified by the `RuntimeUI` self-test (intent logic + in-place snapshot survival
      with id preserved). Keyboard focus is authoritative; mouse hover stays derived
      (lives in the future view).
-   - **16B+ â€” the view (later):** vendor RmlUi, Vulkan render + system interface,
-     `RuntimeUISystem` reads ECS â†’ updates the RmlUi document (polling, never
-     subscribing), callbacks emit intents. Needs the running editor to verify.
+   - **16B.1 — RmlUi build + link + FreeType smoke path (DONE):** RmlUi 6.3
+     and FreeType are vendored under `external/`, built via CMake, and
+     **static-linked into the engine only** (never Core — Rule 15). SuGar-side
+     `RmlSystemInterface` (time + logging) and a placeholder no-op
+     `RenderInterface` compile against the RmlUi API. `SUGAR_UITEST` now proves
+     the headless view foundation end-to-end: initialise RmlUi with the FreeType
+     font engine, load a bundled Lato font, create a context, load a document from
+     memory, verify the DOM, and render through the no-op interface.
+   - **16B.2+ — the Vulkan view (needs visual verification):** a real
+     `Rml::RenderInterface` translating RmlUi geometry/textures into SuGar's Vulkan
+     draw calls; `RuntimeUISystem` reads ECS -> updates the RmlUi document (polling,
+     never subscribing); input -> intents. The reference `RmlUi_Renderer_VK` backend
+     owns its own Vulkan device, so it won't drop in as-is — the interface is written
+     against our existing renderer. Requires the running editor to verify visually.
 2. **Animation** â€” skeletal, blend trees, state machines, graphs. Hand-rolled
    playback (external libs may import data, never own playback). Same Rule 21
    constraint: playback state (current time, active state) is authoritative â†’ ECS /

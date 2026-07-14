@@ -5,6 +5,7 @@
 #include "SelfTests.h"
 #include "Benchmarks.h"
 #include "StressTests.h"
+#include "ui/RuntimeUIView.h"
 #include "core/Input.h"
 #include "core/InputActions.h"
 #include "rendering/Camera.h"
@@ -164,6 +165,15 @@ void SuGarApp::run() {
     // inputs (grid vs brute force, determinism, patch/id churn). Headless, exits.
     if (std::getenv("SUGAR_STRESS") != nullptr) {
         StressTests::run();
+        return;
+    }
+
+    // Opt-in RmlUi integration smoke test (Phase 16B.1): verifies the RmlUi
+    // build/link/init path headless, before the Vulkan render interface exists.
+    if (std::getenv("SUGAR_UITEST") != nullptr) {
+        if (!RuntimeUIView::smokeTest()) {
+            std::exit(1);
+        }
         return;
     }
 

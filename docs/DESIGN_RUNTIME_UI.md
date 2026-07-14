@@ -1,20 +1,22 @@
 # Runtime UI — Architecture Design Record
 
-> **Status:** Model layer **implemented** (Phase 16A); view (RmlUi) pending (16B+).
+> **Status:** Model layer **implemented** (Phase 16A); RmlUi build/link/FreeType smoke path implemented (16B.1); Vulkan view pending (16B.2+).
 > Runtime UI leads Milestone M3.
 > **Type:** Architecture record — decided *before* code exists, because the
 > decisions here are the ones every future line of UI code must optimize around.
 > First of the `docs/DESIGN_*.md` family (architecture records, a level above the
 > README).
 >
-> **Implemented so far (16A, headless + tested):** `UIScreenComponent` +
-> `FocusComponent` (ECS, `src/ui/`), `UIIntentQueue`, `RuntimeUISystem` (drains
-> intents on the fixed step), and full serializer round-trip so UI state survives
-> snapshot restore. The `RuntimeUI` self-test proves intents mutate the model
+> **Implemented so far:** 16A delivered `UIScreenComponent` + `FocusComponent`
+> (ECS, `src/ui/`), `UIIntentQueue`, `RuntimeUISystem` (drains intents on the
+> fixed step), and full serializer round-trip so UI state survives snapshot
+> restore. The `RuntimeUI` self-test proves intents mutate the model
 > deterministically and that the model survives an in-place snapshot restore with
-> the entity id preserved. **Not yet built:** the RmlUi view (16B+) — everything
-> below about documents/layout/data-binding describes that pending half.
-
+> the entity id preserved. 16B.1 delivered the engine-only RmlUi + FreeType smoke
+> path: initialise headlessly, load a bundled font, create a context, build a
+> memory document, and render through a no-op interface. **Not yet built:** the
+> Vulkan-backed RmlUi view (16B.2+) -- everything below about
+> documents/layout/data-binding describes that pending half.
 ---
 
 ## The governing invariant

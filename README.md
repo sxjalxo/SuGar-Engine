@@ -217,7 +217,7 @@ and exits nonzero if any fail, so it drops straight into CI:
 
 ```powershell
 $env:SUGAR_VALIDATE = "1"; build\Release\SuGarEngine.exe; $env:SUGAR_VALIDATE = ""
-# ... [validate] === 19/19 checks passed, 0 failure(s) ===
+# ... [validate] === 20/20 checks passed, 0 failure(s) ===
 ```
 
 Benchmarks are intentionally excluded — they're measurements, not pass/fail gates
@@ -237,6 +237,15 @@ Prints a per-test PASS/FAIL table (with timings) for CoreBoundary, CommandHistor
 EntityIdRecycling, EntityQuery, SnapshotStorage, Physics, PhysicsBroadphase,
 SystemScheduler, ComponentAccess, SnapshotPatch, RuntimeUI, Serializer,
 BehaviorRegistry, and RegistryGraph.
+
+RmlUi also has a separate headless integration smoke test for the engine-only view
+scaffold. It initialises RmlUi with FreeType, loads a bundled Lato font, creates a
+context, loads a memory document, verifies the DOM, and renders through a no-op
+interface:
+
+```powershell
+$env:SUGAR_UITEST = "1"; build\Debug\SuGarEngine.exe; $env:SUGAR_UITEST = ""
+```
 
 ### Stress / QA harness
 
@@ -301,11 +310,11 @@ Full plan in **[ROADMAP.md](ROADMAP.md)**; architectural constraints in
   (`SUGAR_VALIDATE`).
 * **M3 — Engine Platform Complete** *(in progress)* — the platform is "complete" when
   a developer can build a typical indie game **without extending the engine**. The
-  missing floor: **Runtime UI (RmlUi)** — its ECS-authoritative *model layer* (16A)
-  is done and snapshot-safe; the RmlUi *view* (16B) is next — plus Animation,
+  missing floor: **Runtime UI (RmlUi)** -- its ECS-authoritative *model layer* (16A)
+  is done and snapshot-safe; the RmlUi build/link/FreeType smoke path (16B.1) is
+  done; the Vulkan-backed RmlUi view (16B.2+) is next -- plus Animation,
   Navigation, Asset-pipeline maturity, Packaging, Build pipeline. Explicitly *not* required: AAA rendering,
-  networking, console ports, world streaming, marketplace.
-  * **The platform's missing half:** SuGar has a complete *developer* UI (Dear ImGui,
+  networking, console ports, world streaming, marketplace.  * **The platform's missing half:** SuGar has a complete *developer* UI (Dear ImGui,
     permanently reserved for tooling) but intentionally **no *player* UI**. Runtime UI
     begins with RmlUi — it completes half the engine, so it leads M3.
 * **M4 — Dogfood** — build real games (sandbox → platformer → shooter) as validation;
