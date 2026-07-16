@@ -31,7 +31,19 @@ body {
     display: block;
     font-size: 14px;
     color: #e0e0e0ff;
-    margin-bottom: 10px;
+    margin-bottom: 6px;
+}
+
+/* Displays TextInputComponent.buffer. Deliberately a plain div, not an RmlUi text
+   field: the buffer is authoritative ECS state, and an <input> would become a
+   second, hidden home for it (RULES.md Rule 21). The trailing caret is derived. */
+#textfield {
+    display: block;
+    font-size: 14px;
+    color: #ffd54fff;
+    background-color: #10161eaa;
+    padding: 4px 6px;
+    margin-bottom: 8px;
 }
 
 /* Buttons never mutate UI state directly — their handler emits an intent that the
@@ -63,6 +75,7 @@ button:focus {
     <div id="hud">
         <div id="title">SuGar Runtime UI</div>
         <div id="body">Screen: HUD</div>
+        <div id="textfield">Name: _</div>
         <button id="open">Open Inventory</button>
         <button id="back">Back</button>
     </div>

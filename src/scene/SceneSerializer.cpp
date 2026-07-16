@@ -484,20 +484,22 @@ void writeEntityObject(std::ostream& output, const Registry& registry, Entity en
     // entities carry these; everything else omits them.
     const bool hasUIScreen = registry.uiScreens.has(entity);
     const bool hasFocus = registry.focus.has(entity);
+    const bool hasTextInput = registry.textInputs.has(entity);
 
     // Optional components are emitted in a comma-chain; each one needs to know
     // whether any later optional follows it. `tailAfter*` capture that.
     const bool tailAfterMaterial = hasScript || hasBody || hasCollider || hasPrefab ||
-                                   hasAudioSource || hasAudioListener || hasUIScreen || hasFocus;
+                                   hasAudioSource || hasAudioListener || hasUIScreen || hasFocus || hasTextInput;
     const bool tailAfterScript = hasBody || hasCollider || hasPrefab || hasAudioSource ||
-                                 hasAudioListener || hasUIScreen || hasFocus;
+                                 hasAudioListener || hasUIScreen || hasFocus || hasTextInput;
     const bool tailAfterBody = hasCollider || hasPrefab || hasAudioSource || hasAudioListener ||
-                               hasUIScreen || hasFocus;
-    const bool tailAfterCollider = hasPrefab || hasAudioSource || hasAudioListener || hasUIScreen || hasFocus;
-    const bool tailAfterPrefab = hasAudioSource || hasAudioListener || hasUIScreen || hasFocus;
-    const bool tailAfterAudioSource = hasAudioListener || hasUIScreen || hasFocus;
-    const bool tailAfterAudioListener = hasUIScreen || hasFocus;
-    const bool tailAfterUIScreen = hasFocus;
+                               hasUIScreen || hasFocus || hasTextInput;
+    const bool tailAfterCollider = hasPrefab || hasAudioSource || hasAudioListener || hasUIScreen || hasFocus || hasTextInput;
+    const bool tailAfterPrefab = hasAudioSource || hasAudioListener || hasUIScreen || hasFocus || hasTextInput;
+    const bool tailAfterAudioSource = hasAudioListener || hasUIScreen || hasFocus || hasTextInput;
+    const bool tailAfterAudioListener = hasUIScreen || hasFocus || hasTextInput;
+    const bool tailAfterFocus = hasTextInput;
+    const bool tailAfterUIScreen = hasFocus || hasTextInput;
 
     writeIndent(output, 3);
     output << (tailAfterMaterial ? "},\n" : "}\n");
@@ -612,7 +614,22 @@ void writeEntityObject(std::ostream& output, const Registry& registry, Entity en
     // Optional: keyboard/gamepad focus.
     if (hasFocus) {
         writeIndent(output, 3);
-        output << "\"focus\": \"" << escapeJsonString(registry.focus.get(entity).focusedElement) << "\"\n";
+        output << "\"focus\": \"" << escapeJsonString(registry.focus.get(entity).focusedElement)
+               << "\"" << (tailAfterFocus ? ",\n" : "\n");
+    }
+
+    // Optional: in-progress text entry. Authoritative, so it round-trips — a scrub
+    // must not lose a half-typed line. The caret blink phase is derived, not stored.
+    if (hasTextInput) {
+        const auto& text = registry.textInputs.get(entity);
+        writeIndent(output, 3);
+        output << "\"textinput\": {\n";
+        writeIndent(output, 4);
+        output << "\"buffer\": \"" << escapeJsonString(text.buffer) << "\",\n";
+        writeIndent(output, 4);
+        output << "\"caret\": " << text.caret << "\n";
+        writeIndent(output, 3);
+        output << "}\n";
     }
 
     writeIndent(output, 2);
@@ -719,6 +736,8 @@ struct PendingEntityData {
     UIScreenComponent uiScreen{};
     bool hasFocus = false;
     FocusComponent focus{};
+    bool hasTextInput = false;
+    TextInputComponent textInput{};
 };
 
 // Parses one object entry from the JSON. `sceneVersion` selects modern vs. the
@@ -868,6 +887,17 @@ PendingEntityData parseEntityObject(const JsonValue& objectValue, int sceneVersi
         pendingEntity.focus.focusedElement = getStringValue(*focusValue, "object.focus");
     }
 
+    if (const JsonValue* textValue = findObjectField(objectData, "textinput")) {
+        const auto& textData = requireObject(*textValue, "object.textinput");
+        pendingEntity.hasTextInput = true;
+        if (const JsonValue* v = findObjectField(textData, "buffer")) {
+            pendingEntity.textInput.buffer = getStringValue(*v, "textinput.buffer");
+        }
+        if (const JsonValue* v = findObjectField(textData, "caret")) {
+            pendingEntity.textInput.caret = getIntValue(*v, "textinput.caret");
+        }
+    }
+
     return pendingEntity;
 }
 
@@ -946,6 +976,10 @@ std::vector<Entity> createEntitiesFromObjects(Registry& registry, const std::vec
 
         if (pendingEntity.hasFocus) {
             registry.focus.add(entity, pendingEntity.focus);
+        }
+
+        if (pendingEntity.hasTextInput) {
+            registry.textInputs.add(entity, pendingEntity.textInput);
         }
     }
 
@@ -1138,6 +1172,16 @@ void patchEntity(Registry& registry, Entity entity, const PendingEntityData& dat
         }
     } else if (registry.focus.has(entity)) {
         registry.focus.remove(entity);
+    }
+
+    if (data.hasTextInput) {
+        if (registry.textInputs.has(entity)) {
+            registry.textInputs.get(entity) = data.textInput;
+        } else {
+            registry.textInputs.add(entity, data.textInput);
+        }
+    } else if (registry.textInputs.has(entity)) {
+        registry.textInputs.remove(entity);
     }
 }
 

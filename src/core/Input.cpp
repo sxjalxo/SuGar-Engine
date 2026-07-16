@@ -5,10 +5,12 @@ std::unordered_map<int, bool> Input::pressedKeys;
 glm::vec2 Input::lastMousePos = {0.0f, 0.0f};
 glm::vec2 Input::mouseDelta = {0.0f, 0.0f};
 bool Input::firstMouse = true;
+std::string Input::frameText;
 
 void Input::init() {
     keys.clear();
     pressedKeys.clear();
+    frameText.clear();
     lastMousePos = {0.0f, 0.0f};
     mouseDelta = {0.0f, 0.0f};
     firstMouse = true;
@@ -17,6 +19,15 @@ void Input::init() {
 void Input::beginFrame() {
     pressedKeys.clear();
     mouseDelta = {0.0f, 0.0f};
+    frameText.clear();
+}
+
+void Input::pushText(const std::string& utf8) {
+    frameText += utf8;
+}
+
+const std::string& Input::textThisFrame() {
+    return frameText;
 }
 
 void Input::setKey(int key, bool pressed) {

@@ -71,6 +71,8 @@ private:
     // Reads the authoritative UI components and pushes changed values into the
     // document. Polling, not subscription: no reactive graph, deterministic order.
     void syncFromEcs(const Registry* registry);
+    // Pushes the authoritative text buffer into the document (view of ECS state).
+    void syncTextFromEcs(const Registry* registry);
 
     std::unique_ptr<RmlVulkanRenderer> renderer;
     std::unique_ptr<IntentEmitter> openListener;
@@ -81,6 +83,7 @@ private:
     bool lastLeftDown = false;
     std::string lastScreen = "\xff"; // impossible value: forces the first sync
     std::string lastFocus = "\xff";  // mirrors FocusComponent, applied to the document
+    std::string lastText = "\xff";   // mirrors TextInputComponent.buffer
     // Focusable element ids in document order (the tab ring). A view concern: the
     // *order* comes from the DOM, but the focused *value* lives in ECS.
     std::vector<std::string> focusables;

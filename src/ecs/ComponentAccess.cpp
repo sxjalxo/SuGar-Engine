@@ -15,6 +15,7 @@ const char* componentTypeName(ComponentType type) {
         case ComponentType::AudioListener:  return "AudioListener";
         case ComponentType::UIScreen:       return "UIScreen";
         case ComponentType::Focus:          return "Focus";
+        case ComponentType::TextInput:      return "TextInput";
         case ComponentType::Count:          break;
     }
     return "<unknown>";

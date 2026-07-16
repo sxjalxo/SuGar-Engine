@@ -33,6 +33,7 @@ enum class ComponentType : uint32_t {
     AudioListener,
     UIScreen,
     Focus,
+    TextInput,
     Count
 };
 

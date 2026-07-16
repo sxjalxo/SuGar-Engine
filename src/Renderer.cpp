@@ -1320,7 +1320,11 @@ void Renderer::initImGui() {
 
     ImGuiIO& io = ImGui::GetIO();
     io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
-    io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
+    // NavEnableKeyboard is deliberately OFF. It made ImGui claim the keyboard
+    // whenever any editor window had focus, which (a) kept io.WantCaptureKeyboard
+    // permanently true — silently disabling every F-key shortcut that was gated on
+    // it — and (b) let ImGui swallow Tab, fighting the runtime UI's focus
+    // navigation. The editor is mouse-driven; widget tab-nav isn't worth those costs.
 
     ImGui::StyleColorsDark();
 

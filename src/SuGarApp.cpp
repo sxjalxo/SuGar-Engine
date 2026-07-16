@@ -238,6 +238,24 @@ void SuGarApp::initWindow() {
         Input::setMousePosition(x, y);
     });
 
+    // Typed characters for runtime UI text entry. Installed before ImGui's backend,
+    // which chains to it, so both the editor and the game see text.
+    glfwSetCharCallback(window, [](GLFWwindow*, unsigned int codepoint) {
+        // Minimal UTF-8 encode; the runtime UI only needs printable input for now.
+        std::string utf8;
+        if (codepoint < 0x80) {
+            utf8 += static_cast<char>(codepoint);
+        } else if (codepoint < 0x800) {
+            utf8 += static_cast<char>(0xC0 | (codepoint >> 6));
+            utf8 += static_cast<char>(0x80 | (codepoint & 0x3F));
+        } else if (codepoint < 0x10000) {
+            utf8 += static_cast<char>(0xE0 | (codepoint >> 12));
+            utf8 += static_cast<char>(0x80 | ((codepoint >> 6) & 0x3F));
+            utf8 += static_cast<char>(0x80 | (codepoint & 0x3F));
+        }
+        Input::pushText(utf8);
+    });
+
     glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_NORMAL);
 }
 
@@ -454,6 +472,7 @@ void SuGarApp::initScene() {
     uiScreen.screenStack = { "HUD" };
     registry.uiScreens.add(uiRoot, uiScreen);
     registry.focus.add(uiRoot, {});
+    registry.textInputs.add(uiRoot, {});
 }
 
 void SuGarApp::rebuildDrawList() {
@@ -820,7 +839,7 @@ void SuGarApp::setupSystemSchedule() {
     systemSchedule.add(System{
         "RuntimeUI",
         0,
-        maskOf(ComponentType::UIScreen, ComponentType::Focus),
+        maskOf(ComponentType::UIScreen, ComponentType::Focus, ComponentType::TextInput),
         [this](float) {
             RuntimeUISystem::update(registry, uiIntents);
         }});
@@ -1047,6 +1066,18 @@ void SuGarApp::processInput(float deltaTime) {
         }
         if (Input::isKeyPressed(GLFW_KEY_ENTER)) {
             renderer->runtimeUIActivateFocused();
+        }
+    }
+
+    // Text entry: typed characters become intents, so the authoritative buffer lives
+    // in TextInputComponent (and survives snapshot restore) rather than inside an
+    // RmlUi text field. Only while playing — the editor owns the keyboard in Edit.
+    if (engineState != EngineState::Edit) {
+        if (!Input::textThisFrame().empty()) {
+            uiIntents.push(UIIntent::appendText(Input::textThisFrame()));
+        }
+        if (Input::isKeyPressed(GLFW_KEY_BACKSPACE)) {
+            uiIntents.push(UIIntent::backspaceText());
         }
     }
 

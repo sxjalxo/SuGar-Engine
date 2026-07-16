@@ -280,14 +280,31 @@ this unblock building a game at all?*):
      state). Verified by screenshot: Tab → amber ring on *Open Inventory* → Tab →
      ring on *Back* → Enter → `Screen: HUD` → `No screen` (pop applied through ECS).
      Because focus is a component, it also survives snapshot restore for free.
-   - **16B.7+ — remaining (later):** text input still isn't routed into RmlUi
-     (`ProcessTextInput` / `TextInputComponent` unused), so text fields don't work.
-     Tab is also consumed by ImGui's own keyboard nav, so the editor and the game UI
-     both react — needs input ownership rules once the game grabs focus. Popping the
-     last screen leaves *"No screen"*; the root HUD should probably be non-poppable.
-     UI navigation advances only in Play (intents drain on the fixed step — by design),
-     which makes authoring UI in Edit mode awkward. The demo HUD is a placeholder:
-     real screens need `DialogueStateComponent` / `TextInputComponent` wired through.
+   - **16B.7 — authoritative text entry + input-ownership fix (DONE, verified):**
+     completes the 16A model: **`TextInputComponent` { buffer, caret }** is now real
+     ECS state, wired through the registry, access tracking, and the serializer, so a
+     half-typed line survives a snapshot restore. Typed characters become
+     `AppendText` / `BackspaceText` **intents** (GLFW char callback → `Input::textThisFrame`
+     → fixed step), and the document renders the buffer into a plain `<div>` —
+     deliberately **not** an RmlUi `<input>`, which would become a second, hidden home
+     for authoritative text (Rule 21). The trailing caret is derived. Verified by
+     screenshot: typing → `Name: sugar_`, Backspace → `Name: suga_`; the `RuntimeUI`
+     self-test covers append/backspace/underflow and the snapshot round-trip.
+     - **Root cause found + fixed:** `ImGuiConfigFlags_NavEnableKeyboard` was the
+       source of *two* earlier bugs. It made ImGui claim the keyboard whenever any
+       editor window had focus, so `io.WantCaptureKeyboard` was **permanently true**
+       (silently disabling every F-key shortcut gated on it — the 16B.3 finding) and
+       ImGui swallowed **Tab**, fighting the runtime UI's focus navigation (16B.6).
+       Nav is now off: the editor is mouse-driven, and widget tab-nav wasn't worth
+       those costs.
+     - **Fixed:** the root screen is no longer poppable — backing out of the last
+       screen used to leave the game showing *"No screen"*.
+   - **16B.8+ — remaining (later):** caret is display-only (no arrow-key movement or
+     mid-string editing; `TextInputComponent.caret` supports it, the input mapping
+     doesn't yet). Text entry is global rather than routed to a focused field, so
+     there is exactly one text buffer. `DialogueStateComponent` still isn't modelled.
+     UI advances only in Play (intents drain on the fixed step — by design), which
+     makes authoring UI in Edit mode awkward.
 2. **Animation** — skeletal, blend trees, state machines, graphs. Hand-rolled
    playback (external libs may import data, never own playback). Same Rule 21
    constraint: playback state (current time, active state) is authoritative → ECS /

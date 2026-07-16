@@ -36,6 +36,7 @@ SUGAR_TRACK_COMPONENT(AudioSourceComponent, AudioSource);
 SUGAR_TRACK_COMPONENT(AudioListenerComponent, AudioListener);
 SUGAR_TRACK_COMPONENT(UIScreenComponent, UIScreen);
 SUGAR_TRACK_COMPONENT(FocusComponent, Focus);
+SUGAR_TRACK_COMPONENT(TextInputComponent, TextInput);
 
 #undef SUGAR_TRACK_COMPONENT
 
@@ -78,6 +79,7 @@ public:
         audioListeners.remove(entity);
         uiScreens.remove(entity);
         focus.remove(entity);
+        textInputs.remove(entity);
         entityManager.destroyEntity(entity);
     }
 
@@ -131,6 +133,7 @@ public:
         audioListeners.clear();
         uiScreens.clear();
         focus.clear();
+        textInputs.clear();
         entityManager.reset();
     }
 
@@ -147,6 +150,7 @@ public:
     ComponentStorage<AudioListenerComponent> audioListeners;
     ComponentStorage<UIScreenComponent> uiScreens;
     ComponentStorage<FocusComponent> focus;
+    ComponentStorage<TextInputComponent> textInputs;
 
     // Injected by the Engine layer to release GPU/asset handles when an entity is
     // destroyed. Keeps the ECS (Core layer) free of any ResourceManager / Vulkan

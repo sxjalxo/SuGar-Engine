@@ -32,3 +32,12 @@ struct UIScreenComponent {
 struct FocusComponent {
     ElementId focusedElement;
 };
+
+// In-progress text entry (a save name, a chat line). The buffer and caret are
+// **authoritative**: scrub back and the half-typed text must still be there, so they
+// live here rather than inside an RmlUi text field. The caret *blink phase* is
+// derived and stays in the view. See docs/DESIGN_RUNTIME_UI.md.
+struct TextInputComponent {
+    std::string buffer;
+    int caret = 0; // insertion index into `buffer`
+};

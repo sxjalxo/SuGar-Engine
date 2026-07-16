@@ -278,11 +278,37 @@ void RuntimeUIView::syncFromEcs(const Registry* registry) {
     }
 }
 
+void RuntimeUIView::syncTextFromEcs(const Registry* registry) {
+    if (registry == nullptr || document == nullptr) {
+        return;
+    }
+
+    // The buffer is authoritative ECS state; the document merely displays it. RmlUi
+    // never owns the text, so a snapshot restore brings a half-typed line back.
+    std::string buffer;
+    bool hasField = false;
+    for (const auto& [entity, text] : registry->textInputs.getAll()) {
+        (void)entity;
+        buffer = text.buffer;
+        hasField = true;
+        break;
+    }
+    if (!hasField || buffer == lastText) {
+        return;
+    }
+    lastText = buffer;
+
+    if (Rml::Element* field = document->GetElementById("textfield")) {
+        field->SetInnerRML("Name: " + buffer + "_"); // trailing caret is derived
+    }
+}
+
 void RuntimeUIView::render(VkCommandBuffer cmd, VkExtent2D extent, const Registry* registry) {
     if (context == nullptr || !renderer || !renderer->isReady()) {
         return;
     }
     syncFromEcs(registry); // ECS is the model; the document is a projection of it
+    syncTextFromEcs(registry);
     context->SetDimensions(Rml::Vector2i(static_cast<int>(extent.width), static_cast<int>(extent.height)));
     renderer->beginFrame(cmd, extent);
     context->Update();

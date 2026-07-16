@@ -14,18 +14,22 @@
 struct UIIntent {
     enum class Type {
         OpenScreen,   // push `arg` onto the screen stack
-        PopScreen,    // pop the top screen (back navigation); no-op if empty
+        PopScreen,    // pop the top screen (back navigation); root is not poppable
         SetFocus,     // set keyboard/gamepad focus to `arg`
-        ClearFocus    // clear focus
+        ClearFocus,   // clear focus
+        AppendText,   // insert `arg` at the caret of the text buffer
+        BackspaceText // delete the character before the caret
     };
 
     Type type;
-    std::string arg; // screen or element id; unused for Pop/ClearFocus
+    std::string arg; // screen id, element id, or text; unused for Pop/Clear/Backspace
 
     static UIIntent openScreen(ScreenId id) { return { Type::OpenScreen, std::move(id) }; }
     static UIIntent popScreen() { return { Type::PopScreen, {} }; }
     static UIIntent setFocus(ElementId id) { return { Type::SetFocus, std::move(id) }; }
     static UIIntent clearFocus() { return { Type::ClearFocus, {} }; }
+    static UIIntent appendText(std::string text) { return { Type::AppendText, std::move(text) }; }
+    static UIIntent backspaceText() { return { Type::BackspaceText, {} }; }
 };
 
 // A queue of pending UI intents, filled at render rate and drained by the

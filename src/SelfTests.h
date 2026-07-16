@@ -344,11 +344,36 @@ inline bool testRuntimeUI() {
         ok &= reg.uiScreens.get(uiRoot).active() == "HUD";
         ok &= reg.focus.get(uiRoot).focusedElement.empty();
 
-        // Pop past the bottom must not underflow.
+        // The root screen is not poppable: backing out of the last screen would
+        // leave the game with no UI at all.
         queue.push(UIIntent::popScreen());
         queue.push(UIIntent::popScreen());
         RuntimeUISystem::update(reg, queue);
-        ok &= reg.uiScreens.get(uiRoot).screenStack.empty();
+        ok &= reg.uiScreens.get(uiRoot).screenStack.size() == 1 &&
+              reg.uiScreens.get(uiRoot).active() == "HUD";
+    }
+
+    { // text entry: buffer + caret are authoritative and edited via intents only
+        Registry reg;
+        const Entity uiRoot = reg.createEntity();
+        reg.textInputs.add(uiRoot, {});
+
+        UIIntentQueue queue;
+        queue.push(UIIntent::appendText("Hi"));
+        queue.push(UIIntent::appendText("!"));
+        RuntimeUISystem::update(reg, queue);
+        ok &= reg.textInputs.get(uiRoot).buffer == "Hi!" && reg.textInputs.get(uiRoot).caret == 3;
+
+        queue.push(UIIntent::backspaceText());
+        RuntimeUISystem::update(reg, queue);
+        ok &= reg.textInputs.get(uiRoot).buffer == "Hi" && reg.textInputs.get(uiRoot).caret == 2;
+
+        // Backspace at the start must not underflow.
+        queue.push(UIIntent::backspaceText());
+        queue.push(UIIntent::backspaceText());
+        queue.push(UIIntent::backspaceText());
+        RuntimeUISystem::update(reg, queue);
+        ok &= reg.textInputs.get(uiRoot).buffer.empty() && reg.textInputs.get(uiRoot).caret == 0;
     }
 
     { // UI state survives an in-place snapshot restore with the same entity id —
@@ -363,13 +388,16 @@ inline bool testRuntimeUI() {
         screen.screenStack = { "MainMenu", "Settings" };
         reg.uiScreens.add(uiRoot, screen);
         reg.focus.add(uiRoot, { "AudioTab" });
+        reg.textInputs.add(uiRoot, { "half-typed", 5 });
 
         const std::string frame = SceneSerializer::saveToString(reg, lights);
         ok &= !frame.empty();
 
-        // Simulate the game running: navigate away.
+        // Simulate the game running: navigate away and keep typing.
         reg.uiScreens.get(uiRoot).screenStack = { "HUD" };
         reg.focus.get(uiRoot).focusedElement = "Crosshair";
+        reg.textInputs.get(uiRoot).buffer = "something else";
+        reg.textInputs.get(uiRoot).caret = 3;
 
         // Scrub back — patch in place.
         ok &= SceneSerializer::patchFromString(reg, lights, frame);
@@ -378,6 +406,9 @@ inline bool testRuntimeUI() {
         ok &= restored.screenStack.size() == 2 &&
               restored.screenStack[0] == "MainMenu" && restored.screenStack[1] == "Settings";
         ok &= reg.focus.get(uiRoot).focusedElement == "AudioTab";
+        // A half-typed line is authoritative — a scrub must bring it back exactly.
+        ok &= reg.textInputs.get(uiRoot).buffer == "half-typed" &&
+              reg.textInputs.get(uiRoot).caret == 5;
     }
 
     return ok;
