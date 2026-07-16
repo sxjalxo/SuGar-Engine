@@ -50,6 +50,13 @@ button:hover {
     background-color: #4fc3f7ff;
     color: #10161eff;
 }
+
+/* Keyboard/gamepad focus ring. Focus is authoritative ECS state (FocusComponent);
+   this is only how the view renders it. Mouse hover, by contrast, is derived. */
+button:focus {
+    border: 2px #ffd54fff;
+    background-color: #3a5a72ff;
+}
 </style>
 </head>
 <body>

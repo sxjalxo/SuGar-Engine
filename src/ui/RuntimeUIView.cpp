@@ -157,6 +157,20 @@ void RuntimeUIView::init(VkDevice device, VkPhysicalDevice physicalDevice, VkCom
         return;
     }
 
+    intentQueue = intents;
+
+    // Build the tab ring from the document. Order is a view/DOM concern; the focused
+    // value itself is authoritative and lives in FocusComponent.
+    {
+        Rml::ElementList buttons;
+        document->GetElementsByTagName(buttons, "button");
+        for (Rml::Element* button : buttons) {
+            if (!button->GetId().empty()) {
+                focusables.push_back(button->GetId());
+            }
+        }
+    }
+
     // Buttons emit intents only — the hard rule from the design record.
     if (intents != nullptr) {
         if (Rml::Element* open = document->GetElementById("open")) {
@@ -186,9 +200,62 @@ void RuntimeUIView::processMouse(float x, float y, bool leftDown) {
     lastLeftDown = leftDown;
 }
 
+void RuntimeUIView::focusNext(bool reverse) {
+    if (focusables.empty() || intentQueue == nullptr) {
+        return;
+    }
+
+    // Work out the next id from the current (ECS-derived) focus, then *emit an
+    // intent*. Focus is not moved here — the fixed-step system owns that write.
+    int current = -1;
+    for (size_t i = 0; i < focusables.size(); i++) {
+        if (focusables[i] == lastFocus) {
+            current = static_cast<int>(i);
+            break;
+        }
+    }
+
+    const int count = static_cast<int>(focusables.size());
+    int next = 0;
+    if (reverse) {
+        next = (current <= 0) ? count - 1 : current - 1;
+    } else {
+        next = (current < 0 || current + 1 >= count) ? 0 : current + 1;
+    }
+    intentQueue->push(UIIntent::setFocus(focusables[static_cast<size_t>(next)]));
+}
+
+void RuntimeUIView::activateFocused() {
+    if (document == nullptr || lastFocus.empty()) {
+        return;
+    }
+    if (Rml::Element* element = document->GetElementById(lastFocus)) {
+        element->Click(); // fires the same listener a mouse click would
+    }
+}
+
 void RuntimeUIView::syncFromEcs(const Registry* registry) {
     if (registry == nullptr || document == nullptr) {
         return;
+    }
+
+    // Focus: poll the authoritative value and apply it to the document. RmlUi is a
+    // view here — it never decides what is focused.
+    std::string focusId;
+    for (const auto& [entity, focus] : registry->focus.getAll()) {
+        (void)entity;
+        focusId = focus.focusedElement;
+        break;
+    }
+    if (focusId != lastFocus) {
+        lastFocus = focusId;
+        if (!focusId.empty()) {
+            if (Rml::Element* element = document->GetElementById(focusId)) {
+                element->Focus(true); // focus_visible: draws the :focus ring
+            }
+        } else if (Rml::Element* focused = document->GetFocusLeafNode()) {
+            focused->Blur();
+        }
     }
 
     // Poll the authoritative model. The UIRoot singleton owns it, but nothing here

@@ -268,12 +268,26 @@ this unblock building a game at all?*):
        `glfwGetMouseButton`, *not* read from ImGui's `io.MouseDown`. ImGui's button
        state stayed false for injected/synthetic clicks even though hover worked, and
        player input shouldn't depend on ImGui's event routing anyway.
-   - **16B.6+ — remaining (later):** keyboard/text input isn't routed into RmlUi yet
-     (pointer only), so text fields and gamepad/keyboard focus navigation don't work.
-     UI navigation advances only in Play, since intents drain on the fixed step (by
-     design). The demo HUD is still a placeholder — real screens (inventory,
-     dialogue) need the `DialogueStateComponent` / `TextInputComponent` side of the
-     16A model wired through.
+   - **16B.6 — ECS-authoritative keyboard focus (DONE, visually verified):** closes
+     the design's mouse-hover-vs-keyboard-focus split. **Focus never lives in RmlUi.**
+     Tab / Shift+Tab don't move focus directly: the view computes the next id from the
+     document's tab ring (a DOM/view concern) and **emits a `SetFocus` intent**; the
+     fixed-step system writes `FocusComponent` (authoritative); the view then polls it
+     and applies `Element::Focus()`. Enter calls `Element::Click()` on the focused
+     element, firing the *same* listener a mouse click would — so keyboard and mouse
+     share exactly one path into ECS, and there is no second focus source of truth.
+     Added a `button:focus` ring to the RCSS (view-only rendering of authoritative
+     state). Verified by screenshot: Tab → amber ring on *Open Inventory* → Tab →
+     ring on *Back* → Enter → `Screen: HUD` → `No screen` (pop applied through ECS).
+     Because focus is a component, it also survives snapshot restore for free.
+   - **16B.7+ — remaining (later):** text input still isn't routed into RmlUi
+     (`ProcessTextInput` / `TextInputComponent` unused), so text fields don't work.
+     Tab is also consumed by ImGui's own keyboard nav, so the editor and the game UI
+     both react — needs input ownership rules once the game grabs focus. Popping the
+     last screen leaves *"No screen"*; the root HUD should probably be non-poppable.
+     UI navigation advances only in Play (intents drain on the fixed step — by design),
+     which makes authoring UI in Edit mode awkward. The demo HUD is a placeholder:
+     real screens need `DialogueStateComponent` / `TextInputComponent` wired through.
 2. **Animation** — skeletal, blend trees, state machines, graphs. Hand-rolled
    playback (external libs may import data, never own playback). Same Rule 21
    constraint: playback state (current time, active state) is authoritative → ECS /

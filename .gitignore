@@ -33,10 +33,4 @@ imgui.ini
 Thumbs.db
 .DS_Store
 
-# Developer notes
-UPDATED_ROADMAP.md
-REQUIREMENTS_AND_SCOPE.md
-
-# Project docs are intentionally tracked — do not ignore markdown:
-#   README.md, ROADMAP.md
-# (listed here so future *.md ignore rules don't accidentally drop them)
+# Project docs are intentionally tracked — do not ignore markdown

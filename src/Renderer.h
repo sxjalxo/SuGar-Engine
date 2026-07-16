@@ -44,6 +44,9 @@ public:
     // Records the player UI into the scene/viewport pass. Called by the scene pass
     // just before it ends, so the UI composites onto the game image.
     void renderRuntimeUIViewport(VkCommandBuffer cmd) { runtimeUI.render(cmd, viewportExtent, registry); }
+    // Keyboard focus navigation for the player UI (emits intents; see RuntimeUIView).
+    void runtimeUIFocusNext(bool reverse) { runtimeUI.focusNext(reverse); }
+    void runtimeUIActivateFocused() { runtimeUI.activateFocused(); }
     void setSystemSchedule(const SystemScheduler* schedule) { this->systemSchedule = schedule; }
     void refreshDrawListResources();
     void moveCameraForward(float deltaTime);

@@ -1036,6 +1036,20 @@ void SuGarApp::processInput(float deltaTime) {
         uiIntents.push(UIIntent::popScreen());
     }
 
+    // Runtime UI keyboard navigation. Tab/Shift+Tab move focus, Enter activates the
+    // focused element. Both go through intents, so focus lives in ECS and survives
+    // snapshot restore like any other authoritative UI state.
+    if (renderer != nullptr) {
+        if (Input::isKeyPressed(GLFW_KEY_TAB)) {
+            const bool reverse = Input::isKeyDown(GLFW_KEY_LEFT_SHIFT) ||
+                                 Input::isKeyDown(GLFW_KEY_RIGHT_SHIFT);
+            renderer->runtimeUIFocusNext(reverse);
+        }
+        if (Input::isKeyPressed(GLFW_KEY_ENTER)) {
+            renderer->runtimeUIActivateFocused();
+        }
+    }
+
     // Pointer state for the runtime UI is fed from the Viewport panel (in
     // viewport-local coordinates), not from raw window coords — see Renderer.
 

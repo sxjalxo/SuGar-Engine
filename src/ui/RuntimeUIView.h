@@ -14,6 +14,7 @@
 #include <memory>
 
 #include <string>
+#include <vector>
 
 namespace Rml {
 class Context;
@@ -41,6 +42,15 @@ public:
     // Feeds pointer state to RmlUi so elements can hover/click. Called at render
     // rate; any resulting callback only *queues* an intent.
     void processMouse(float x, float y, bool leftDown);
+
+    // Keyboard/gamepad focus navigation. Focus is *authoritative* state
+    // (docs/DESIGN_RUNTIME_UI.md): this does not move focus directly — it works out
+    // the next focusable element from the document and emits a SetFocus intent, which
+    // the fixed-step system writes to FocusComponent. The view then applies it.
+    void focusNext(bool reverse);
+    // Activates the focused element, firing its normal click listener (which emits an
+    // intent) — so keyboard and mouse share exactly one path into ECS.
+    void activateFocused();
 
     // Records the runtime UI into `cmd`. Must be called inside the UI render pass.
     // Polls `registry` for the authoritative UI model first (never subscribes to it —
@@ -70,4 +80,9 @@ private:
     bool initialised = false;
     bool lastLeftDown = false;
     std::string lastScreen = "\xff"; // impossible value: forces the first sync
+    std::string lastFocus = "\xff";  // mirrors FocusComponent, applied to the document
+    // Focusable element ids in document order (the tab ring). A view concern: the
+    // *order* comes from the DOM, but the focused *value* lives in ECS.
+    std::vector<std::string> focusables;
+    UIIntentQueue* intentQueue = nullptr;
 };
