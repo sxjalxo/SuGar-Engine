@@ -197,6 +197,11 @@ void Renderer::init() {
     createSyncObjects();
     createDescriptorSets();
 
+    // Runtime player UI (Phase 16B.5). Draws into the *scene* render pass, i.e. onto
+    // the offscreen game image the Viewport panel displays — not over the editor
+    // chrome. Player UI belongs to the game; ImGui owns the tools around it.
+    runtimeUI.init(app->getDevice(), app->getPhysicalDevice(), app->getCommandPool(),
+                   app->getGraphicsQueue(), getSceneRenderPass(), viewportExtent, uiIntentQueue);
 }
 
 void Renderer::shutdown() {
@@ -207,6 +212,7 @@ void Renderer::shutdown() {
 
     vkDeviceWaitIdle(device);
 
+    runtimeUI.shutdown(); // before the device/pool it borrows are torn down
     destroyViewportResources();
     destroyShadowResources();
     shutdownImGui();
@@ -456,7 +462,7 @@ void Renderer::recordCommandBuffer(VkCommandBuffer cmd, uint32_t imageIndex) {
     uiRenderPassInfo.pClearValues = &uiClearColor;
 
     vkCmdBeginRenderPass(cmd, &uiRenderPassInfo, VK_SUBPASS_CONTENTS_INLINE);
-    renderImGui(cmd);
+    renderImGui(cmd); // runtime UI is drawn earlier, inside the scene/viewport pass
     vkCmdEndRenderPass(cmd);
 
     if (vkEndCommandBuffer(cmd) != VK_SUCCESS) {
@@ -1505,6 +1511,20 @@ void Renderer::buildEditorUi() {
 
         const ImVec2 imageMin = ImGui::GetItemRectMin();
         const bool imageHovered = ImGui::IsItemHovered();
+
+        // Feed the player UI pointer state in *viewport-local* coordinates. The
+        // offscreen image is created at this panel's size, so these map 1:1 onto the
+        // RmlUi context (and sidestep window/DPI scaling entirely). Clicks only count
+        // while the cursor is actually over the game image.
+        // Button state is polled from GLFW rather than read off ImGui's io: the
+        // player UI is game input and shouldn't depend on ImGui's event routing
+        // (io.MouseDown stayed false for synthetic/injected clicks). Position still
+        // comes from ImGui so it shares the panel's coordinate space.
+        const ImVec2 mouse = ImGui::GetMousePos();
+        const bool leftDown = window != nullptr &&
+                              glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS;
+        runtimeUI.processMouse(mouse.x - imageMin.x, mouse.y - imageMin.y,
+                               imageHovered && leftDown);
 
         // Manipulator over the image (updates ImGuizmo::IsOver/IsUsing for picking).
         drawGizmo(imageMin.x, imageMin.y, size.x, size.y);

@@ -293,6 +293,10 @@ void BasicTrianglePass::renderScenePass(VkCommandBuffer cmd, uint32_t imageIndex
         vkCmdDrawIndexed(cmd, static_cast<uint32_t>(item.mesh->indices.size()), 1, 0, 0, 0);
     }
 
+    // Player UI (RmlUi) composites onto the game image, inside this pass and after
+    // the scene, so it lands in the Viewport panel rather than over the editor.
+    renderer->renderRuntimeUIViewport(cmd);
+
     vkCmdEndRenderPass(cmd);
 }
 

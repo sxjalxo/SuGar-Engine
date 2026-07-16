@@ -6,6 +6,7 @@
 #include "Benchmarks.h"
 #include "StressTests.h"
 #include "ui/RuntimeUIView.h"
+#include "ui/RuntimeUISystem.h"
 #include "core/Input.h"
 #include "core/InputActions.h"
 #include "rendering/Camera.h"
@@ -441,6 +442,18 @@ void SuGarApp::initScene() {
         {0.0f, 4.0f, -3.5f},
         {0.85f, 0.55f, 0.45f}
     });
+
+    // UIRoot: the singleton entity owning global runtime-UI state (Phase 16A/16B.3).
+    // It carries a transform only so it participates in scene serialization the same
+    // way every other entity does — the runtime UI is driven by the components.
+    const Entity uiRoot = registry.createEntity();
+    registry.names.add(uiRoot, { "UIRoot" });
+    registry.transforms.add(uiRoot, {});
+    registry.hierarchy.add(uiRoot, {});
+    UIScreenComponent uiScreen{};
+    uiScreen.screenStack = { "HUD" };
+    registry.uiScreens.add(uiRoot, uiScreen);
+    registry.focus.add(uiRoot, {});
 }
 
 void SuGarApp::rebuildDrawList() {
@@ -801,6 +814,17 @@ void SuGarApp::setupSystemSchedule() {
             AudioSystem::update(registry, audioEngine);
         }});
 
+    // Runtime UI: drains intents queued at render rate and applies them to the
+    // authoritative UI components. Runs on the fixed step so UI-state changes are
+    // deterministic and replayable, exactly like input-driven behaviors.
+    systemSchedule.add(System{
+        "RuntimeUI",
+        0,
+        maskOf(ComponentType::UIScreen, ComponentType::Focus),
+        [this](float) {
+            RuntimeUISystem::update(registry, uiIntents);
+        }});
+
     // Guard rail on by default in Debug (tracking is compiled out of Release, so
     // this is inert there). Default is Warn: violations surface in the editor
     // Systems panel without halting the session. SUGAR_STRICT escalates to
@@ -848,6 +872,7 @@ void SuGarApp::initRenderer() {
     renderer->setAssetRegistry(&assetRegistry);
     renderer->setRegistry(&registry);
     renderer->setSystemSchedule(&systemSchedule);
+    renderer->setUIIntentQueue(&uiIntents); // UI callbacks emit intents into this
     renderer->setDrawList(&drawList);
     renderer->init();
     updateCameraTargets();
@@ -953,13 +978,20 @@ void SuGarApp::processInput(float deltaTime) {
         glfwSetWindowShouldClose(window, GLFW_TRUE);
     }
 
-    if (!captureKeyboard && Input::isKeyPressed(GLFW_KEY_F5)) {
+    // Function-key shortcuts are deliberately NOT gated on ImGui's WantCaptureKeyboard.
+    // The editor is one big ImGui dockspace, so WantCaptureKeyboard is true whenever an
+    // ImGui window has focus — i.e. essentially always — which silently killed every
+    // F-key shortcut below. ImGui never consumes function keys for text entry, so the
+    // guard bought nothing. Character keys (camera 1/2/3 etc.) stay gated: those really
+    // do conflict with typing in an ImGui field.
+
+    if (Input::isKeyPressed(GLFW_KEY_F5)) {
         if (!SceneSerializer::save(registry, sceneLights, "scene.json")) {
             std::cerr << "failed to save scene.json\n";
         }
     }
 
-    if (!captureKeyboard && Input::isKeyPressed(GLFW_KEY_F9)) {
+    if (Input::isKeyPressed(GLFW_KEY_F9)) {
         if (device != VK_NULL_HANDLE) {
             vkDeviceWaitIdle(device);
         }
@@ -973,7 +1005,7 @@ void SuGarApp::processInput(float deltaTime) {
 
     // Play-mode control (F6 toggle Play/Stop, F7 toggle Pause/Resume).
     // The editor toolbar (Phase 5C) calls the same play()/stop()/pause() methods.
-    if (!captureKeyboard && Input::isKeyPressed(GLFW_KEY_F6)) {
+    if (Input::isKeyPressed(GLFW_KEY_F6)) {
         if (engineState == EngineState::Edit) {
             play();
         } else {
@@ -981,7 +1013,7 @@ void SuGarApp::processInput(float deltaTime) {
         }
     }
 
-    if (!captureKeyboard && Input::isKeyPressed(GLFW_KEY_F7)) {
+    if (Input::isKeyPressed(GLFW_KEY_F7)) {
         if (engineState == EngineState::Play) {
             pause();
         } else if (engineState == EngineState::Paused) {
@@ -990,9 +1022,22 @@ void SuGarApp::processInput(float deltaTime) {
     }
 
     // F8: manually hot-reload the game module DLL (recompiled behaviors).
-    if (!captureKeyboard && Input::isKeyPressed(GLFW_KEY_F8)) {
+    if (Input::isKeyPressed(GLFW_KEY_F8)) {
         reloadGameModule();
     }
+
+    // Runtime UI navigation (Phase 16B.3). Input never mutates UI state directly —
+    // it queues an intent here at render rate, and the RuntimeUI system applies it
+    // on the next fixed step. F1 opens a screen, F2 goes back.
+    if (Input::isKeyPressed(GLFW_KEY_F1)) {
+        uiIntents.push(UIIntent::openScreen("Inventory"));
+    }
+    if (Input::isKeyPressed(GLFW_KEY_F2)) {
+        uiIntents.push(UIIntent::popScreen());
+    }
+
+    // Pointer state for the runtime UI is fed from the Viewport panel (in
+    // viewport-local coordinates), not from raw window coords — see Renderer.
 
     if (!captureKeyboard && Input::isKeyDown(GLFW_KEY_1)) {
         renderer->setCameraMode(CameraMode::FREE);

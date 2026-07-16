@@ -157,6 +157,8 @@ add_executable(SuGarEngine
     src/StressTests.h
     src/ui/RmlSystemInterface.h
     src/ui/RmlSystemInterface.cpp
+    src/ui/RmlVulkanRenderer.h
+    src/ui/RmlVulkanRenderer.cpp
     src/ui/RuntimeUIView.h
     src/ui/RuntimeUIView.cpp
     src/audio/AudioClip.h

@@ -18,6 +18,7 @@
 #include "physics/PhysicsWorld.h"
 #include "scene/DrawList.h"
 #include "scene/Light.h"
+#include "ui/UIIntent.h"
 
 #define GLFW_INCLUDE_VULKAN
 #include <GLFW/glfw3.h>
@@ -122,6 +123,11 @@ private:
     PhysicsWorld physicsWorld;
     AudioEngine audioEngine;
     GameModuleLoader gameModule; // hot-swappable behaviors DLL
+
+    // Runtime UI intents (Phase 16B.3): queued at render rate by input/UI callbacks,
+    // drained on the fixed step by the RuntimeUI system so authoritative UI-state
+    // changes stay deterministic. See docs/DESIGN_RUNTIME_UI.md.
+    UIIntentQueue uiIntents;
 
     // Phase 13A: the fixed-step gameplay pipeline as declared systems (script ->
     // physics -> collision dispatch -> audio) rather than a hardcoded sequence.

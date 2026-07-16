@@ -13,12 +13,14 @@
 #include "ecs/Entity.h"
 #include "editor/EditorCommand.h"
 #include "scene/Transform.h"
+#include "ui/RuntimeUIView.h"
 
 class AssetRegistry;
 class BasicTrianglePass;
 class RenderPass;
 class Registry;
 class SystemScheduler;
+class UIIntentQueue;
 class SuGarApp;
 enum class CameraMode : uint8_t;
 struct DrawList;
@@ -37,6 +39,11 @@ public:
     void setDrawList(const DrawList* drawList);
     void setAssetRegistry(AssetRegistry* assetRegistry) { this->assetRegistry = assetRegistry; }
     void setRegistry(Registry* registry) { this->registry = registry; }
+    // Runtime UI callbacks emit into this queue; set before init().
+    void setUIIntentQueue(UIIntentQueue* queue) { this->uiIntentQueue = queue; }
+    // Records the player UI into the scene/viewport pass. Called by the scene pass
+    // just before it ends, so the UI composites onto the game image.
+    void renderRuntimeUIViewport(VkCommandBuffer cmd) { runtimeUI.render(cmd, viewportExtent, registry); }
     void setSystemSchedule(const SystemScheduler* schedule) { this->systemSchedule = schedule; }
     void refreshDrawListResources();
     void moveCameraForward(float deltaTime);
@@ -244,6 +251,8 @@ private:
     // ImGui editor
     VkRenderPass uiRenderPass = VK_NULL_HANDLE;
     VkDescriptorPool imguiDescriptorPool = VK_NULL_HANDLE;
+    RuntimeUIView runtimeUI; // player-facing UI (RmlUi); ImGui above is the editor
+    UIIntentQueue* uiIntentQueue = nullptr;
     VkDescriptorSet viewportTextureDescriptor = VK_NULL_HANDLE;
     bool imguiInitialized = false;
 };

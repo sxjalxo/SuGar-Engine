@@ -1,0 +1,63 @@
+<rml>
+<head>
+<style>
+/* RmlUi has no HTML defaults: elements are inline unless declared block, so every
+   stacked row below needs an explicit display. */
+body {
+    font-family: LatoLatin;
+    font-size: 16px;
+    width: 100%;
+    height: 100%;
+}
+
+#hud {
+    display: block;
+    position: absolute;
+    left: 24px;
+    top: 24px;
+    width: 260px;
+    background-color: #1e2430ee;
+    border: 2px #4fc3f7ff;
+    padding: 12px;
+}
+
+#title {
+    display: block;
+    font-size: 20px;
+    color: #4fc3f7ff;
+}
+
+#body {
+    display: block;
+    font-size: 14px;
+    color: #e0e0e0ff;
+    margin-bottom: 10px;
+}
+
+/* Buttons never mutate UI state directly — their handler emits an intent that the
+   fixed-step RuntimeUI system applies to ECS. See docs/DESIGN_RUNTIME_UI.md. */
+button {
+    display: inline-block;
+    font-size: 14px;
+    color: #ffffffff;
+    background-color: #2f6f8fff;
+    border: 1px #4fc3f7ff;
+    padding: 6px 10px;
+    margin-right: 6px;
+}
+
+button:hover {
+    background-color: #4fc3f7ff;
+    color: #10161eff;
+}
+</style>
+</head>
+<body>
+    <div id="hud">
+        <div id="title">SuGar Runtime UI</div>
+        <div id="body">Screen: HUD</div>
+        <button id="open">Open Inventory</button>
+        <button id="back">Back</button>
+    </div>
+</body>
+</rml>
