@@ -29,6 +29,7 @@ private:
 #include <RmlUi/Core.h>
 #include <RmlUi/Core/RenderInterface.h>
 
+#include <algorithm>
 #include <iostream>
 
 namespace {
@@ -162,11 +163,13 @@ void RuntimeUIView::init(VkDevice device, VkPhysicalDevice physicalDevice, VkCom
     // Build the tab ring from the document. Order is a view/DOM concern; the focused
     // value itself is authoritative and lives in FocusComponent.
     {
-        Rml::ElementList buttons;
-        document->GetElementsByTagName(buttons, "button");
-        for (Rml::Element* button : buttons) {
-            if (!button->GetId().empty()) {
-                focusables.push_back(button->GetId());
+        // Ring = focusable fields then buttons, in document order. A view/DOM
+        // concern; the focused value itself stays authoritative in ECS.
+        Rml::ElementList ring;
+        document->QuerySelectorAll(ring, ".field, button");
+        for (Rml::Element* element : ring) {
+            if (!element->GetId().empty()) {
+                focusables.push_back(element->GetId());
             }
         }
     }
@@ -283,23 +286,30 @@ void RuntimeUIView::syncTextFromEcs(const Registry* registry) {
         return;
     }
 
-    // The buffer is authoritative ECS state; the document merely displays it. RmlUi
-    // never owns the text, so a snapshot restore brings a half-typed line back.
-    std::string buffer;
-    bool hasField = false;
+    // Each field's buffer is authoritative ECS state; the document merely displays
+    // it. RmlUi never owns the text, so a restore brings a half-typed line back.
+    // Signature of every field, so a change in any one triggers a re-render.
+    std::string signature;
     for (const auto& [entity, text] : registry->textInputs.getAll()) {
         (void)entity;
-        buffer = text.buffer;
-        hasField = true;
-        break;
+        signature += text.element + "\x01" + text.buffer + "\x01" + std::to_string(text.caret) + "\x02";
     }
-    if (!hasField || buffer == lastText) {
+    if (signature == lastText) {
         return;
     }
-    lastText = buffer;
+    lastText = signature;
 
-    if (Rml::Element* field = document->GetElementById("textfield")) {
-        field->SetInnerRML("Name: " + buffer + "_"); // trailing caret is derived
+    for (const auto& [entity, text] : registry->textInputs.getAll()) {
+        (void)entity;
+        Rml::Element* field = document->GetElementById(text.element);
+        if (field == nullptr) {
+            continue;
+        }
+        const size_t caret = std::min(static_cast<size_t>(std::max(text.caret, 0)), text.buffer.size());
+        // The caret is drawn at its authoritative index; its glyph/blink is derived.
+        std::string shown = text.buffer;
+        shown.insert(caret, "|");
+        field->SetInnerRML((text.element == "name" ? "Name: " : "Tag: ") + shown);
     }
 }
 

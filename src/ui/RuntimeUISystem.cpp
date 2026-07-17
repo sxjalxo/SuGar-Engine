@@ -5,6 +5,37 @@
 
 #include <algorithm>
 
+namespace {
+
+size_t clampCaret(const TextInputComponent& text) {
+    return std::min(static_cast<size_t>(std::max(text.caret, 0)), text.buffer.size());
+}
+
+// Text goes to the field whose element matches the focused element. Routing is
+// decided from ECS (FocusComponent + TextInputComponent::element) — never by asking
+// RmlUi which widget it thinks has the caret. Returns null when nothing is focused,
+// so typing with no field focused is simply ignored.
+TextInputComponent* focusedTextField(Registry& registry) {
+    std::string focused;
+    for (const auto& [entity, focus] : registry.focus.getAll()) {
+        (void)entity;
+        focused = focus.focusedElement;
+        break;
+    }
+    if (focused.empty()) {
+        return nullptr;
+    }
+    for (auto& [entity, text] : registry.textInputs.getAll()) {
+        (void)entity;
+        if (text.element == focused) {
+            return &text;
+        }
+    }
+    return nullptr;
+}
+
+} // namespace
+
 namespace RuntimeUISystem {
 
 void update(Registry& registry, UIIntentQueue& intents) {
@@ -47,22 +78,34 @@ void update(Registry& registry, UIIntentQueue& intents) {
                 break;
 
             case UIIntent::Type::AppendText:
-                for (auto& [entity, text] : registry.textInputs.getAll()) {
-                    (void)entity;
-                    const size_t caret = std::min(static_cast<size_t>(std::max(text.caret, 0)), text.buffer.size());
-                    text.buffer.insert(caret, intent.arg);
-                    text.caret = static_cast<int>(caret + intent.arg.size());
+                if (TextInputComponent* text = focusedTextField(registry)) {
+                    const size_t caret = clampCaret(*text);
+                    text->buffer.insert(caret, intent.arg);
+                    text->caret = static_cast<int>(caret + intent.arg.size());
                 }
                 break;
 
             case UIIntent::Type::BackspaceText:
-                for (auto& [entity, text] : registry.textInputs.getAll()) {
-                    (void)entity;
-                    const size_t caret = std::min(static_cast<size_t>(std::max(text.caret, 0)), text.buffer.size());
+                if (TextInputComponent* text = focusedTextField(registry)) {
+                    const size_t caret = clampCaret(*text);
                     if (caret > 0) {
-                        text.buffer.erase(caret - 1, 1);
-                        text.caret = static_cast<int>(caret - 1);
+                        text->buffer.erase(caret - 1, 1);
+                        text->caret = static_cast<int>(caret - 1);
                     }
+                }
+                break;
+
+            case UIIntent::Type::CaretLeft:
+                if (TextInputComponent* text = focusedTextField(registry)) {
+                    const size_t caret = clampCaret(*text);
+                    text->caret = caret > 0 ? static_cast<int>(caret - 1) : 0;
+                }
+                break;
+
+            case UIIntent::Type::CaretRight:
+                if (TextInputComponent* text = focusedTextField(registry)) {
+                    const size_t caret = clampCaret(*text);
+                    text->caret = static_cast<int>(std::min(caret + 1, text->buffer.size()));
                 }
                 break;
         }

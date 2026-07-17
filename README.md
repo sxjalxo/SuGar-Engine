@@ -48,6 +48,12 @@ missing player-facing half.
   and write, and the scheduler flags any storage a system touched but never
   declared (or mutated while declaring read-only). Hidden coupling becomes a
   message, not a mystery. Debug-only, on by default; zero release cost
+* **Runtime UI** (Phase 16B) — player-facing UI via RmlUi, rendered through a
+  hand-written Vulkan `RenderInterface` into the game viewport. All authoritative UI
+  state (screen stack, focus, text buffer, caret) lives in **ECS**, so it snapshots,
+  time-travels and hot-reloads like any other component; hover/layout/rendering are
+  derived. Design: [docs/DESIGN_RUNTIME_UI.md](docs/DESIGN_RUNTIME_UI.md) — rationale
+  and lessons: [docs/RUNTIME_UI_LESSONS.md](docs/RUNTIME_UI_LESSONS.md)
 * **Editor Systems panel** (Phase 13C) — a live view of the gameplay pipeline:
   each system's declared read/write masks, the computed parallel stages, and any
   access violations (green when every system stays within its declaration)

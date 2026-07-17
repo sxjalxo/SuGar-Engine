@@ -353,27 +353,64 @@ inline bool testRuntimeUI() {
               reg.uiScreens.get(uiRoot).active() == "HUD";
     }
 
-    { // text entry: buffer + caret are authoritative and edited via intents only
+    { // text entry: buffer + caret authoritative, edited via intents, and routed to
+      // the *focused* field — two fields prove typing never leaks into the wrong one
         Registry reg;
         const Entity uiRoot = reg.createEntity();
-        reg.textInputs.add(uiRoot, {});
+        reg.focus.add(uiRoot, {});
+        const Entity nameField = reg.createEntity();
+        reg.textInputs.add(nameField, { "name", "", 0 });
+        const Entity tagField = reg.createEntity();
+        reg.textInputs.add(tagField, { "tag", "", 0 });
 
         UIIntentQueue queue;
+
+        // Nothing focused: typing is ignored rather than hitting an arbitrary field.
+        queue.push(UIIntent::appendText("x"));
+        RuntimeUISystem::update(reg, queue);
+        ok &= reg.textInputs.get(nameField).buffer.empty() && reg.textInputs.get(tagField).buffer.empty();
+
+        queue.push(UIIntent::setFocus("name"));
         queue.push(UIIntent::appendText("Hi"));
         queue.push(UIIntent::appendText("!"));
         RuntimeUISystem::update(reg, queue);
-        ok &= reg.textInputs.get(uiRoot).buffer == "Hi!" && reg.textInputs.get(uiRoot).caret == 3;
+        ok &= reg.textInputs.get(nameField).buffer == "Hi!" && reg.textInputs.get(nameField).caret == 3;
+        ok &= reg.textInputs.get(tagField).buffer.empty(); // unfocused field untouched
 
         queue.push(UIIntent::backspaceText());
         RuntimeUISystem::update(reg, queue);
-        ok &= reg.textInputs.get(uiRoot).buffer == "Hi" && reg.textInputs.get(uiRoot).caret == 2;
+        ok &= reg.textInputs.get(nameField).buffer == "Hi" && reg.textInputs.get(nameField).caret == 2;
+
+        // Caret moves, then an insert lands at the caret (not the end).
+        queue.push(UIIntent::caretLeft());
+        queue.push(UIIntent::appendText("E"));
+        RuntimeUISystem::update(reg, queue);
+        ok &= reg.textInputs.get(nameField).buffer == "HEi" && reg.textInputs.get(nameField).caret == 2;
+
+        // Caret clamps at both ends.
+        queue.push(UIIntent::caretLeft());
+        queue.push(UIIntent::caretLeft());
+        queue.push(UIIntent::caretLeft());
+        RuntimeUISystem::update(reg, queue);
+        ok &= reg.textInputs.get(nameField).caret == 0;
+        for (int i = 0; i < 6; i++) {
+            queue.push(UIIntent::caretRight());
+        }
+        RuntimeUISystem::update(reg, queue);
+        ok &= reg.textInputs.get(nameField).caret == 3;
 
         // Backspace at the start must not underflow.
-        queue.push(UIIntent::backspaceText());
-        queue.push(UIIntent::backspaceText());
+        queue.push(UIIntent::setFocus("tag"));
         queue.push(UIIntent::backspaceText());
         RuntimeUISystem::update(reg, queue);
-        ok &= reg.textInputs.get(uiRoot).buffer.empty() && reg.textInputs.get(uiRoot).caret == 0;
+        ok &= reg.textInputs.get(tagField).buffer.empty() && reg.textInputs.get(tagField).caret == 0;
+        ok &= reg.textInputs.get(nameField).buffer == "HEi"; // focus moved: name intact
+
+        // Typing now goes to the newly focused field.
+        queue.push(UIIntent::appendText("boss"));
+        RuntimeUISystem::update(reg, queue);
+        ok &= reg.textInputs.get(tagField).buffer == "boss";
+        ok &= reg.textInputs.get(nameField).buffer == "HEi";
     }
 
     { // UI state survives an in-place snapshot restore with the same entity id —
@@ -388,7 +425,7 @@ inline bool testRuntimeUI() {
         screen.screenStack = { "MainMenu", "Settings" };
         reg.uiScreens.add(uiRoot, screen);
         reg.focus.add(uiRoot, { "AudioTab" });
-        reg.textInputs.add(uiRoot, { "half-typed", 5 });
+        reg.textInputs.add(uiRoot, { "name", "half-typed", 5 });
 
         const std::string frame = SceneSerializer::saveToString(reg, lights);
         ok &= !frame.empty();
@@ -406,9 +443,11 @@ inline bool testRuntimeUI() {
         ok &= restored.screenStack.size() == 2 &&
               restored.screenStack[0] == "MainMenu" && restored.screenStack[1] == "Settings";
         ok &= reg.focus.get(uiRoot).focusedElement == "AudioTab";
-        // A half-typed line is authoritative — a scrub must bring it back exactly.
+        // A half-typed line is authoritative — a scrub must bring it back exactly,
+        // including which field it belonged to and where the caret sat.
         ok &= reg.textInputs.get(uiRoot).buffer == "half-typed" &&
-              reg.textInputs.get(uiRoot).caret == 5;
+              reg.textInputs.get(uiRoot).caret == 5 &&
+              reg.textInputs.get(uiRoot).element == "name";
     }
 
     return ok;

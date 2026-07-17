@@ -37,7 +37,13 @@ struct FocusComponent {
 // **authoritative**: scrub back and the half-typed text must still be there, so they
 // live here rather than inside an RmlUi text field. The caret *blink phase* is
 // derived and stays in the view. See docs/DESIGN_RUNTIME_UI.md.
+//
+// `element` ties this field to the document element that displays it, which is how
+// typing is routed: text intents only apply to the field whose `element` matches
+// FocusComponent::focusedElement. Focus and text are both authoritative ECS state,
+// so routing is decided in ECS — not by asking RmlUi which widget has the caret.
 struct TextInputComponent {
+    ElementId element;
     std::string buffer;
     int caret = 0; // insertion index into `buffer`
 };

@@ -625,6 +625,8 @@ void writeEntityObject(std::ostream& output, const Registry& registry, Entity en
         writeIndent(output, 3);
         output << "\"textinput\": {\n";
         writeIndent(output, 4);
+        output << "\"element\": \"" << escapeJsonString(text.element) << "\",\n";
+        writeIndent(output, 4);
         output << "\"buffer\": \"" << escapeJsonString(text.buffer) << "\",\n";
         writeIndent(output, 4);
         output << "\"caret\": " << text.caret << "\n";
@@ -890,6 +892,9 @@ PendingEntityData parseEntityObject(const JsonValue& objectValue, int sceneVersi
     if (const JsonValue* textValue = findObjectField(objectData, "textinput")) {
         const auto& textData = requireObject(*textValue, "object.textinput");
         pendingEntity.hasTextInput = true;
+        if (const JsonValue* v = findObjectField(textData, "element")) {
+            pendingEntity.textInput.element = getStringValue(*v, "textinput.element");
+        }
         if (const JsonValue* v = findObjectField(textData, "buffer")) {
             pendingEntity.textInput.buffer = getStringValue(*v, "textinput.buffer");
         }

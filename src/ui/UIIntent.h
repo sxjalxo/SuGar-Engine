@@ -17,8 +17,10 @@ struct UIIntent {
         PopScreen,    // pop the top screen (back navigation); root is not poppable
         SetFocus,     // set keyboard/gamepad focus to `arg`
         ClearFocus,   // clear focus
-        AppendText,   // insert `arg` at the caret of the text buffer
-        BackspaceText // delete the character before the caret
+        AppendText,   // insert `arg` at the caret of the focused text field
+        BackspaceText,// delete the character before the caret
+        CaretLeft,    // move the caret one character left
+        CaretRight    // move the caret one character right
     };
 
     Type type;
@@ -30,6 +32,8 @@ struct UIIntent {
     static UIIntent clearFocus() { return { Type::ClearFocus, {} }; }
     static UIIntent appendText(std::string text) { return { Type::AppendText, std::move(text) }; }
     static UIIntent backspaceText() { return { Type::BackspaceText, {} }; }
+    static UIIntent caretLeft() { return { Type::CaretLeft, {} }; }
+    static UIIntent caretRight() { return { Type::CaretRight, {} }; }
 };
 
 // A queue of pending UI intents, filled at render rate and drained by the

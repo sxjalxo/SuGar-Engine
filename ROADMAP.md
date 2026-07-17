@@ -299,12 +299,36 @@ this unblock building a game at all?*):
        those costs.
      - **Fixed:** the root screen is no longer poppable — backing out of the last
        screen used to leave the game showing *"No screen"*.
-   - **16B.8+ — remaining (later):** caret is display-only (no arrow-key movement or
-     mid-string editing; `TextInputComponent.caret` supports it, the input mapping
-     doesn't yet). Text entry is global rather than routed to a focused field, so
-     there is exactly one text buffer. `DialogueStateComponent` still isn't modelled.
-     UI advances only in Play (intents drain on the fixed step — by design), which
-     makes authoring UI in Edit mode awkward.
+   - **16B.8 — focus-routed text + caret movement (DONE, verified):** closes the last
+     gap. `TextInputComponent` gained an `element` id, so **typing routes to the
+     focused field** — the match is `FocusComponent::focusedElement` ↔
+     `TextInputComponent::element`, i.e. an **ECS lookup**, never a question asked of
+     RmlUi about which widget holds the caret. Two fields (`name`, `tag`) prove it;
+     with nothing focused, typing is ignored rather than hitting an arbitrary field.
+     Arrow keys move the caret via `CaretLeft`/`CaretRight` intents, and inserts land
+     *at* the caret. The focus ring now spans fields + buttons
+     (`QuerySelectorAll(".field, button")`). Verified by screenshot: `Name: ab|`
+     stays put while `Tag: z|` takes new keystrokes. Self-test covers routing,
+     no-focus, caret clamping, insert-at-caret, and the snapshot round-trip
+     (buffer + caret + owning element).
+     - *Gotcha:* RmlUi elements are not focusable without `tab-index: auto` —
+       `Element::Focus()` silently does nothing otherwise.
+
+   **Phase 16B complete.** The design record is validated by working code, not
+   intention: model (16A) → Vulkan render (16B.2) → ECS sync (16B.3) → intent-only
+   callbacks (16B.4) → viewport binding (16B.5) → authoritative focus (16B.6) →
+   authoritative text (16B.7) → focus-routed text (16B.8). Screen stack, focus, text
+   buffer and caret all live in ECS; hover, layout and rendering are derived — with no
+   exceptions. Rationale and the bugs found along the way are captured in
+   **[docs/RUNTIME_UI_LESSONS.md](docs/RUNTIME_UI_LESSONS.md)** (why not `<input>`,
+   why focus is authoritative, why callbacks only emit intents, why polling beat
+   subscriptions, why the RenderInterface is hand-written, and the one ImGui flag
+   behind two unrelated-looking bugs).
+
+   - **16B.9+ — remaining (enhancement, not redesign):** `DialogueStateComponent`
+     isn't modelled yet. Home/End/word-wise caret motion. The demo HUD is still a
+     placeholder rather than real screens. UI advances only in Play (intents drain on
+     the fixed step — by design), which makes authoring UI in Edit mode awkward.
 2. **Animation** — skeletal, blend trees, state machines, graphs. Hand-rolled
    playback (external libs may import data, never own playback). Same Rule 21
    constraint: playback state (current time, active state) is authoritative → ECS /

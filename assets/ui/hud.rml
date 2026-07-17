@@ -37,13 +37,22 @@ body {
 /* Displays TextInputComponent.buffer. Deliberately a plain div, not an RmlUi text
    field: the buffer is authoritative ECS state, and an <input> would become a
    second, hidden home for it (RULES.md Rule 21). The trailing caret is derived. */
-#textfield {
+.field {
     display: block;
+    /* Required: RmlUi elements are not focusable unless tab-index is set, and
+       Element::Focus() silently does nothing without it. */
+    tab-index: auto;
     font-size: 14px;
     color: #ffd54fff;
     background-color: #10161eaa;
     padding: 4px 6px;
-    margin-bottom: 8px;
+    margin-bottom: 4px;
+}
+
+/* Focus ring applies to any focusable element, field or button. */
+.field:focus {
+    border: 2px #ffd54fff;
+    background-color: #24303eff;
 }
 
 /* Buttons never mutate UI state directly — their handler emits an intent that the
@@ -75,7 +84,8 @@ button:focus {
     <div id="hud">
         <div id="title">SuGar Runtime UI</div>
         <div id="body">Screen: HUD</div>
-        <div id="textfield">Name: _</div>
+        <div id="name" class="field">Name: _</div>
+        <div id="tag" class="field">Tag: _</div>
         <button id="open">Open Inventory</button>
         <button id="back">Back</button>
     </div>

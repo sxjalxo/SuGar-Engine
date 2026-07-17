@@ -472,7 +472,21 @@ void SuGarApp::initScene() {
     uiScreen.screenStack = { "HUD" };
     registry.uiScreens.add(uiRoot, uiScreen);
     registry.focus.add(uiRoot, {});
-    registry.textInputs.add(uiRoot, {});
+    // Two text fields, each its own entity, tied to a document element by id. Typing
+    // routes to whichever one FocusComponent points at — routing decided in ECS.
+    const Entity nameField = registry.createEntity();
+    registry.names.add(nameField, { "UIField_Name" });
+    registry.transforms.add(nameField, {});
+    registry.hierarchy.add(nameField, {});
+    registry.textInputs.add(nameField, { "name", "", 0 });
+    registry.setParent(nameField, uiRoot);
+
+    const Entity tagField = registry.createEntity();
+    registry.names.add(tagField, { "UIField_Tag" });
+    registry.transforms.add(tagField, {});
+    registry.hierarchy.add(tagField, {});
+    registry.textInputs.add(tagField, { "tag", "", 0 });
+    registry.setParent(tagField, uiRoot);
 }
 
 void SuGarApp::rebuildDrawList() {
@@ -1078,6 +1092,12 @@ void SuGarApp::processInput(float deltaTime) {
         }
         if (Input::isKeyPressed(GLFW_KEY_BACKSPACE)) {
             uiIntents.push(UIIntent::backspaceText());
+        }
+        if (Input::isKeyPressed(GLFW_KEY_LEFT)) {
+            uiIntents.push(UIIntent::caretLeft());
+        }
+        if (Input::isKeyPressed(GLFW_KEY_RIGHT)) {
+            uiIntents.push(UIIntent::caretRight());
         }
     }
 
