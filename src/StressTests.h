@@ -16,6 +16,13 @@
 #include <utility>
 #include <vector>
 
+#include "animation/AnimationClip.h"
+#include "animation/AnimationClipRegistry.h"
+#include "animation/AnimationComponents.h"
+#include "animation/AnimationGraph.h"
+#include "animation/AnimationGraphRegistry.h"
+#include "animation/AnimationStateSystem.h"
+#include "animation/AnimationSystem.h"
 #include "core/SnapshotStorage.h"
 #include "ecs/Registry.h"
 #include "physics/PhysicsWorld.h"
@@ -303,6 +310,169 @@ inline bool ringChurn() {
     return ok;
 }
 
+// Builds a scene of many animated characters: half single-clip players, half
+// state machines with a blend tree and a parameter transition. Each is a two-bone
+// subtree (root + child), so the systems walk hierarchies and resolve targets by
+// name at scale. Returns the roots.
+inline std::vector<Entity> buildAnimationScene(Registry& reg, int count) {
+    std::vector<Entity> roots;
+    roots.reserve(count);
+    Rng rng{ 0xA11CE };
+
+    for (int i = 0; i < count; i++) {
+        const Entity root = reg.createEntity();
+        reg.names.add(root, { "Char" + std::to_string(i) });
+        reg.transforms.add(root, {});
+        reg.hierarchy.add(root, {});
+        const Entity bone = reg.createEntity();
+        reg.names.add(bone, { "Bone" });
+        reg.transforms.add(bone, {});
+        reg.hierarchy.add(bone, {});
+        reg.setParent(bone, root);
+
+        if (i % 2 == 0) {
+            AnimationPlayerComponent player;
+            player.clip = "Walk";
+            player.time = rng.range(0.0f, 1.0f); // varied start phase
+            player.speed = rng.range(0.5f, 2.0f);
+            reg.animations.add(root, player);
+        } else {
+            AnimationStateComponent machine;
+            machine.graph = "Loco";
+            reg.animationStates.add(root, machine);
+            AnimationParametersComponent parameters;
+            parameters.values["speed"] = rng.range(0.0f, 1.0f);
+            reg.animationParameters.add(root, parameters);
+        }
+        roots.push_back(root);
+    }
+    return roots;
+}
+
+inline void registerAnimationAssets() {
+    AnimationClipRegistry::clear();
+    AnimationGraphRegistry::clear();
+
+    const auto clip = [](const char* name, float duration, float endX) {
+        TransformTrack track;
+        track.target = "Bone";
+        track.translation.times = { 0.0f, duration };
+        track.translation.values = { glm::vec3(0.0f), glm::vec3(endX, 0.0f, 0.0f) };
+        AnimationClip c;
+        c.name = name;
+        c.tracks = { track };
+        c.duration = computeDuration(c.tracks);
+        return c;
+    };
+    AnimationClipRegistry::registerClip("Walk", clip("Walk", 1.0f, 3.0f));
+    AnimationClipRegistry::registerClip("Run", clip("Run", 0.6f, 9.0f));
+
+    AnimationGraph graph;
+    graph.name = "Loco";
+    graph.entryState = "Move";
+    AnimationGraphState move;
+    move.name = "Move";
+    move.blendParameter = "speed";
+    move.blendEntries = { { "Walk", 0.0f }, { "Run", 1.0f } };
+    AnimationGraphState sprint;
+    sprint.name = "Sprint";
+    sprint.clip = "Run";
+    graph.states = { move, sprint };
+    AnimationTransition toSprint;
+    toSprint.from = "Move";
+    toSprint.to = "Sprint";
+    toSprint.parameter = "speed";
+    toSprint.condition = TransitionCondition::Greater;
+    toSprint.threshold = 0.9f;
+    toSprint.duration = 0.25f;
+    graph.transitions = { toSprint };
+    AnimationGraphRegistry::registerGraph("Loco", graph);
+}
+
+inline void stepAnimation(Registry& reg, int steps) {
+    for (int i = 0; i < steps; i++) {
+        AnimationSystem::update(reg, 1.0f / 60.0f);
+        AnimationStateSystem::update(reg, 1.0f / 60.0f);
+    }
+}
+
+inline glm::vec3 boneOf(Registry& reg, Entity root) {
+    // The child bone is the one entity under root with a transform.
+    for (Entity child : reg.hierarchy.get(root).children) {
+        return reg.transforms.get(child).transform.position;
+    }
+    return glm::vec3(0.0f);
+}
+
+// 400 animated characters, 600 fixed steps: assert no crash, bit-identical
+// determinism between two independent runs, and that a mid-sim snapshot survives a
+// scrub. This is the first stress coverage of the Phase 17 pipeline end to end —
+// players + state machines + blend trees + pose apply + serializer.
+inline bool animationStress() {
+    constexpr int kChars = 400;
+    constexpr int kSteps = 600;
+    bool ok = true;
+
+    const auto runOnce = [&](std::vector<glm::vec3>& out) {
+        registerAnimationAssets();
+        Registry reg;
+        const std::vector<Entity> roots = buildAnimationScene(reg, kChars);
+        stepAnimation(reg, kSteps);
+        out.clear();
+        for (Entity root : roots) {
+            out.push_back(boneOf(reg, root));
+        }
+    };
+
+    std::vector<glm::vec3> a;
+    std::vector<glm::vec3> b;
+    runOnce(a);
+    runOnce(b);
+    ok &= a.size() == static_cast<size_t>(kChars) && a == b; // bit-identical
+
+    // Nothing collapsed to the origin: every character actually posed.
+    int moved = 0;
+    for (const glm::vec3& p : a) {
+        if (std::fabs(p.x) > 1e-4f) {
+            moved++;
+        }
+    }
+    ok &= moved > kChars / 2;
+
+    // Snapshot survival at scale: capture mid-sim, run on, patch back, re-derive.
+    registerAnimationAssets();
+    Registry reg;
+    std::vector<Light> lights;
+    const std::vector<Entity> roots = buildAnimationScene(reg, kChars);
+    stepAnimation(reg, 120);
+
+    const std::string frame = SceneSerializer::saveToString(reg, lights);
+    ok &= !frame.empty();
+
+    std::vector<glm::vec3> captured;
+    for (Entity root : roots) {
+        captured.push_back(boneOf(reg, root));
+    }
+
+    stepAnimation(reg, 200); // diverge
+    ok &= SceneSerializer::patchFromString(reg, lights, frame);
+    // Re-derive the pose from the restored authoritative state (advance by nothing).
+    AnimationSystem::update(reg, 0.0f);
+    AnimationStateSystem::update(reg, 0.0f);
+
+    for (size_t i = 0; i < roots.size(); i++) {
+        const glm::vec3 now = boneOf(reg, roots[i]);
+        if (std::fabs(now.x - captured[i].x) > 1e-3f) {
+            ok = false;
+            break;
+        }
+    }
+
+    AnimationClipRegistry::clear();
+    AnimationGraphRegistry::clear();
+    return ok;
+}
+
 // Returns {passed, total}. Prints the per-test table as a side effect.
 inline std::pair<int, int> run() {
     using TestFn = bool (*)();
@@ -314,6 +484,7 @@ inline std::pair<int, int> run() {
         { "PatchStress(30x)",   patchStress },
         { "IdChurn(50x)",       idChurn },
         { "RingChurn(100k)",    ringChurn },
+        { "AnimationScale(400)", animationStress },
     };
 
     int passed = 0;

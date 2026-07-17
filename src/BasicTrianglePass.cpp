@@ -21,6 +21,16 @@ struct ObjectPushConstants {
     float padding = 0.0f;
 };
 
+// Must match MAX_JOINTS in shaders/skinned.vert and shaders/skinned_shadow.vert.
+// 64 mat4 = 4 KiB, well inside the 16 KiB UBO range every Vulkan implementation
+// guarantees. A skin with more joints is clamped (see uploadJointMatrices).
+constexpr uint32_t MAX_JOINTS = 64;
+// Skinned draws per frame that can carry a distinct pose. Beyond this, the extra
+// characters render unskinned rather than reading another character's pose.
+constexpr uint32_t MAX_SKINNED_DRAWS = 64;
+// Marks a draw-list item as having no pose.
+constexpr uint32_t NO_JOINT_OFFSET = 0xFFFFFFFFu;
+
 static uint32_t findMemoryType(VkPhysicalDevice physicalDevice, uint32_t typeFilter, VkMemoryPropertyFlags properties) {
     VkPhysicalDeviceMemoryProperties memProperties;
     vkGetPhysicalDeviceMemoryProperties(physicalDevice, &memProperties);
@@ -71,6 +81,11 @@ BasicTrianglePass::BasicTrianglePass(SuGarApp* app, Renderer* renderer) : app(ap
 BasicTrianglePass::~BasicTrianglePass() {
     VkDevice device = app->getDevice();
 
+    if (uniformBufferMapped != nullptr) {
+        vkUnmapMemory(device, uniformBufferMemory);
+        uniformBufferMapped = nullptr;
+    }
+
     if (uniformBuffer != VK_NULL_HANDLE) {
         vkDestroyBuffer(device, uniformBuffer, nullptr);
         uniformBuffer = VK_NULL_HANDLE;
@@ -89,6 +104,41 @@ BasicTrianglePass::~BasicTrianglePass() {
     if (shadowPipeline != VK_NULL_HANDLE) {
         vkDestroyPipeline(device, shadowPipeline, nullptr);
         shadowPipeline = VK_NULL_HANDLE;
+    }
+
+    if (skinnedPipeline != VK_NULL_HANDLE) {
+        vkDestroyPipeline(device, skinnedPipeline, nullptr);
+        skinnedPipeline = VK_NULL_HANDLE;
+    }
+
+    if (skinnedShadowPipeline != VK_NULL_HANDLE) {
+        vkDestroyPipeline(device, skinnedShadowPipeline, nullptr);
+        skinnedShadowPipeline = VK_NULL_HANDLE;
+    }
+
+    if (jointBufferMapped != nullptr) {
+        vkUnmapMemory(device, jointBufferMemory);
+        jointBufferMapped = nullptr;
+    }
+
+    if (jointBuffer != VK_NULL_HANDLE) {
+        vkDestroyBuffer(device, jointBuffer, nullptr);
+        jointBuffer = VK_NULL_HANDLE;
+    }
+
+    if (jointBufferMemory != VK_NULL_HANDLE) {
+        vkFreeMemory(device, jointBufferMemory, nullptr);
+        jointBufferMemory = VK_NULL_HANDLE;
+    }
+
+    if (jointDescriptorPool != VK_NULL_HANDLE) {
+        vkDestroyDescriptorPool(device, jointDescriptorPool, nullptr);
+        jointDescriptorPool = VK_NULL_HANDLE;
+    }
+
+    if (jointSetLayout != VK_NULL_HANDLE) {
+        vkDestroyDescriptorSetLayout(device, jointSetLayout, nullptr);
+        jointSetLayout = VK_NULL_HANDLE;
     }
 
     if (pipelineLayout != VK_NULL_HANDLE) {
@@ -110,6 +160,8 @@ BasicTrianglePass::~BasicTrianglePass() {
 void BasicTrianglePass::setup() {
     createShadowRenderPass();
     createRenderPass();
+    // Joint resources first: the pipeline layout includes the joint set layout.
+    createJointResources();
     createGraphicsPipeline();
     createShadowPipeline();
     createUniformBuffer();
@@ -121,6 +173,9 @@ void BasicTrianglePass::execute(VkCommandBuffer cmd, uint32_t imageIndex) {
     }
 
     updateUniformBuffer();
+    // Once per frame, not once per pass: the shadow and scene passes must skin
+    // identically, so they read the same uploaded matrices.
+    uploadJointMatrices();
     renderShadowPass(cmd, imageIndex);
     renderScenePass(cmd, imageIndex);
 }
@@ -139,7 +194,6 @@ void BasicTrianglePass::renderShadowPass(VkCommandBuffer cmd, uint32_t imageInde
     shadowPassInfo.pClearValues = &clearDepth;
 
     vkCmdBeginRenderPass(cmd, &shadowPassInfo, VK_SUBPASS_CONTENTS_INLINE);
-    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, shadowPipeline);
 
     VkViewport shadowViewport{};
     shadowViewport.x = 0.0f;
@@ -158,14 +212,43 @@ void BasicTrianglePass::renderShadowPass(VkCommandBuffer cmd, uint32_t imageInde
 
     AssetHandle lastTexture = INVALID_HANDLE;
     AssetHandle lastMesh = INVALID_HANDLE;
+    VkPipeline lastPipeline = VK_NULL_HANDLE;
 
-    for (const auto& item : drawList->items) {
+    for (size_t i = 0; i < drawList->items.size(); i++) {
+        const auto& item = drawList->items[i];
         if (!item.mesh || item.material.albedo == INVALID_HANDLE) {
             continue;
         }
 
+        const uint32_t jointOffset = i < jointOffsets.size() ? jointOffsets[i] : NO_JOINT_OFFSET;
+        const bool skinned = jointOffset != NO_JOINT_OFFSET;
+
+        // Both pipelines share one layout, so switching between them leaves set 0
+        // and the push constants bound — no rebinding, no invalidation.
+        const VkPipeline wantedPipeline = skinned ? skinnedShadowPipeline : shadowPipeline;
+        if (wantedPipeline != lastPipeline) {
+            vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, wantedPipeline);
+            lastPipeline = wantedPipeline;
+        }
+
+        if (skinned) {
+            vkCmdBindDescriptorSets(
+                cmd,
+                VK_PIPELINE_BIND_POINT_GRAPHICS,
+                pipelineLayout,
+                1,
+                1,
+                &jointDescriptorSet,
+                1,
+                &jointOffset
+            );
+        }
+
         if (item.material.albedo != lastTexture) {
             const VkDescriptorSet descriptorSet = renderer->getDescriptorSet(item.material.albedo, imageIndex);
+            // Dynamic offset selects this frame's scene-UBO slice. Constant within a
+            // frame; re-supplied on every set-0 bind because the whole set rebinds.
+            const uint32_t sceneUboOffset = renderer->getCurrentFrame() * static_cast<uint32_t>(uniformSliceSize);
             vkCmdBindDescriptorSets(
                 cmd,
                 VK_PIPELINE_BIND_POINT_GRAPHICS,
@@ -173,8 +256,8 @@ void BasicTrianglePass::renderShadowPass(VkCommandBuffer cmd, uint32_t imageInde
                 0,
                 1,
                 &descriptorSet,
-                0,
-                nullptr
+                1,
+                &sceneUboOffset
             );
             lastTexture = item.material.albedo;
         }
@@ -228,8 +311,6 @@ void BasicTrianglePass::renderScenePass(VkCommandBuffer cmd, uint32_t imageIndex
 
     vkCmdBeginRenderPass(cmd, &renderPassInfo, VK_SUBPASS_CONTENTS_INLINE);
 
-    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, graphicsPipeline);
-
     VkViewport viewport{};
     viewport.x = 0.0f;
     viewport.y = 0.0f;
@@ -246,14 +327,40 @@ void BasicTrianglePass::renderScenePass(VkCommandBuffer cmd, uint32_t imageIndex
 
     AssetHandle lastTexture = INVALID_HANDLE;
     AssetHandle lastMesh = INVALID_HANDLE;
+    VkPipeline lastPipeline = VK_NULL_HANDLE;
 
-    for (const auto& item : drawList->items) {
+    for (size_t i = 0; i < drawList->items.size(); i++) {
+        const auto& item = drawList->items[i];
         if (!item.mesh || item.material.albedo == INVALID_HANDLE) {
             continue;
         }
 
+        const uint32_t jointOffset = i < jointOffsets.size() ? jointOffsets[i] : NO_JOINT_OFFSET;
+        const bool skinned = jointOffset != NO_JOINT_OFFSET;
+
+        // Shared pipeline layout: switching keeps set 0 and the push constants.
+        const VkPipeline wantedPipeline = skinned ? skinnedPipeline : graphicsPipeline;
+        if (wantedPipeline != lastPipeline) {
+            vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, wantedPipeline);
+            lastPipeline = wantedPipeline;
+        }
+
+        if (skinned) {
+            vkCmdBindDescriptorSets(
+                cmd,
+                VK_PIPELINE_BIND_POINT_GRAPHICS,
+                pipelineLayout,
+                1,
+                1,
+                &jointDescriptorSet,
+                1,
+                &jointOffset
+            );
+        }
+
         if (item.material.albedo != lastTexture) {
             VkDescriptorSet descriptorSet = renderer->getDescriptorSet(item.material.albedo, imageIndex);
+            const uint32_t sceneUboOffset = renderer->getCurrentFrame() * static_cast<uint32_t>(uniformSliceSize);
             vkCmdBindDescriptorSets(
                 cmd,
                 VK_PIPELINE_BIND_POINT_GRAPHICS,
@@ -261,8 +368,8 @@ void BasicTrianglePass::renderScenePass(VkCommandBuffer cmd, uint32_t imageIndex
                 0,
                 1,
                 &descriptorSet,
-                0,
-                nullptr
+                1,
+                &sceneUboOffset
             );
             lastTexture = item.material.albedo;
         }
@@ -438,15 +545,25 @@ void BasicTrianglePass::createShadowRenderPass() {
 void BasicTrianglePass::createGraphicsPipeline() {
     auto vertShaderCode = readFile("build/shaders/basic.vert.spv");
     auto fragShaderCode = readFile("build/shaders/basic.frag.spv");
+    auto skinnedVertShaderCode = readFile("build/shaders/skinned.vert.spv");
 
     VkShaderModule vertShaderModule = createShaderModule(app->getDevice(), vertShaderCode);
     VkShaderModule fragShaderModule = createShaderModule(app->getDevice(), fragShaderCode);
+    VkShaderModule skinnedVertShaderModule = createShaderModule(app->getDevice(), skinnedVertShaderCode);
 
+    // One layout for every pipeline in this pass: set 0 = scene UBO + textures,
+    // set 1 = the pose. Static pipelines simply never bind set 1 (Vulkan only
+    // requires sets a pipeline statically uses). Sharing the layout means switching
+    // between static and skinned mid-pass doesn't disturb set 0 or the push
+    // constants.
     VkPipelineLayoutCreateInfo pipelineLayoutInfo{};
     pipelineLayoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-    pipelineLayoutInfo.setLayoutCount = 1;
-    VkDescriptorSetLayout layout = renderer->getDescriptorSetLayout();
-    pipelineLayoutInfo.pSetLayouts = &layout;
+    const std::array<VkDescriptorSetLayout, 2> setLayouts = {
+        renderer->getDescriptorSetLayout(),
+        jointSetLayout
+    };
+    pipelineLayoutInfo.setLayoutCount = static_cast<uint32_t>(setLayouts.size());
+    pipelineLayoutInfo.pSetLayouts = setLayouts.data();
     VkPushConstantRange pushConstantRange{};
     pushConstantRange.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
     pushConstantRange.offset = 0;
@@ -556,16 +673,36 @@ void BasicTrianglePass::createGraphicsPipeline() {
         throw std::runtime_error("failed to create graphics pipeline!");
     }
 
+    // Skinned variant: identical in every respect except the vertex shader and the
+    // two extra vertex attributes it declares. Same binding stride, same fragment
+    // stage — so skinned geometry is lit and shadowed by exactly the same code.
+    auto skinnedAttributeDescriptions = Vertex::getSkinnedAttributeDescriptions();
+    vertexInputInfo.vertexAttributeDescriptionCount =
+        static_cast<uint32_t>(skinnedAttributeDescriptions.size());
+    vertexInputInfo.pVertexAttributeDescriptions = skinnedAttributeDescriptions.data();
+
+    VkPipelineShaderStageCreateInfo skinnedVertStageInfo = vertShaderStageInfo;
+    skinnedVertStageInfo.module = skinnedVertShaderModule;
+    VkPipelineShaderStageCreateInfo skinnedStages[] = {skinnedVertStageInfo, fragShaderStageInfo};
+    pipelineInfo.pStages = skinnedStages;
+
+    if (vkCreateGraphicsPipelines(app->getDevice(), VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &skinnedPipeline) != VK_SUCCESS) {
+        throw std::runtime_error("failed to create skinned graphics pipeline!");
+    }
+
     vkDestroyShaderModule(app->getDevice(), vertShaderModule, nullptr);
     vkDestroyShaderModule(app->getDevice(), fragShaderModule, nullptr);
+    vkDestroyShaderModule(app->getDevice(), skinnedVertShaderModule, nullptr);
 }
 
 void BasicTrianglePass::createShadowPipeline() {
     auto vertShaderCode = readFile("build/shaders/shadow.vert.spv");
     auto fragShaderCode = readFile("build/shaders/shadow.frag.spv");
+    auto skinnedVertShaderCode = readFile("build/shaders/skinned_shadow.vert.spv");
 
     VkShaderModule vertShaderModule = createShaderModule(app->getDevice(), vertShaderCode);
     VkShaderModule fragShaderModule = createShaderModule(app->getDevice(), fragShaderCode);
+    VkShaderModule skinnedVertShaderModule = createShaderModule(app->getDevice(), skinnedVertShaderCode);
 
     VkPipelineShaderStageCreateInfo vertShaderStageInfo{};
     vertShaderStageInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
@@ -669,12 +806,188 @@ void BasicTrianglePass::createShadowPipeline() {
         throw std::runtime_error("failed to create shadow graphics pipeline!");
     }
 
+    // Skinned shadow variant. The depth pass only needs position, but it must skin
+    // that position with the same matrices the scene pass uses — otherwise the
+    // character animates and its shadow stays in bind pose.
+    const std::array<VkVertexInputAttributeDescription, 3> skinnedShadowAttributes = {
+        positionAttribute,
+        Vertex::getSkinnedAttributeDescriptions()[3], // joints
+        Vertex::getSkinnedAttributeDescriptions()[4]  // weights
+    };
+    vertexInputInfo.vertexAttributeDescriptionCount =
+        static_cast<uint32_t>(skinnedShadowAttributes.size());
+    vertexInputInfo.pVertexAttributeDescriptions = skinnedShadowAttributes.data();
+
+    VkPipelineShaderStageCreateInfo skinnedVertStageInfo = vertShaderStageInfo;
+    skinnedVertStageInfo.module = skinnedVertShaderModule;
+    VkPipelineShaderStageCreateInfo skinnedStages[] = {skinnedVertStageInfo, fragShaderStageInfo};
+    pipelineInfo.pStages = skinnedStages;
+
+    if (vkCreateGraphicsPipelines(app->getDevice(), VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &skinnedShadowPipeline) != VK_SUCCESS) {
+        throw std::runtime_error("failed to create skinned shadow graphics pipeline!");
+    }
+
     vkDestroyShaderModule(app->getDevice(), vertShaderModule, nullptr);
     vkDestroyShaderModule(app->getDevice(), fragShaderModule, nullptr);
+    vkDestroyShaderModule(app->getDevice(), skinnedVertShaderModule, nullptr);
+}
+
+void BasicTrianglePass::createJointResources() {
+    VkDevice device = app->getDevice();
+
+    // Set 1, binding 0: the pose. Dynamic so one buffer serves every skinned draw in
+    // the frame — bind the set once, then supply a byte offset per draw, instead of
+    // allocating a descriptor set per character.
+    VkDescriptorSetLayoutBinding binding{};
+    binding.binding = 0;
+    binding.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC;
+    binding.descriptorCount = 1;
+    binding.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
+
+    VkDescriptorSetLayoutCreateInfo layoutInfo{};
+    layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+    layoutInfo.bindingCount = 1;
+    layoutInfo.pBindings = &binding;
+    if (vkCreateDescriptorSetLayout(device, &layoutInfo, nullptr, &jointSetLayout) != VK_SUCCESS) {
+        throw std::runtime_error("failed to create joint descriptor set layout!");
+    }
+
+    // A dynamic offset must be a multiple of the device's UBO offset alignment, so
+    // each skin's slice is padded up to it.
+    VkPhysicalDeviceProperties properties{};
+    vkGetPhysicalDeviceProperties(app->getPhysicalDevice(), &properties);
+    const VkDeviceSize alignment = properties.limits.minUniformBufferOffsetAlignment;
+    const VkDeviceSize sliceBytes = sizeof(glm::mat4) * MAX_JOINTS;
+    jointSliceSize = alignment > 0
+        ? ((sliceBytes + alignment - 1) / alignment) * alignment
+        : sliceBytes;
+
+    // One region per frame in flight. The scene UBO gets away with a single buffer
+    // rewritten every frame, but a torn pose is a visibly glitching character, and
+    // this costs only a few hundred KiB.
+    const VkDeviceSize bufferSize =
+        jointSliceSize * MAX_SKINNED_DRAWS * static_cast<VkDeviceSize>(Renderer::framesInFlight());
+
+    VkBufferCreateInfo bufferInfo{};
+    bufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+    bufferInfo.size = bufferSize;
+    bufferInfo.usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
+    bufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    if (vkCreateBuffer(device, &bufferInfo, nullptr, &jointBuffer) != VK_SUCCESS) {
+        throw std::runtime_error("failed to create joint buffer!");
+    }
+
+    VkMemoryRequirements memRequirements;
+    vkGetBufferMemoryRequirements(device, jointBuffer, &memRequirements);
+
+    VkMemoryAllocateInfo allocInfo{};
+    allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+    allocInfo.allocationSize = memRequirements.size;
+    allocInfo.memoryTypeIndex = findMemoryType(
+        app->getPhysicalDevice(),
+        memRequirements.memoryTypeBits,
+        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT
+    );
+    if (vkAllocateMemory(device, &allocInfo, nullptr, &jointBufferMemory) != VK_SUCCESS) {
+        throw std::runtime_error("failed to allocate joint buffer memory!");
+    }
+    vkBindBufferMemory(device, jointBuffer, jointBufferMemory, 0);
+    // Persistently mapped: this is rewritten every frame, so mapping per frame would
+    // be pure overhead. Host-coherent, so no explicit flush.
+    vkMapMemory(device, jointBufferMemory, 0, bufferSize, 0, &jointBufferMapped);
+
+    VkDescriptorPoolSize poolSize{};
+    poolSize.type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC;
+    poolSize.descriptorCount = 1;
+
+    VkDescriptorPoolCreateInfo poolInfo{};
+    poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+    poolInfo.poolSizeCount = 1;
+    poolInfo.pPoolSizes = &poolSize;
+    poolInfo.maxSets = 1;
+    if (vkCreateDescriptorPool(device, &poolInfo, nullptr, &jointDescriptorPool) != VK_SUCCESS) {
+        throw std::runtime_error("failed to create joint descriptor pool!");
+    }
+
+    VkDescriptorSetAllocateInfo setAllocInfo{};
+    setAllocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+    setAllocInfo.descriptorPool = jointDescriptorPool;
+    setAllocInfo.descriptorSetCount = 1;
+    setAllocInfo.pSetLayouts = &jointSetLayout;
+    if (vkAllocateDescriptorSets(device, &setAllocInfo, &jointDescriptorSet) != VK_SUCCESS) {
+        throw std::runtime_error("failed to allocate joint descriptor set!");
+    }
+
+    VkDescriptorBufferInfo descriptorBufferInfo{};
+    descriptorBufferInfo.buffer = jointBuffer;
+    descriptorBufferInfo.offset = 0;
+    // The *range* is one slice; the dynamic offset picks which slice.
+    descriptorBufferInfo.range = sizeof(glm::mat4) * MAX_JOINTS;
+
+    VkWriteDescriptorSet write{};
+    write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    write.dstSet = jointDescriptorSet;
+    write.dstBinding = 0;
+    write.descriptorCount = 1;
+    write.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC;
+    write.pBufferInfo = &descriptorBufferInfo;
+    vkUpdateDescriptorSets(device, 1, &write, 0, nullptr);
+}
+
+void BasicTrianglePass::uploadJointMatrices() {
+    jointOffsets.assign(drawList->items.size(), NO_JOINT_OFFSET);
+    if (jointBufferMapped == nullptr) {
+        return;
+    }
+
+    // This frame's region — never the one the previous frame may still be reading.
+    const VkDeviceSize frameBase =
+        static_cast<VkDeviceSize>(renderer->getCurrentFrame()) * jointSliceSize * MAX_SKINNED_DRAWS;
+
+    uint32_t slot = 0;
+    for (size_t i = 0; i < drawList->items.size(); i++) {
+        const auto& item = drawList->items[i];
+        if (item.jointMatrices.empty()) {
+            continue; // unskinned: the common case
+        }
+        if (slot >= MAX_SKINNED_DRAWS) {
+            // Out of slices. Leaving the offset unset draws this character
+            // unskinned, which is wrong but local — reusing another character's
+            // slice would pose it with someone else's skeleton.
+            break;
+        }
+
+        const VkDeviceSize offset = frameBase + static_cast<VkDeviceSize>(slot) * jointSliceSize;
+        // A skin with more joints than the shader array is truncated rather than
+        // overrunning the slice into the next character's.
+        const size_t count = std::min<size_t>(item.jointMatrices.size(), MAX_JOINTS);
+        std::memcpy(
+            static_cast<char*>(jointBufferMapped) + offset,
+            item.jointMatrices.data(),
+            count * sizeof(glm::mat4)
+        );
+
+        jointOffsets[i] = static_cast<uint32_t>(offset);
+        slot++;
+    }
 }
 
 void BasicTrianglePass::createUniformBuffer() {
-    VkDeviceSize bufferSize = sizeof(UniformBufferObject);
+    VkDevice device = app->getDevice();
+
+    // One slice per frame in flight, each padded to the device's dynamic-offset
+    // alignment. Previously this was a single copy rewritten every frame while the
+    // GPU could still be reading the previous frame's — a real race that showed as
+    // an occasional one-frame camera/light pop.
+    VkPhysicalDeviceProperties properties{};
+    vkGetPhysicalDeviceProperties(app->getPhysicalDevice(), &properties);
+    const VkDeviceSize alignment = properties.limits.minUniformBufferOffsetAlignment;
+    uniformSliceSize = alignment > 0
+        ? ((sizeof(UniformBufferObject) + alignment - 1) / alignment) * alignment
+        : sizeof(UniformBufferObject);
+
+    const VkDeviceSize bufferSize =
+        uniformSliceSize * static_cast<VkDeviceSize>(Renderer::framesInFlight());
 
     VkBufferCreateInfo bufferInfo{};
     bufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
@@ -682,7 +995,6 @@ void BasicTrianglePass::createUniformBuffer() {
     bufferInfo.usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
     bufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
 
-    VkDevice device = app->getDevice();
     if (vkCreateBuffer(device, &bufferInfo, nullptr, &uniformBuffer) != VK_SUCCESS) {
         throw std::runtime_error("failed to create uniform buffer!");
     }
@@ -705,6 +1017,9 @@ void BasicTrianglePass::createUniformBuffer() {
     }
 
     vkBindBufferMemory(device, uniformBuffer, uniformBufferMemory, 0);
+    // Persistently mapped: rewritten every frame, so mapping per frame is pure
+    // overhead. Host-coherent, so no explicit flush.
+    vkMapMemory(device, uniformBufferMemory, 0, bufferSize, 0, &uniformBufferMapped);
 }
 
 void BasicTrianglePass::updateUniformBuffer() {
@@ -743,9 +1058,14 @@ void BasicTrianglePass::updateUniformBuffer() {
     const glm::mat4 lightProj = glm::ortho(-10.0f, 10.0f, -10.0f, 10.0f, 0.1f, 50.0f);
     ubo.lightSpaceMatrix = lightProj * lightView;
 
-    VkDevice device = app->getDevice();
-    void* data;
-    vkMapMemory(device, uniformBufferMemory, 0, sizeof(ubo), 0, &data);
-    memcpy(data, &ubo, sizeof(ubo));
-    vkUnmapMemory(device, uniformBufferMemory);
+    if (uniformBufferMapped == nullptr) {
+        return;
+    }
+    // This frame's slice — never the one the previous frame may still be reading.
+    std::memcpy(
+        static_cast<char*>(uniformBufferMapped) +
+            static_cast<VkDeviceSize>(renderer->getCurrentFrame()) * uniformSliceSize,
+        &ubo,
+        sizeof(ubo)
+    );
 }

@@ -1,5 +1,7 @@
 #include "SuGarApp.h"
 #include "Renderer.h"
+#include "animation/AnimationStateSystem.h"
+#include "animation/AnimationSystem.h"
 #include "assets/ResourceManager.h"
 #include "audio/AudioSystem.h"
 #include "SelfTests.h"
@@ -796,6 +798,25 @@ void SuGarApp::setupSystemSchedule() {
                 }
                 behavior->onUpdate(registry, entity, dt);
             }
+        }});
+
+    // Animation: advances each player's authoritative time and writes the sampled
+    // pose into transforms. Ahead of physics on purpose — a clip-driven transform
+    // should be an input to this step's collision, not a step stale. Name and
+    // Hierarchy are declared because resolving a track's target walks the subtree
+    // by name (the honest declaration, per the 13B lesson that Audio taught).
+    systemSchedule.add(System{
+        "Animation",
+        maskOf(ComponentType::Animation, ComponentType::Name, ComponentType::Hierarchy,
+               ComponentType::AnimationParameters),
+        maskOf(ComponentType::Animation, ComponentType::Transform, ComponentType::AnimationState),
+        [this](float dt) {
+            // Single-clip players first, then state machines. One system rather than
+            // two because they write the same storage (Transform) and would be
+            // ordered anyway — declaring them separately would claim an independence
+            // the scheduler would immediately have to take back.
+            AnimationSystem::update(registry, dt);
+            AnimationStateSystem::update(registry, dt);
         }});
 
     // Physics: integrates bodies and resolves collisions on the same fixed step,

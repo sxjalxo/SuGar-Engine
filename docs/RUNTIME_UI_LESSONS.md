@@ -198,6 +198,10 @@ nothing. Don't assume browser behaviour.
 
 ### Deferring geometry destruction
 
+> Generalised in [DEV_ENVIRONMENT.md §6](DEV_ENVIRONMENT.md#6-gpu-resources-outlive-cpu-objects)
+> — this is a *renderer* lesson, not a Runtime UI one. Any subsystem that hands GPU
+> resources to a library per-frame inherits it.
+
 `ReleaseGeometry` originally destroyed buffers immediately:
 
 ```

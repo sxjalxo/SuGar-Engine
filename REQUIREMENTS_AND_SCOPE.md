@@ -266,7 +266,10 @@ Requirement
 
 All parsed data must be copied into SuGar Engine types.
 
-tinygltf objects never survive loading.
+tinygltf objects never survive loading. Concretely (Phase 17B): animation channels
+and samplers become `AnimationClip` / `TransformTrack` inside `GltfLoader.cpp`, and
+glTF node *indices* are resolved to node *names* on the way out — no tinygltf type,
+and no glTF numbering, appears in any header or anywhere else in the engine.
 
 ---
 
@@ -357,13 +360,29 @@ Runtime animation playback.
 
 Status
 
-**Planned** (not yet implemented).
+**Implemented** (Phase 17, complete). The model layer (17A): clip/track data,
+keyframe sampling, `AnimationClipRegistry`, `AnimationPlayerComponent`, and the
+fixed-step `AnimationSystem` — all in Core, all headless-tested. glTF clip + skin
+import (17B, 17C.1) is implemented in `GltfLoader.cpp`. Skinning's CPU side (17C.1)
+is `Skin` + `SkinRegistry` + `Skinning::computeJointMatrices`, also in Core: the ECS
+hierarchy *is* the skeleton (joints are entities), so joint matrices are derived and
+the renderer is a pure consumer. GPU skinning (17C.2) adds skinned scene/shadow
+pipelines in the Engine layer, fed poses through the `DrawList`. Still to come: blend
+trees / state machines (17D).
 
 Implementation
 
 Hand-rolled — animation remains an engine subsystem.
 
-External libraries may import animation data but never own playback.
+External libraries may import animation data but never own playback. Concretely:
+tinygltf parses keyframes and they immediately become SuGar types; sampling,
+interpolation, blending, and graph evaluation are the engine's own code.
+
+Layering
+
+Clip data, sampling, playback state, and the animation system live in **SuGarCore** —
+playback is pure math over plain data, so it needs no GPU and stays headless-testable
+(Rule 9, Rule 15). glTF import and skinning live in the Engine layer.
 
 Future
 
@@ -382,6 +401,10 @@ Authoritative playback state — current time, active state, playback speed — 
 in ECS components (or be snapshot-serializable), so animation survives time travel,
 hot reload, and snapshot restore. Derived data — evaluated poses, graph caches — may
 be rebuilt each frame and need not be serialized.
+
+The full classification (including the gray areas: why a transition mid-blend is
+authoritative, why blend weights are not, why animation events need explicit
+already-fired state) is the architecture record: **[docs/DESIGN_ANIMATION.md](docs/DESIGN_ANIMATION.md)**.
 
 ---
 

@@ -81,6 +81,11 @@ public:
     VkFormat getDepthFormat() const { return depthFormat; }
     VkFormat getShadowFormat() const { return shadowFormat; }
     VkDescriptorSetLayout getDescriptorSetLayout() const { return descriptorSetLayout; }
+    // Which frame-in-flight slot is being recorded. Passes that write host-visible
+    // per-frame data need this to avoid overwriting a buffer the GPU is still
+    // reading from the previous frame.
+    uint32_t getCurrentFrame() const { return currentFrame; }
+    static constexpr int framesInFlight() { return MAX_FRAMES_IN_FLIGHT; }
     VkDescriptorSet getDescriptorSet(AssetHandle textureHandle, uint32_t imageIndex) const;
     
 private:

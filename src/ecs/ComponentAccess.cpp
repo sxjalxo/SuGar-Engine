@@ -16,6 +16,10 @@ const char* componentTypeName(ComponentType type) {
         case ComponentType::UIScreen:       return "UIScreen";
         case ComponentType::Focus:          return "Focus";
         case ComponentType::TextInput:      return "TextInput";
+        case ComponentType::Animation:      return "Animation";
+        case ComponentType::SkinnedMesh:    return "SkinnedMesh";
+        case ComponentType::AnimationState: return "AnimationState";
+        case ComponentType::AnimationParameters: return "AnimationParameters";
         case ComponentType::Count:          break;
     }
     return "<unknown>";

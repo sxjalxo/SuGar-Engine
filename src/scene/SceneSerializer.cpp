@@ -1,4 +1,5 @@
 #include "scene/SceneSerializer.h"
+#include "assets/ModelImporter.h"
 #include "assets/ResourceManager.h"
 #include "audio/AudioClip.h"
 #include "ecs/Registry.h"
@@ -9,7 +10,10 @@
 #include "scene/TransformMath.h"
 #include <algorithm>
 #include <cctype>
+#include <cstddef>
 #include <fstream>
+#include <functional>
+#include <ostream>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -470,168 +474,267 @@ void writeEntityObject(std::ostream& output, const Registry& registry, Entity en
            << (registry.materials.has(entity) ? registry.materials.get(entity).material.ao : 1.0f)
            << "\n";
 
-    const bool hasScript = registry.scripts.has(entity) &&
-                           !registry.scripts.get(entity).behavior.empty();
-    const bool hasBody = registry.rigidBodies.has(entity);
-    const bool hasCollider = registry.colliders.has(entity);
-    const bool hasPrefab = registry.prefabInstances.has(entity) &&
-                           !registry.prefabInstances.get(entity).prefab.empty();
-    const bool hasAudioSource = registry.audioSources.has(entity) &&
-                                registry.audioSources.get(entity).clip != INVALID_HANDLE;
-    const bool hasAudioListener = registry.audioListeners.has(entity);
-    // Runtime UI state (Phase 16A). Authoritative → serialized, so it survives
-    // snapshot restore / time travel (RULES.md Rule 21). Only the UIRoot-style
-    // entities carry these; everything else omits them.
-    const bool hasUIScreen = registry.uiScreens.has(entity);
-    const bool hasFocus = registry.focus.has(entity);
-    const bool hasTextInput = registry.textInputs.has(entity);
-
-    // Optional components are emitted in a comma-chain; each one needs to know
-    // whether any later optional follows it. `tailAfter*` capture that.
-    const bool tailAfterMaterial = hasScript || hasBody || hasCollider || hasPrefab ||
-                                   hasAudioSource || hasAudioListener || hasUIScreen || hasFocus || hasTextInput;
-    const bool tailAfterScript = hasBody || hasCollider || hasPrefab || hasAudioSource ||
-                                 hasAudioListener || hasUIScreen || hasFocus || hasTextInput;
-    const bool tailAfterBody = hasCollider || hasPrefab || hasAudioSource || hasAudioListener ||
-                               hasUIScreen || hasFocus || hasTextInput;
-    const bool tailAfterCollider = hasPrefab || hasAudioSource || hasAudioListener || hasUIScreen || hasFocus || hasTextInput;
-    const bool tailAfterPrefab = hasAudioSource || hasAudioListener || hasUIScreen || hasFocus || hasTextInput;
-    const bool tailAfterAudioSource = hasAudioListener || hasUIScreen || hasFocus || hasTextInput;
-    const bool tailAfterAudioListener = hasUIScreen || hasFocus || hasTextInput;
-    const bool tailAfterFocus = hasTextInput;
-    const bool tailAfterUIScreen = hasFocus || hasTextInput;
-
-    writeIndent(output, 3);
-    output << (tailAfterMaterial ? "},\n" : "}\n");
+    // Optional components. Each present one contributes an emitter that writes its
+    // field *without* a trailing comma or newline; the loop at the bottom owns the
+    // separator. So adding a component is one push_back, and comma bookkeeping
+    // cannot be forgotten — this control flow is independent of how many optional
+    // components exist.
+    //
+    // This replaced a ladder of `tailAfter*` booleans, each the OR of every optional
+    // declared after it. That cost ~10 edits per new component, and a missed term
+    // emitted invalid JSON at *runtime* (a failed snapshot parse) rather than a
+    // compile error — see docs/DEV_ENVIRONMENT.md on partially-applied edits.
+    // Nothing is emitted while this vector is built, so it is safe to assemble here,
+    // between the material object's contents and its closing brace.
+    std::vector<std::function<void(std::ostream&)>> fields;
 
     // Optional: named behavior. `started` is intentionally not written —
     // it always restores to false (behaviors only start in Play mode).
-    if (hasScript) {
-        writeIndent(output, 3);
-        output << "\"script\": \""
-               << escapeJsonString(registry.scripts.get(entity).behavior)
-               << "\"" << (tailAfterScript ? ",\n" : "\n");
+    if (registry.scripts.has(entity) && !registry.scripts.get(entity).behavior.empty()) {
+        fields.push_back([&](std::ostream& out) {
+            writeIndent(out, 3);
+            out << "\"script\": \""
+                << escapeJsonString(registry.scripts.get(entity).behavior)
+                << "\"";
+        });
     }
 
     // Optional: rigid body. `velocity` is written so an authored initial
     // velocity survives; transient force is not part of the body's state.
-    if (hasBody) {
-        const auto& body = registry.rigidBodies.get(entity);
-        writeIndent(output, 3);
-        output << "\"rigidbody\": {\n";
-        writeIndent(output, 4);
-        output << "\"velocity\": ";
-        writeVec3(output, body.velocity);
-        output << ",\n";
-        writeIndent(output, 4);
-        output << "\"mass\": " << body.mass << ",\n";
-        writeIndent(output, 4);
-        output << "\"restitution\": " << body.restitution << ",\n";
-        writeIndent(output, 4);
-        output << "\"friction\": " << body.friction << ",\n";
-        writeIndent(output, 4);
-        output << "\"useGravity\": " << (body.useGravity ? "true" : "false") << ",\n";
-        writeIndent(output, 4);
-        output << "\"isStatic\": " << (body.isStatic ? "true" : "false") << "\n";
-        writeIndent(output, 3);
-        output << "}" << (tailAfterBody ? ",\n" : "\n");
+    if (registry.rigidBodies.has(entity)) {
+        fields.push_back([&](std::ostream& out) {
+            const auto& body = registry.rigidBodies.get(entity);
+            writeIndent(out, 3);
+            out << "\"rigidbody\": {\n";
+            writeIndent(out, 4);
+            out << "\"velocity\": ";
+            writeVec3(out, body.velocity);
+            out << ",\n";
+            writeIndent(out, 4);
+            out << "\"mass\": " << body.mass << ",\n";
+            writeIndent(out, 4);
+            out << "\"restitution\": " << body.restitution << ",\n";
+            writeIndent(out, 4);
+            out << "\"friction\": " << body.friction << ",\n";
+            writeIndent(out, 4);
+            out << "\"useGravity\": " << (body.useGravity ? "true" : "false") << ",\n";
+            writeIndent(out, 4);
+            out << "\"isStatic\": " << (body.isStatic ? "true" : "false") << "\n";
+            writeIndent(out, 3);
+            out << "}";
+        });
     }
 
     // Optional: collider.
-    if (hasCollider) {
-        const auto& collider = registry.colliders.get(entity);
-        writeIndent(output, 3);
-        output << "\"collider\": {\n";
-        writeIndent(output, 4);
-        output << "\"type\": \""
-               << (collider.type == ColliderType::Sphere ? "sphere" : "box")
-               << "\",\n";
-        writeIndent(output, 4);
-        output << "\"halfExtents\": ";
-        writeVec3(output, collider.halfExtents);
-        output << ",\n";
-        writeIndent(output, 4);
-        output << "\"radius\": " << collider.radius << "\n";
-        writeIndent(output, 3);
-        output << "}" << (tailAfterCollider ? ",\n" : "\n");
+    if (registry.colliders.has(entity)) {
+        fields.push_back([&](std::ostream& out) {
+            const auto& collider = registry.colliders.get(entity);
+            writeIndent(out, 3);
+            out << "\"collider\": {\n";
+            writeIndent(out, 4);
+            out << "\"type\": \""
+                << (collider.type == ColliderType::Sphere ? "sphere" : "box")
+                << "\",\n";
+            writeIndent(out, 4);
+            out << "\"halfExtents\": ";
+            writeVec3(out, collider.halfExtents);
+            out << ",\n";
+            writeIndent(out, 4);
+            out << "\"radius\": " << collider.radius << "\n";
+            writeIndent(out, 3);
+            out << "}";
+        });
     }
 
     // Optional: prefab instance link.
-    if (hasPrefab) {
-        writeIndent(output, 3);
-        output << "\"prefab\": \""
-               << escapeJsonString(registry.prefabInstances.get(entity).prefab)
-               << "\"" << (tailAfterPrefab ? ",\n" : "\n");
+    if (registry.prefabInstances.has(entity) &&
+        !registry.prefabInstances.get(entity).prefab.empty()) {
+        fields.push_back([&](std::ostream& out) {
+            writeIndent(out, 3);
+            out << "\"prefab\": \""
+                << escapeJsonString(registry.prefabInstances.get(entity).prefab)
+                << "\"";
+        });
     }
 
     // Optional: audio source. Runtime fields (started/voice) are not written.
-    if (hasAudioSource) {
-        const auto& source = registry.audioSources.get(entity);
-        const auto clip = ResourceManager::getAudioClip(source.clip);
-        writeIndent(output, 3);
-        output << "\"audiosource\": {\n";
-        writeIndent(output, 4);
-        output << "\"clip\": \"" << escapeJsonString(clip ? clip->getResourceKey() : "") << "\",\n";
-        writeIndent(output, 4);
-        output << "\"volume\": " << source.volume << ",\n";
-        writeIndent(output, 4);
-        output << "\"pitch\": " << source.pitch << ",\n";
-        writeIndent(output, 4);
-        output << "\"loop\": " << (source.loop ? "true" : "false") << ",\n";
-        writeIndent(output, 4);
-        output << "\"playOnStart\": " << (source.playOnStart ? "true" : "false") << ",\n";
-        writeIndent(output, 4);
-        output << "\"spatial\": " << (source.spatial ? "true" : "false") << "\n";
-        writeIndent(output, 3);
-        output << "}" << (tailAfterAudioSource ? ",\n" : "\n");
+    if (registry.audioSources.has(entity) &&
+        registry.audioSources.get(entity).clip != INVALID_HANDLE) {
+        fields.push_back([&](std::ostream& out) {
+            const auto& source = registry.audioSources.get(entity);
+            const auto clip = ResourceManager::getAudioClip(source.clip);
+            writeIndent(out, 3);
+            out << "\"audiosource\": {\n";
+            writeIndent(out, 4);
+            out << "\"clip\": \"" << escapeJsonString(clip ? clip->getResourceKey() : "") << "\",\n";
+            writeIndent(out, 4);
+            out << "\"volume\": " << source.volume << ",\n";
+            writeIndent(out, 4);
+            out << "\"pitch\": " << source.pitch << ",\n";
+            writeIndent(out, 4);
+            out << "\"loop\": " << (source.loop ? "true" : "false") << ",\n";
+            writeIndent(out, 4);
+            out << "\"playOnStart\": " << (source.playOnStart ? "true" : "false") << ",\n";
+            writeIndent(out, 4);
+            out << "\"spatial\": " << (source.spatial ? "true" : "false") << "\n";
+            writeIndent(out, 3);
+            out << "}";
+        });
     }
 
     // Optional: audio listener.
-    if (hasAudioListener) {
-        const auto& listener = registry.audioListeners.get(entity);
-        writeIndent(output, 3);
-        output << "\"audiolistener\": {\n";
-        writeIndent(output, 4);
-        output << "\"gain\": " << listener.gain << "\n";
-        writeIndent(output, 3);
-        output << "}" << (tailAfterAudioListener ? ",\n" : "\n");
+    if (registry.audioListeners.has(entity)) {
+        fields.push_back([&](std::ostream& out) {
+            const auto& listener = registry.audioListeners.get(entity);
+            writeIndent(out, 3);
+            out << "\"audiolistener\": {\n";
+            writeIndent(out, 4);
+            out << "\"gain\": " << listener.gain << "\n";
+            writeIndent(out, 3);
+            out << "}";
+        });
     }
 
-    // Optional: runtime UI screen stack (Phase 16A) — a JSON array of screen ids.
-    if (hasUIScreen) {
-        const auto& screen = registry.uiScreens.get(entity);
-        writeIndent(output, 3);
-        output << "\"uiscreen\": [";
-        for (size_t i = 0; i < screen.screenStack.size(); i++) {
-            output << "\"" << escapeJsonString(screen.screenStack[i]) << "\"";
-            if (i + 1 < screen.screenStack.size()) {
-                output << ", ";
+    // Runtime UI state (Phase 16A). Authoritative → serialized, so it survives
+    // snapshot restore / time travel (RULES.md Rule 21). Only the UIRoot-style
+    // entities carry these; everything else omits them.
+    //
+    // Optional: runtime UI screen stack — a JSON array of screen ids.
+    if (registry.uiScreens.has(entity)) {
+        fields.push_back([&](std::ostream& out) {
+            const auto& screen = registry.uiScreens.get(entity);
+            writeIndent(out, 3);
+            out << "\"uiscreen\": [";
+            for (std::size_t i = 0; i < screen.screenStack.size(); i++) {
+                out << "\"" << escapeJsonString(screen.screenStack[i]) << "\"";
+                if (i + 1 < screen.screenStack.size()) {
+                    out << ", ";
+                }
             }
-        }
-        output << "]" << (tailAfterUIScreen ? ",\n" : "\n");
+            out << "]";
+        });
     }
 
     // Optional: keyboard/gamepad focus.
-    if (hasFocus) {
-        writeIndent(output, 3);
-        output << "\"focus\": \"" << escapeJsonString(registry.focus.get(entity).focusedElement)
-               << "\"" << (tailAfterFocus ? ",\n" : "\n");
+    if (registry.focus.has(entity)) {
+        fields.push_back([&](std::ostream& out) {
+            writeIndent(out, 3);
+            out << "\"focus\": \"" << escapeJsonString(registry.focus.get(entity).focusedElement)
+                << "\"";
+        });
     }
 
     // Optional: in-progress text entry. Authoritative, so it round-trips — a scrub
     // must not lose a half-typed line. The caret blink phase is derived, not stored.
-    if (hasTextInput) {
-        const auto& text = registry.textInputs.get(entity);
-        writeIndent(output, 3);
-        output << "\"textinput\": {\n";
-        writeIndent(output, 4);
-        output << "\"element\": \"" << escapeJsonString(text.element) << "\",\n";
-        writeIndent(output, 4);
-        output << "\"buffer\": \"" << escapeJsonString(text.buffer) << "\",\n";
-        writeIndent(output, 4);
-        output << "\"caret\": " << text.caret << "\n";
-        writeIndent(output, 3);
-        output << "}\n";
+    if (registry.textInputs.has(entity)) {
+        fields.push_back([&](std::ostream& out) {
+            const auto& text = registry.textInputs.get(entity);
+            writeIndent(out, 3);
+            out << "\"textinput\": {\n";
+            writeIndent(out, 4);
+            out << "\"element\": \"" << escapeJsonString(text.element) << "\",\n";
+            writeIndent(out, 4);
+            out << "\"buffer\": \"" << escapeJsonString(text.buffer) << "\",\n";
+            writeIndent(out, 4);
+            out << "\"caret\": " << text.caret << "\n";
+            writeIndent(out, 3);
+            out << "}";
+        });
+    }
+
+    // Optional: animation playback state (Phase 17A). Authoritative → serialized:
+    // RULES.md Rule 21's worked example is an animator that hides `currentTime` and
+    // jumps after a restore. `time` is the whole point — restore it and the next
+    // fixed step re-derives the identical pose, which is why the pose itself is
+    // never written. A player with no clip is inert, so it is omitted (the same
+    // rule `script` uses for an empty behavior name). See docs/DESIGN_ANIMATION.md.
+    if (registry.animations.has(entity) && !registry.animations.get(entity).clip.empty()) {
+        fields.push_back([&](std::ostream& out) {
+            const auto& player = registry.animations.get(entity);
+            writeIndent(out, 3);
+            out << "\"animation\": {\n";
+            writeIndent(out, 4);
+            out << "\"clip\": \"" << escapeJsonString(player.clip) << "\",\n";
+            writeIndent(out, 4);
+            out << "\"time\": " << player.time << ",\n";
+            writeIndent(out, 4);
+            out << "\"speed\": " << player.speed << ",\n";
+            writeIndent(out, 4);
+            out << "\"playing\": " << (player.playing ? "true" : "false") << ",\n";
+            writeIndent(out, 4);
+            out << "\"loop\": " << (player.loop ? "true" : "false") << "\n";
+            writeIndent(out, 3);
+            out << "}";
+        });
+    }
+
+    // Optional: skinned-mesh binding (Phase 17C). A reference, not state — the name
+    // of the skin's bind data. Joint matrices are derived every frame and never
+    // written here.
+    if (registry.skinnedMeshes.has(entity) && !registry.skinnedMeshes.get(entity).skin.empty()) {
+        fields.push_back([&](std::ostream& out) {
+            writeIndent(out, 3);
+            out << "\"skinnedmesh\": \""
+                << escapeJsonString(registry.skinnedMeshes.get(entity).skin)
+                << "\"";
+        });
+    }
+
+    // Optional: animation state machine (Phase 17D). All authoritative — including
+    // the transition's progress, which is what makes a scrub land mid-cross-fade in
+    // exactly the pose it did the first time.
+    if (registry.animationStates.has(entity) && !registry.animationStates.get(entity).graph.empty()) {
+        fields.push_back([&](std::ostream& out) {
+            const auto& machine = registry.animationStates.get(entity);
+            writeIndent(out, 3);
+            out << "\"animationstate\": {\n";
+            writeIndent(out, 4);
+            out << "\"graph\": \"" << escapeJsonString(machine.graph) << "\",\n";
+            writeIndent(out, 4);
+            out << "\"state\": \"" << escapeJsonString(machine.currentState) << "\",\n";
+            writeIndent(out, 4);
+            out << "\"phase\": " << machine.statePhase << ",\n";
+            writeIndent(out, 4);
+            out << "\"target\": \"" << escapeJsonString(machine.transitionTarget) << "\",\n";
+            writeIndent(out, 4);
+            out << "\"targetPhase\": " << machine.targetPhase << ",\n";
+            writeIndent(out, 4);
+            out << "\"transitionElapsed\": " << machine.transitionElapsed << ",\n";
+            writeIndent(out, 4);
+            out << "\"transitionDuration\": " << machine.transitionDuration << "\n";
+            writeIndent(out, 3);
+            out << "}";
+        });
+    }
+
+    // Optional: animation parameters (Phase 17D). Gameplay state that the animator
+    // reads; std::map keeps the key order stable so the file diffs cleanly.
+    if (registry.animationParameters.has(entity) &&
+        !registry.animationParameters.get(entity).values.empty()) {
+        fields.push_back([&](std::ostream& out) {
+            const auto& parameters = registry.animationParameters.get(entity).values;
+            writeIndent(out, 3);
+            out << "\"animationparams\": {\n";
+            size_t index = 0;
+            for (const auto& [name, value] : parameters) {
+                writeIndent(out, 4);
+                out << "\"" << escapeJsonString(name) << "\": " << value
+                    << (++index < parameters.size() ? ",\n" : "\n");
+            }
+            writeIndent(out, 3);
+            out << "}";
+        });
+    }
+
+    // Closes the material object — the last mandatory field, so it takes a comma
+    // only when an optional actually follows it.
+    writeIndent(output, 3);
+    output << (fields.empty() ? "}\n" : "},\n");
+
+    // The one place a comma between optional fields is decided.
+    for (std::size_t i = 0; i < fields.size(); i++) {
+        fields[i](output);
+        output << (i + 1 < fields.size() ? ",\n" : "\n");
     }
 
     writeIndent(output, 2);
@@ -740,6 +843,14 @@ struct PendingEntityData {
     FocusComponent focus{};
     bool hasTextInput = false;
     TextInputComponent textInput{};
+    bool hasAnimation = false;
+    AnimationPlayerComponent animation{};
+    bool hasSkinnedMesh = false;
+    SkinnedMeshComponent skinnedMesh{};
+    bool hasAnimationState = false;
+    AnimationStateComponent animationState{};
+    bool hasAnimationParams = false;
+    AnimationParametersComponent animationParams{};
 };
 
 // Parses one object entry from the JSON. `sceneVersion` selects modern vs. the
@@ -903,6 +1014,67 @@ PendingEntityData parseEntityObject(const JsonValue& objectValue, int sceneVersi
         }
     }
 
+    if (const JsonValue* animationValue = findObjectField(objectData, "animation")) {
+        const auto& animationData = requireObject(*animationValue, "object.animation");
+        pendingEntity.hasAnimation = true;
+        if (const JsonValue* v = findObjectField(animationData, "clip")) {
+            pendingEntity.animation.clip = getStringValue(*v, "animation.clip");
+        }
+        if (const JsonValue* v = findObjectField(animationData, "time")) {
+            pendingEntity.animation.time = getFloatValue(*v, "animation.time");
+        }
+        if (const JsonValue* v = findObjectField(animationData, "speed")) {
+            pendingEntity.animation.speed = getFloatValue(*v, "animation.speed");
+        }
+        if (const JsonValue* v = findObjectField(animationData, "playing")) {
+            pendingEntity.animation.playing = getBoolValue(*v, "animation.playing");
+        }
+        if (const JsonValue* v = findObjectField(animationData, "loop")) {
+            pendingEntity.animation.loop = getBoolValue(*v, "animation.loop");
+        }
+    }
+
+    if (const JsonValue* skinValue = findObjectField(objectData, "skinnedmesh")) {
+        pendingEntity.hasSkinnedMesh = true;
+        pendingEntity.skinnedMesh.skin = getStringValue(*skinValue, "object.skinnedmesh");
+    }
+
+    if (const JsonValue* stateValue = findObjectField(objectData, "animationstate")) {
+        const auto& stateData = requireObject(*stateValue, "object.animationstate");
+        pendingEntity.hasAnimationState = true;
+        auto& machine = pendingEntity.animationState;
+        if (const JsonValue* v = findObjectField(stateData, "graph")) {
+            machine.graph = getStringValue(*v, "animationstate.graph");
+        }
+        if (const JsonValue* v = findObjectField(stateData, "state")) {
+            machine.currentState = getStringValue(*v, "animationstate.state");
+        }
+        if (const JsonValue* v = findObjectField(stateData, "phase")) {
+            machine.statePhase = getFloatValue(*v, "animationstate.phase");
+        }
+        if (const JsonValue* v = findObjectField(stateData, "target")) {
+            machine.transitionTarget = getStringValue(*v, "animationstate.target");
+        }
+        if (const JsonValue* v = findObjectField(stateData, "targetPhase")) {
+            machine.targetPhase = getFloatValue(*v, "animationstate.targetPhase");
+        }
+        if (const JsonValue* v = findObjectField(stateData, "transitionElapsed")) {
+            machine.transitionElapsed = getFloatValue(*v, "animationstate.transitionElapsed");
+        }
+        if (const JsonValue* v = findObjectField(stateData, "transitionDuration")) {
+            machine.transitionDuration = getFloatValue(*v, "animationstate.transitionDuration");
+        }
+    }
+
+    if (const JsonValue* paramsValue = findObjectField(objectData, "animationparams")) {
+        const auto& paramsData = requireObject(*paramsValue, "object.animationparams");
+        pendingEntity.hasAnimationParams = true;
+        for (const auto& [name, value] : paramsData) {
+            pendingEntity.animationParams.values[name] =
+                getFloatValue(value, "animationparams." + name);
+        }
+    }
+
     return pendingEntity;
 }
 
@@ -985,6 +1157,28 @@ std::vector<Entity> createEntitiesFromObjects(Registry& registry, const std::vec
 
         if (pendingEntity.hasTextInput) {
             registry.textInputs.add(entity, pendingEntity.textInput);
+        }
+
+        // Clips and skins are named, not embedded — so a scene loaded from disk has
+        // to put them back in their registries itself. Without this the components
+        // survive but resolve to nothing: animation silently stops and skinned
+        // meshes render in bind pose.
+        if (pendingEntity.hasAnimation) {
+            ModelImporter::ensureModelAssets(pendingEntity.animation.clip);
+            registry.animations.add(entity, pendingEntity.animation);
+        }
+
+        if (pendingEntity.hasSkinnedMesh) {
+            ModelImporter::ensureModelAssets(pendingEntity.skinnedMesh.skin);
+            registry.skinnedMeshes.add(entity, pendingEntity.skinnedMesh);
+        }
+
+        if (pendingEntity.hasAnimationState) {
+            registry.animationStates.add(entity, pendingEntity.animationState);
+        }
+
+        if (pendingEntity.hasAnimationParams) {
+            registry.animationParameters.add(entity, pendingEntity.animationParams);
         }
     }
 
@@ -1187,6 +1381,48 @@ void patchEntity(Registry& registry, Entity entity, const PendingEntityData& dat
         }
     } else if (registry.textInputs.has(entity)) {
         registry.textInputs.remove(entity);
+    }
+
+    if (data.hasAnimation) {
+        ModelImporter::ensureModelAssets(data.animation.clip);
+        if (registry.animations.has(entity)) {
+            registry.animations.get(entity) = data.animation;
+        } else {
+            registry.animations.add(entity, data.animation);
+        }
+    } else if (registry.animations.has(entity)) {
+        registry.animations.remove(entity);
+    }
+
+    if (data.hasSkinnedMesh) {
+        ModelImporter::ensureModelAssets(data.skinnedMesh.skin);
+        if (registry.skinnedMeshes.has(entity)) {
+            registry.skinnedMeshes.get(entity) = data.skinnedMesh;
+        } else {
+            registry.skinnedMeshes.add(entity, data.skinnedMesh);
+        }
+    } else if (registry.skinnedMeshes.has(entity)) {
+        registry.skinnedMeshes.remove(entity);
+    }
+
+    if (data.hasAnimationState) {
+        if (registry.animationStates.has(entity)) {
+            registry.animationStates.get(entity) = data.animationState;
+        } else {
+            registry.animationStates.add(entity, data.animationState);
+        }
+    } else if (registry.animationStates.has(entity)) {
+        registry.animationStates.remove(entity);
+    }
+
+    if (data.hasAnimationParams) {
+        if (registry.animationParameters.has(entity)) {
+            registry.animationParameters.get(entity) = data.animationParams;
+        } else {
+            registry.animationParameters.add(entity, data.animationParams);
+        }
+    } else if (registry.animationParameters.has(entity)) {
+        registry.animationParameters.remove(entity);
     }
 }
 

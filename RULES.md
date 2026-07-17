@@ -173,6 +173,57 @@ Examples:
 
 ✔ Command History
 
+## Rule 9a — A test must be shown to fail
+
+A green test proves nothing until you have seen it go red for the intended reason.
+
+Before trusting a new test, break the thing it covers — temporarily — and confirm the
+test fails, and fails *because of that*:
+
+```
+neuter AnimationSystem::update  → Animation test FAIL   ✔ measures behavior
+delete a field from the writer  → Serializer test FAIL  ✔ measures behavior
+```
+
+A test that stays green through a deliberate break measures nothing; it merely
+compiles next to the code. This costs one build cycle and is the difference between a
+suite you trust and a suite you hope.
+
+The failure this catches is usually the *test*, not the code. Worked example (17C.1):
+reversing the skinning multiplication order left the `Skinning` test **passing** —
+every case used translation-only matrices, and translations **commute**, so
+`world * inverseBind` and `inverseBind * world` are identical. The test could not see
+the one thing it existed to pin. Rotating a joint (rotation does not commute with
+translation) gave it teeth.
+
+The general shape: **a test can be blind to the property it claims to check, and
+being green tells you nothing about which.** Only the break tells you.
+
+## Rule 9b — Round-trip tests are necessary, not sufficient
+
+A round trip proves the writer and the reader **agree with each other**. It does not
+prove either is *right* — both can drift together and stay mutually compatible:
+
+```
+write → read → compare      ✔ writer and parser agree
+                            ✘ says nothing about the format itself
+```
+
+Where an external contract exists — an on-disk format, a wire protocol, a file
+snapshots and time travel ride on — pin it with a **golden test**: exact expected
+bytes, derived **independently of the implementation under test**.
+
+Deriving the expectation by running the new code and capturing its output proves only
+that the code equals itself:
+
+```
+new impl → generate expected → compare against itself    ✘ circular
+old rules → hand-derive expected → compare              ✔ real evidence
+```
+
+Golden tests are deliberately brittle. That is the feature: the format then changes
+only on purpose, in a commit that says so.
+
 ---
 
 # Rule 10 — Determinism Is Required
@@ -377,6 +428,33 @@ Applies to **everything**: animation, runtime UI, particles, navigation, AI. Whe
 adding a runtime subsystem, first classify its state as authoritative or derived, and
 route authoritative state through ECS / serialization.
 
+## Rule 21a — A name in a component is a promise to reconstitute the asset
+
+Asset-backed components store a **stable identifier**, never a pointer: a mesh key, a
+clip name, a skin name, a behavior name, a graph name. That is what makes them
+serializable, hot-reloadable, and safe across a snapshot.
+
+The identifier is only half the contract. The other half:
+
+> If authoritative state references an asset by name, **something must deterministically
+> reconstruct that asset from the name alone — on scene load**, not only on the path
+> that happened to create it.
+
+Miss the second half and the failure is *silent*. Not a crash, not a dangling pointer:
+the component round-trips perfectly, looks correct in the inspector, and does nothing.
+
+```
+save   → "clip": "hero.gltf#Run"      ✔ serialized
+load   → "clip": "hero.gltf#Run"      ✔ deserialized
+play   → registry lookup misses       ✘ animation silently dead
+```
+
+This is exactly what happened in 17C.2: clips and skins were registered as a side
+effect of *import*, and a scene loaded from disk never runs the importer
+(`ModelImporter::ensureModelAssets` is the fix). It generalizes to every asset-backed
+component — materials, audio clips, fonts, meshes, behaviors, animation graphs. When
+adding one, ask: *what rebuilds this from the name when the scene is loaded cold?*
+
 ---
 
 # Decision Checklist
@@ -386,7 +464,7 @@ Before merging any major feature, ask:
 - Does it make developers faster?
 - Does it improve the architecture?
 - Does it reduce complexity?
-- Is it testable?
+- Is it testable — and has its test been shown to fail (Rule 9a)?
 - Is it deterministic?
 - Does it fit the existing philosophy?
 - Does it introduce unnecessary dependencies?

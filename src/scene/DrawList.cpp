@@ -1,4 +1,7 @@
 #include "scene/DrawList.h"
+#include "animation/Skin.h"
+#include "animation/SkinRegistry.h"
+#include "animation/Skinning.h"
 #include "assets/ResourceManager.h"
 #include "ecs/Registry.h"
 #include <algorithm>
@@ -38,6 +41,17 @@ void buildDrawListFromECS(const Registry& registry, const std::vector<Light>& li
         item.meshHandle = meshComponent.mesh;
         item.material = materialComponent.material;
         item.model = getWorldMatrix(entity, registry);
+
+        // The pose is resolved here, while we still have the ECS in hand, and handed
+        // to the renderer as plain matrices. computeJointMatrices fails (leaving the
+        // list empty) when nothing binds, which degrades to an unskinned draw rather
+        // than a mesh collapsed onto the origin.
+        if (registry.skinnedMeshes.has(entity)) {
+            if (const Skin* skin = SkinRegistry::get(registry.skinnedMeshes.get(entity).skin)) {
+                Skinning::computeJointMatrices(registry, entity, *skin, item.jointMatrices);
+            }
+        }
+
         out.items.push_back(std::move(item));
     }
 

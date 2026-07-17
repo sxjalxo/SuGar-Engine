@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <functional>
 #include <stdexcept>
+#include "animation/AnimationComponents.h"
 #include "assets/AssetHandle.h"
 #include "audio/AudioComponents.h"
 #include "ecs/ComponentAccess.h"
@@ -37,6 +38,10 @@ SUGAR_TRACK_COMPONENT(AudioListenerComponent, AudioListener);
 SUGAR_TRACK_COMPONENT(UIScreenComponent, UIScreen);
 SUGAR_TRACK_COMPONENT(FocusComponent, Focus);
 SUGAR_TRACK_COMPONENT(TextInputComponent, TextInput);
+SUGAR_TRACK_COMPONENT(AnimationPlayerComponent, Animation);
+SUGAR_TRACK_COMPONENT(SkinnedMeshComponent, SkinnedMesh);
+SUGAR_TRACK_COMPONENT(AnimationStateComponent, AnimationState);
+SUGAR_TRACK_COMPONENT(AnimationParametersComponent, AnimationParameters);
 
 #undef SUGAR_TRACK_COMPONENT
 
@@ -80,6 +85,10 @@ public:
         uiScreens.remove(entity);
         focus.remove(entity);
         textInputs.remove(entity);
+        animations.remove(entity);
+        skinnedMeshes.remove(entity);
+        animationStates.remove(entity);
+        animationParameters.remove(entity);
         entityManager.destroyEntity(entity);
     }
 
@@ -134,6 +143,10 @@ public:
         uiScreens.clear();
         focus.clear();
         textInputs.clear();
+        animations.clear();
+        skinnedMeshes.clear();
+        animationStates.clear();
+        animationParameters.clear();
         entityManager.reset();
     }
 
@@ -151,6 +164,10 @@ public:
     ComponentStorage<UIScreenComponent> uiScreens;
     ComponentStorage<FocusComponent> focus;
     ComponentStorage<TextInputComponent> textInputs;
+    ComponentStorage<AnimationPlayerComponent> animations;
+    ComponentStorage<SkinnedMeshComponent> skinnedMeshes;
+    ComponentStorage<AnimationStateComponent> animationStates;
+    ComponentStorage<AnimationParametersComponent> animationParameters;
 
     // Injected by the Engine layer to release GPU/asset handles when an entity is
     // destroyed. Keeps the ECS (Core layer) free of any ResourceManager / Vulkan
@@ -219,4 +236,48 @@ inline glm::mat4 getWorldMatrix(Entity entity, const Registry& registry) {
 
 inline glm::vec3 getWorldPosition(Entity entity, const Registry& registry) {
     return glm::vec3(getWorldMatrix(entity, registry)[3]);
+}
+
+// The topmost ancestor of `entity` (itself, if it has no parent). Cycle-free by
+// construction: setParent rejects cycles.
+inline Entity getRootAncestor(Entity entity, const Registry& registry) {
+    Entity current = entity;
+    while (registry.hierarchy.has(current)) {
+        const Entity parent = registry.hierarchy.get(current).parent;
+        if (parent == INVALID_ENTITY) {
+            break;
+        }
+        current = parent;
+    }
+    return current;
+}
+
+// Depth-first search of `root`'s subtree (root included) for an entity named
+// `name`; INVALID_ENTITY if there is none. Children are visited in declared order,
+// so "first match wins" is stable across runs when names are ambiguous.
+//
+// Name-based lookup is the engine's idiom for cross-entity references that must
+// survive serialization (animation track targets, skin joints): a name round-trips
+// as a plain string, where an index or pointer would not.
+inline Entity findDescendantByName(const Registry& registry, Entity root, const std::string& name) {
+    if (root == INVALID_ENTITY) {
+        return INVALID_ENTITY;
+    }
+
+    // Iterative rather than recursive: a deep skeleton shouldn't risk the stack.
+    std::vector<Entity> pending{root};
+    while (!pending.empty()) {
+        const Entity entity = pending.back();
+        pending.pop_back();
+
+        if (registry.names.has(entity) && registry.names.get(entity).name == name) {
+            return entity;
+        }
+        if (registry.hierarchy.has(entity)) {
+            const auto& children = registry.hierarchy.get(entity).children;
+            // Reversed, so popping the stack visits children in declared order.
+            pending.insert(pending.end(), children.rbegin(), children.rend());
+        }
+    }
+    return INVALID_ENTITY;
 }

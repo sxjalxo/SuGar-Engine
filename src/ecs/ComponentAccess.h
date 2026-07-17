@@ -34,10 +34,15 @@ enum class ComponentType : uint32_t {
     UIScreen,
     Focus,
     TextInput,
+    Animation,
+    SkinnedMesh,
+    AnimationState,
+    AnimationParameters,
     Count
 };
 
-// A small bitset over ComponentType. 11 components fit comfortably in 32 bits.
+// A small bitset over ComponentType — one bit per storage, with plenty of room
+// left in 32.
 using ComponentMask = uint32_t;
 
 inline constexpr ComponentMask componentBit(ComponentType type) {

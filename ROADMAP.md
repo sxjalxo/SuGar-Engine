@@ -116,8 +116,8 @@ yes/no answer. It is bounded on both sides:
 | Hot Reload      | ✅ done |
 | Debugging (time travel / query / profiler) | ✅ done |
 | Physics · Audio · ECS · Rendering | ✅ done |
-| **Runtime UI (RmlUi)** | 🚧 **next** |
-| **Animation** (skeletal, blend trees, state machines) | 🚧 |
+| **Runtime UI (RmlUi)** | ✅ done (Phase 16) |
+| **Animation** (skeletal, blend trees, state machines) | ✅ done (Phase 17) |
 | **Navigation** | 🚧 |
 | **Asset Pipeline** (maturity: cooking, importers) | 🚧 |
 | **Packaging / standalone export** | 🚧 |
@@ -130,6 +130,16 @@ yes/no answer. It is bounded on both sides:
 - Console ports
 - Massive-world streaming
 - Plugin marketplace
+
+**On M3 completion — publish the Runtime UI design as a standalone article.**
+Expand [docs/DESIGN_RUNTIME_UI.md](docs/DESIGN_RUNTIME_UI.md) +
+[docs/RUNTIME_UI_LESSONS.md](docs/RUNTIME_UI_LESSONS.md) into a technical write-up:
+*integrating a retained-mode UI library (RmlUi) with an immediate/ECS gameplay model
+while preserving determinism, replay, hot reload, and ECS authority.* Very little
+exists publicly on this specific problem — the reasoning (authoritative vs derived,
+intents-only callbacks, polling over subscriptions, why not `<input>`) is the
+contribution, not the engine. Worth doing as part of the open-source launch (M3 → M4
+hand-off), not before: the design should be validated by a real game first.
 
 ### M4 — Dogfood: build real games
 Physics sandbox → platformer → top-down shooter. Not products — **validation**.
@@ -166,8 +176,8 @@ experience, not speculation.
 Ordered by the decision lens (*does this make developers faster?* — and here, *does
 this unblock building a game at all?*):
 
-1. **Runtime UI (RmlUi)** — first, and not merely because it's a bounded library
-   integration. Without it you *cannot* build a proper game (menus, pause, settings,
+1. **Runtime UI (RmlUi) — DONE (Phase 16).** It led M3, and not merely because it's a
+   bounded library integration. Without it you *cannot* build a proper game (menus, pause, settings,
    HUD, health, inventory, dialogue), and the temptation is to reach for
    `ImGui::Begin("HUD")` — violating the engine's own architecture. It is the *last
    missing piece of the platform*, so it leads.
@@ -329,11 +339,244 @@ this unblock building a game at all?*):
      isn't modelled yet. Home/End/word-wise caret motion. The demo HUD is still a
      placeholder rather than real screens. UI advances only in Play (intents drain on
      the fixed step — by design), which makes authoring UI in Edit mode awkward.
-2. **Animation** — skeletal, blend trees, state machines, graphs. Hand-rolled
-   playback (external libs may import data, never own playback). Same Rule 21
-   constraint: playback state (current time, active state) is authoritative → ECS /
-   serializable; graph evaluation caches are derived → rebuildable.
-3. Then: navigation, asset-pipeline maturity, packaging, build pipeline.
+2. **Animation — DONE (Phase 17).** Skeletal, blend trees, state machines, graphs.
+   Hand-rolled playback (external libs may import data, never own playback). Same
+   Rule 21 constraint: playback state (current time, active state) is authoritative →
+   ECS / serializable; graph evaluation caches are derived → rebuildable.
+   - **Architecture decided before code**, as with Runtime UI: see
+     **[docs/DESIGN_ANIMATION.md](docs/DESIGN_ANIMATION.md)**. The governing invariant
+     is `Pose = f(clip data, playback state)` — clips are immutable assets, playback
+     state lives in ECS, and the pose is *recomputed*, never stored. Rule 21 uses an
+     animator hiding `currentTime` as its worked example of the bug this prevents.
+     - **The record's own contribution:** it decides the gray areas *against* the UI
+       record where they genuinely differ. An **animation transition mid-blend is
+       authoritative** even though the identical-looking UI tween is derived — a UI
+       tween can snap to target because only the eye reads it, while a transition
+       determines the actual pose, and therefore root motion, hitboxes, and what the
+       player sees at frame N. The general rule that falls out: *a tween is derived
+       when it is only looked at, and authoritative when something else reads it.*
+   - **17A — model layer (DONE):** the authoritative half, built and tested headless
+     before any skinning — the sequencing that worked for 16A. `AnimationClip` +
+     track/keyframe data with hand-rolled sampling (STEP + LINEAR, quaternion slerp),
+     `AnimationClipRegistry` (name → immutable clip, the `BehaviorRegistry` pattern),
+     `AnimationPlayerComponent` { clip, time, speed, playing, loop } as authoritative
+     ECS state, and an `AnimationSystem` that advances time on the fixed step and
+     writes sampled poses into transforms. Full serializer round-trip, so a
+     half-played animation survives snapshot restore / time travel. All of it lives
+     in **Core** — playback is pure math over plain data, which is precisely what
+     makes a GPU-free self-test possible (Rule 9/15). Scheduled **after Script,
+     before Physics**, so a clip-driven transform is an input to this step's
+     collision rather than a step stale; it declares `R:Animation|Name|Hierarchy`,
+     `W:Animation|Transform` and the self-test asserts it stays inside that
+     declaration. 21/21 `SUGAR_VALIDATE` gates pass (was 20/20).
+     - **Determinism detail worth keeping:** loop wrap is **modular, not
+       subtractive**. `time -= duration` is the obvious version and it breaks the
+       moment one step overshoots a short clip (a 0.1 s clip at speed 100 crosses
+       several loops in a single step), and again for negative speed. The self-test
+       pins both cases.
+     - **Verified, not assumed:** the `Animation` self-test was re-run against a
+       deliberately neutered `AnimationSystem::update` and it failed — so the suite
+       proves the system's behavior rather than merely compiling next to it.
+   - **17A cleanup — serializer optional-field emitters (DONE):** adding animation
+     exposed `writeEntityObject`'s `tailAfter*` ladder as an architectural liability
+     rather than a wart: ~10 hand-maintained booleans, each the OR of every optional
+     component declared after it, so **one new component meant editing ten unrelated
+     expressions** — and a missed term emitted invalid JSON at *runtime* (a failed
+     snapshot parse), not a compile error. Exactly the coupling Rule 8 argues
+     against. Replaced with `std::vector<std::function<void(std::ostream&)>> fields`:
+     each present component pushes an emitter that writes its field *without* a
+     separator, and one loop owns comma placement. The ladder is gone; the
+     serializer's control flow no longer depends on component count, and adding a
+     component is a single `push_back`. Output is **byte-identical** — the constraint
+     that keeps "behavior changed" synonymous with "bug".
+     - **The gap this exposed:** `testSerializer` was *not* a golden test — it only
+       grepped for `"Probe"` and `"pos"`, so it would have passed through almost any
+       format drift. Round-trip tests couldn't cover it either: they prove writer and
+       parser *agree*, so both could drift together. It is now byte-exact over an
+       entity carrying every optional component, with the expectation **hand-derived
+       from the old ladder's rules** rather than captured from the new code (a
+       captured expectation would only have proven the new code equals itself). It
+       matched first try.
+     - **Then break-tested, per the Animation precedent:** deleting one component
+       from the writer must fail loudly. It did — but it *crashed the whole suite*
+       (`invalid unordered_map<K, T> key`, thrown from a patched-away component),
+       killing the run at test 11 of 15 so `testSerializer` never reported. **A
+       throwing test now reports `FAIL ... threw: <what>` and the run continues** —
+       the table you read to diagnose the failure is no longer the thing the failure
+       destroys. `SUGAR_VALIDATE` still exits nonzero (verified: `19/21`, exit 1).
+   - **17B — glTF clip import (DONE):** `animations` + samplers parse into engine
+     `AnimationClip`s inside `GltfLoader.cpp`; tinygltf stays parse-only and no
+     tinygltf type escapes the translation unit. Two shape conversions happen at the
+     boundary, which is the point of having one:
+     - **Channel-per-property → track-per-node.** glTF emits a channel per animated
+       property; SuGar wants one `TransformTrack` per node, so channels are grouped
+       by target node.
+     - **Node index → node name.** glTF targets nodes by index. Resolving to names at
+       import means nothing downstream depends on glTF's numbering, so a re-export
+       that reorders nodes cannot silently repoint a saved scene at the wrong bone.
+       Clips register as `"<path>#<clipName>"`, mirroring the `"<path>#<meshIndex>"`
+       mesh key — by name, not index, for the same reason.
+     - **Import attaches a *stopped* player** for the first clip. Registering clips
+       with no player leaves the animation invisible until hand-wired; auto-playing
+       would let the *importer* decide gameplay and would fight the editor (a model
+       that pirouettes the moment you drop it in is not an authoring tool).
+     - **CUBICSPLINE is approximated, deliberately.** glTF stores
+       `[inTangent, value, outTangent]` per key; the real keyframe at `3i+1` is read
+       and interpolated linearly. Exact *at* every keyframe, less smooth between —
+       a better failure mode than dropping the channel (silently missing animation)
+       or misreading the triples as keys (garbage). Full cubic evaluation lands when
+       an asset needs it. Non-float rotations (glTF permits normalized byte/short)
+       are skipped rather than misread.
+     - **Verified + break-tested** against a hand-written fixture
+       (`assets/models/AnimatedSpinner.gltf`, embedded base64 buffer, LINEAR
+       rotation/translation + a STEP clip): parse → ECS import → drive the real
+       `AnimationSystem` → assert the pose at t=0.5. Inverting the glTF `[x,y,z,w]` →
+       glm `(w,x,y,z)` swap — the silent, ruinous one — makes it fail (Rule 9a).
+       22/22 `SUGAR_VALIDATE`.
+     - **Known limit, stated not discovered:** the fixture is hand-written, so the
+       importer is not yet proven against a real exporter's output (interleaved
+       buffer views, sparse accessors). 17C brings real skinned assets.
+   - **17C.1 — skin model + joint matrices (DONE):** the design record's open
+     question ("flat joint array vs. reusing the ECS hierarchy for joints")
+     **answered itself** once 17A/17B existed: joints are *already* entities, and the
+     AnimationSystem already poses them by writing `TransformComponent`. A parallel
+     joint array would be a second representation of the same thing, able to disagree
+     after a snapshot restore — the second owner Rule 21 forbids. So the ECS
+     hierarchy *is* the skeleton, and the invariant is:
+
+     ```
+     Skinning = f(mesh, skeleton pose)
+     ```
+
+     `Skin` (Core) therefore carries only what ECS cannot know: joint **names** in
+     joint-index order (JOINTS_0 indexes into it) plus inverse bind matrices.
+     `SkinRegistry` keys them `"<path>#<skinName>"` (the AnimationClipRegistry
+     pattern). `SkinnedMeshComponent` is a **reference, not state** — a name, nothing
+     else. `Skinning::computeJointMatrices` is deliberately **not a system**: it
+     writes no components, owns no state, and is recomputed on demand, so the
+     renderer stays a pure consumer and GPU skinning remains an implementation detail
+     of drawing. Nothing would change to skin on the CPU instead. glTF skin import
+     does the same index→name conversion as 17B. 24/24 `SUGAR_VALIDATE`.
+     - **Convention:** `jointMatrix[i] = inverse(world(skinnedEntity)) * world(joint[i]) * inverseBind[i]`.
+       The leading inverse cancels the skinned node's own transform (glTF says it
+       must be ignored), which lets the renderer keep applying its ordinary
+       per-entity model matrix — so moving the character entity moves the character
+       and skinned meshes need no special case in the draw path. An unresolvable
+       joint yields identity rather than being skipped: `out` must stay parallel to
+       the skin's joint order, or a hole silently re-maps every later joint.
+     - **The break test earned its keep — by exposing a bad test, not bad code.**
+       Reversing the multiplication order left `Skinning` **passing**. Cause: every
+       case used translation-only matrices, and **translations commute**, so
+       `world * inverseBind` and `inverseBind * world` are identical — the test
+       literally could not see the order it existed to pin. Fixed by rotating a joint
+       (rotation does not commute with translation); the reversed product then leaves
+       a (-2,-2,0) offset where the correct one leaves zero. This is the Rule 9a
+       failure mode in its purest form: a green test that measured nothing.
+   - **17C.2 — GPU skinning (DONE, visually verified):** `JOINTS_0`/`WEIGHTS_0`
+     vertex attributes, skinned scene + shadow pipelines, and joint matrices uploaded
+     per draw. The ownership boundary held: the renderer gained **no** animation
+     state. Poses arrive on the `DrawList` as plain matrices (derived in
+     `buildDrawListFromECS`, where the ECS is still in hand), so the pass only
+     *transports* them — it never asks the ECS for a pose, and never owns one.
+     - **Verified by screenshot, the whole point of the phase:** a bar with two
+       joints, weights blending by height. **Edit mode → perfectly straight** (bind
+       pose); **Play → smoothly bent**, bottom ring (weight 1.0 Root) unmoved, middle
+       ring (0.5/0.5) partially rotated, top ring (weight 1.0 Tip) swung the full
+       60°, cycling 0→60→0. Linear blend skinning, driven end-to-end by
+       `AnimationSystem` → `TransformComponent` → `computeJointMatrices` → shader.
+     - **Bug found before it shipped:** clips and skins were registered *only* by the
+       importer, so a scene **loaded from disk** kept its components and resolved
+       them to nothing — animation silently dead, skinned meshes stuck in bind pose.
+       Components hold *names* precisely so they can be re-resolved;
+       `ModelImporter::ensureModelAssets` now does that on the scene-load and
+       snapshot-patch paths, guarded by a registry lookup so scrubbing does no file
+       I/O. This only surfaced because the phase insisted on driving the real app.
+     - **A skinned *shadow* pipeline exists for a reason:** without it a character
+       animates while its shadow stands in bind pose. The depth pass needs only
+       position, but it must skin that position with the same matrices.
+     - **Vertex format, stated not buried:** `joints`/`weights` live on the one
+       `Vertex` (+20 B on *every* vertex, static geometry included, 32→52 B). Bought
+       one Mesh, one loader, one ResourceManager entry, one buffer; a second vertex
+       format would fork all of them. Both pipelines share the binding *stride* and
+       differ only in declared attributes. First thing to revisit if vertex memory is
+       ever measured (Rule 18) — likely unorm8 weights (+8 B) before a split format.
+     - **Not repeating a known hazard:** the scene UBO is single-buffered and
+       rewritten every frame with 2 frames in flight. The joint buffer is
+       per-frame-in-flight instead — a torn pose is a visibly glitching character,
+       and the fix costs a few hundred KiB. *(The pre-existing UBO hazard is
+       untouched and still latent.)*
+     - **Limits, deliberate:** 64 joints/skin and 64 skinned draws per frame (both
+       clamp rather than overrun into another character's slice); `JOINTS_1` (5–8
+       influences) unread; joint indices clamp to 255.
+     - **Still unproven:** both fixtures are hand-written, so interleaved buffer
+       views, sparse accessors and exporter quirks remain untested. **Keep both
+       fixture kinds** when real exports arrive — hand-written for deterministic
+       regression (only the data a behavior needs), real exports for compatibility.
+       Different purposes, not replacements.
+   - **17D — blend trees + state machines (DONE):** `AnimationGraph` is a data asset
+     (`AnimationGraphRegistry`, name-keyed like clips and skins): states play one clip
+     or a **1D blend tree**, and transitions fire on a parameter comparison or
+     `OnFinished`. `AnimationStateComponent` holds the authoritative half — active
+     state, phase, transition target + elapsed — and `AnimationParametersComponent`
+     holds the parameters, which are **gameplay's** state that the animator only
+     reads. Everything else is derived. Exactly the split the design record predicted
+     in 17A, applied without amendment.
+     - **The enabler was a `Pose`.** 17A sampled a clip straight into
+       `TransformComponent`, which works for one clip and is *impossible* for two:
+       once a pose is in the transforms, what you'd need to blend it is gone. A
+       derived `Pose` value + `blendPoses` + `applyPose` made blending an ordinary
+       function over data — and let the 17A player and the state machine share one
+       definition of "apply a pose", rather than two.
+     - **Phase, not seconds — the one thing the record didn't predict.** A blend tree
+       mixes clips of different lengths (a walk is slower than a run); advance them by
+       wall-clock seconds and the feet slide, because each reaches its foot-plant at a
+       different moment. `statePhase` is normalized [0,1) and each clip is sampled at
+       `phase * duration`, keeping contacts aligned. Named `phase` so it can't be
+       confused with `AnimationPlayerComponent::time`, which *is* seconds — a lone
+       clip has nothing to stay in sync with.
+     - **Transition progress is authoritative**, as the record argued in 17A against
+       the identical-looking UI tween. The self-test pins it: a character saved
+       mid-cross-fade, run 40 steps past it, then scrubbed back, is mid-blend again
+       with the same phases and elapsed time — not snapped to either end.
+     - **Break-tested (Rule 9a):** making transitions complete instantly instead of
+       blending fails `AnimationGraph`. 25/25 `SUGAR_VALIDATE`.
+     - **Not built, deliberately:** 2D directional blending (1D covers
+       idle/walk/run; the 17B CUBICSPLINE lesson says don't guess the shape of a
+       feature no asset has asked for), transition interruption (needs a second
+       outgoing pose, and "queue vs. interrupt" is a real design question no character
+       here has posed), and animation **events** — which still need explicit
+       "already fired" ECS state, since a private `lastFiredTime` in the system is
+       Rule 21's anti-pattern under a different field name.
+
+   **Phase 17 complete.** Ownership was settled before rendering, and held under it:
+   17A playback model → 17B glTF translated at the import boundary → 17C.1 the ECS
+   hierarchy *is* the skeleton → 17C.2 GPU skinning as a pure consumer → 17D graphs on
+   top. The renderer never became an owner of animation state, and no phase had to
+   revisit an earlier one's decision. Rationale in
+   **[docs/DESIGN_ANIMATION.md](docs/DESIGN_ANIMATION.md)**.
+3. **QA + hardening pass (DONE, between Phase 17 and 18).** Before starting a new
+   subsystem, stabilise the last one and clear known debt:
+   - **Scene-UBO write-while-in-flight race fixed.** The scene uniform buffer was a
+     single copy rewritten every frame while the GPU could still be reading the
+     previous frame's (the fence only guarantees the frame *two* submissions ago).
+     Now one slice per frame-in-flight, bound `UNIFORM_BUFFER_DYNAMIC` with the
+     frame's offset — the same lifetime model 17C.2 used for the joint buffer.
+     Verified with validation layers active: zero messages across live rendering.
+   - **Shadow bug found + fixed (separate from the race).** `shadow.vert` declared
+     binding 0 as `{ mat4 lightSpaceMatrix; }`, but the shadow pass binds the *same*
+     descriptor set 0 as the scene pass, whose UBO starts with `view` — so std140 put
+     `lightSpaceMatrix` at byte 128 and the shader was reading `view` at byte 0,
+     rendering the shadow map from the **camera** instead of the light. A shared
+     descriptor set means every shader's UBO block must mirror the real byte layout;
+     both shadow shaders now declare the full `UniformBufferObject`. Screenshot diff:
+     ~400k viewport pixels changed, shadows now present on the floor.
+   - **Dead code removed:** `src/scene/Scene.h` + `src/scene/GameObject.h` — the
+     pre-ECS scene graph, unreferenced since the Registry replaced it, and carrying a
+     second `getWorldMatrix` overload that only invited confusion.
+   - **First animation stress coverage:** `AnimationScale(400)` — 400 characters
+     (players + state machines + blend trees) over 600 steps, asserting bit-identical
+     determinism across two runs and snapshot survival at scale. 26/26 `SUGAR_VALIDATE`.
+4. **Navigation — next.** Then: asset-pipeline maturity, packaging, build pipeline.
 
 ---
 

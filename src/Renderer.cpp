@@ -1124,9 +1124,12 @@ VkDescriptorSet Renderer::getDescriptorSet(AssetHandle textureHandle, uint32_t i
 }
 
 void Renderer::createDescriptorSetLayout() {
+    // Dynamic: the scene UBO is one buffer of per-frame-in-flight slices, and the
+    // draw loop supplies this frame's byte offset when it binds the set (avoiding a
+    // write-while-in-flight race). See BasicTrianglePass::createUniformBuffer.
     VkDescriptorSetLayoutBinding uboLayoutBinding{};
     uboLayoutBinding.binding = 0;
-    uboLayoutBinding.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+    uboLayoutBinding.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC;
     uboLayoutBinding.descriptorCount = 1;
     uboLayoutBinding.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
     uboLayoutBinding.pImmutableSamplers = nullptr;
@@ -1168,7 +1171,7 @@ void Renderer::createDescriptorPool() {
     );
 
     std::array<VkDescriptorPoolSize, 3> poolSizes{};
-    poolSizes[0].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+    poolSizes[0].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC;
     poolSizes[0].descriptorCount = descriptorSetCount;
     poolSizes[1].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     poolSizes[1].descriptorCount = descriptorSetCount;
@@ -1227,6 +1230,7 @@ void Renderer::createDescriptorSets() {
             VkDescriptorSet descriptorSet = allocatedDescriptorSets[descriptorIndex++];
             setsForTexture[i] = descriptorSet;
 
+            // Range is one slice; the dynamic offset at bind time picks the frame.
             VkDescriptorBufferInfo bufferInfo{};
             bufferInfo.buffer = activePass->getUniformBuffer();
             bufferInfo.offset = 0;
@@ -1248,7 +1252,7 @@ void Renderer::createDescriptorSets() {
             descriptorWrites[0].dstSet = descriptorSet;
             descriptorWrites[0].dstBinding = 0;
             descriptorWrites[0].dstArrayElement = 0;
-            descriptorWrites[0].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+            descriptorWrites[0].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC;
             descriptorWrites[0].descriptorCount = 1;
             descriptorWrites[0].pBufferInfo = &bufferInfo;
 

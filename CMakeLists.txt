@@ -86,6 +86,25 @@ add_library(SuGarCore SHARED
     src/scene/TransformMath.h
     src/physics/CollisionEvent.h
     src/physics/PhysicsComponents.h
+    src/animation/AnimationClip.h
+    src/animation/AnimationClip.cpp
+    src/animation/AnimationClipRegistry.h
+    src/animation/AnimationClipRegistry.cpp
+    src/animation/AnimationComponents.h
+    src/animation/AnimationSystem.h
+    src/animation/AnimationSystem.cpp
+    src/animation/AnimationGraph.h
+    src/animation/AnimationGraphRegistry.h
+    src/animation/AnimationGraphRegistry.cpp
+    src/animation/AnimationStateSystem.h
+    src/animation/AnimationStateSystem.cpp
+    src/animation/Pose.h
+    src/animation/Pose.cpp
+    src/animation/Skin.h
+    src/animation/SkinRegistry.h
+    src/animation/SkinRegistry.cpp
+    src/animation/Skinning.h
+    src/animation/Skinning.cpp
     src/ui/UIComponents.h
     src/ui/UIIntent.h
     src/ui/RuntimeUISystem.h
@@ -173,9 +192,7 @@ add_executable(SuGarEngine
     src/physics/PhysicsWorld.h
     src/scene/DrawList.cpp
     src/scene/DrawList.h
-    src/scene/GameObject.h
     src/scene/Light.h
-    src/scene/Scene.h
     src/scene/SceneSerializer.cpp
     src/scene/SceneSerializer.h
     src/rendering/Camera.h
