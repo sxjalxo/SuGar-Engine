@@ -118,7 +118,7 @@ yes/no answer. It is bounded on both sides:
 | Physics · Audio · ECS · Rendering | ✅ done |
 | **Runtime UI (RmlUi)** | ✅ done (Phase 16) |
 | **Animation** (skeletal, blend trees, state machines) | ✅ done (Phase 17) |
-| **Navigation** | 🚧 |
+| **Navigation** | ✅ done (Phase 18) |
 | **Asset Pipeline** (maturity: cooking, importers) | 🚧 |
 | **Packaging / standalone export** | 🚧 |
 | **Build Pipeline** | 🚧 |
@@ -576,7 +576,270 @@ this unblock building a game at all?*):
    - **First animation stress coverage:** `AnimationScale(400)` — 400 characters
      (players + state machines + blend trees) over 600 steps, asserting bit-identical
      determinism across two runs and snapshot survival at scale. 26/26 `SUGAR_VALIDATE`.
-4. **Navigation — next.** Then: asset-pipeline maturity, packaging, build pipeline.
+4. **Navigation — DONE (Phase 18).** The third M3 platform item, and the third
+   subsystem to have its architecture decided **before** any code:
+   **[docs/DESIGN_NAVIGATION.md](docs/DESIGN_NAVIGATION.md)**. The governing invariant
+   is `Route = f(navmesh, start, goal)` — *and* the deliberate counterweight to it,
+   which is what the record exists for: **following a route is state, not a cache.**
+   - **The record's own contribution — a path is authoritative.** The tempting
+     classification is that a path is derived (*"it's just `f(navmesh, position,
+     goal)`, recompute it after a restore"*), and it is wrong in a way that looks
+     exactly like the reasoning that is *right* for a pose. Apply the engine's
+     determinism test: an agent that planned at a corridor fork and took the left
+     route, versus one replanning from halfway down it, can legitimately choose
+     differently — both optimal, both legal, and the two runs now disagree. A pose is a
+     function of the **present** (`clip`, `time`); a path is a function of the **past**.
+     - The general rule this exposes, which retroactively explains 17D's
+       `transitionElapsed` as well: ***a cache is derived only if it is a function of
+       the current state. A value computed once from a past state is a function of
+       history, and history is authoritative.*** The test to reach for is not "is this
+       expensive to recompute" but "does recomputing it need information that no longer
+       exists." Three records, one underlying reason.
+     - The failure mode if you get it wrong is the nastiest kind: nothing crashes,
+       agents move, every path is valid. Only a scrub-and-compare shows two runs
+       diverging — precisely the guarantee time travel exists to provide.
+   - **18A — model layer (DONE):** the authoritative half, built and tested headless
+     before any baking — the sequencing that worked for 16A and 17A. All of it in
+     **Core**, because planning is pure math over plain data (Rule 9/15).
+     - **`NavMesh`** — convex polygons over a shared vertex array, with per-edge
+       adjacency **derived from the geometry** rather than stored in the asset: an
+       asset that carried its own neighbor table could carry a *stale* one, which is
+       Rule 21's problem wearing an asset costume. Convexity is load-bearing, not
+       tidiness — it is what makes "a straight line inside one polygon is walkable"
+       true, which is what makes the funnel *correct* rather than merely plausible.
+       Containment is winding-agnostic (same side of every edge), so a bake exporting
+       clockwise polygons cannot silently report the whole mesh as unreachable.
+     - **`NavMeshRegistry`** — name → immutable mesh, the `AnimationClipRegistry`
+       pattern, with adjacency rebuilt at registration so no registered mesh can
+       disagree with itself.
+     - **Deterministic A\*** over polygons, costed between **portal midpoints** (a
+       centroid measure over-charges long thin polygons and picks visibly silly
+       corridors through them). Ties break on `(f, polygon index)` — a **total** order,
+       so `std::priority_queue`'s lack of stability cannot leak into *which* of two
+       equal-cost routes comes back. Determinism by construction, not by hope.
+     - **Funnel string-pulling**, kept as a separate pass from the search. Without it
+       agents walk polygon-center to polygon-center — the classic zig-zag that makes a
+       correct search *look* broken. The corridor and the waypoints are different
+       things, not refinements of each other: local avoidance (18D) will need to steer
+       *within* the corridor, so neither is hidden inside the other.
+       - *Non-obvious detail:* the portal's left/right endpoints are ordered
+         **geometrically** (against the crossing direction), not by polygon winding. A
+         clockwise bake would otherwise mirror every funnel decision and produce paths
+         hugging the **outside** of corners — legal-looking output that is quietly
+         wrong. The test pins it: an L-shaped mesh must yield exactly one bend, at the
+         concave corner.
+     - **`NavAgentComponent`** — `navMesh` name, destination, **path, pathIndex,
+       pathGoal, status**, speed, arrival radius. `pathGoal` (the destination the
+       current path was planned for) makes "should I replan?" a *comparison against
+       authoritative state* rather than a `dirty` flag every behavior that moves a
+       destination must remember to set; a forgotten flag is an agent walking
+       confidently to the wrong place, and one `vec3` deletes the class (Rule 7).
+     - **`status` is authoritative because "we already tried" is not recoverable.**
+       Without it an agent with an impossible goal re-runs A* over the whole mesh every
+       fixed step forever, and a restore silently restarts that attempt — so the same
+       frame does different work in two runs. Structurally the same call 17D made for
+       animation events: *the record of an attempt is state, even when the attempt is a
+       pure function.* The deliberate consequence, stated rather than discovered: a
+       failed path is **not** retried until gameplay re-arms it.
+     - **Scheduled after Script, before Animation and Physics** — gameplay decides
+       *where* to go, navigation moves the character, animation then *depicts* the
+       movement rather than racing it, and the navigated position is an input to this
+       step's collision rather than a step stale. Declares `R/W: NavAgent|Transform`
+       and the self-test asserts it stays inside that declaration.
+     - **A step must spend its whole travel budget.** "Move toward the next waypoint,
+       advance if reached" silently caps an agent at one waypoint per frame, so a fast
+       agent crawls through a cluster of close waypoints — the same shape as 17A's
+       subtractive loop wrap (`time -= duration` breaks the moment one step overshoots
+       the clip). The self-test pins it with a single step long enough to cross the
+       entire route.
+     - **Break-tested three ways (Rule 9a),** each red for its intended reason:
+       inverting the funnel's left/right convention, capping the agent at one waypoint
+       per step, and dropping `path` from the *parser*. The third is the informative
+       one — it fails the **Navigation** restore test while the byte-exact
+       **Serializer** golden test stays green, which is the correct split: the golden
+       test pins what is written, and only a restore test can pin what is read back.
+       **27/27 `SUGAR_VALIDATE`** (was 26/26), Debug and Release.
+   - **18B — navmesh baking (DONE):** scene geometry becomes a navmesh, and the Rule 21a
+     obligation 18A inherited is discharged.
+     - **The split is the design.** `buildNavMesh` (Core) takes a **world-space triangle
+       soup and nothing else** — no `Mesh`, no `ResourceManager`, no Vulkan;
+       `NavMeshBaker` (Engine) is the only navigation code that knows those exist and
+       harvests the triangles. Same boundary `GltfLoader` draws for animation. Worth
+       insisting on for a reason this session proved: a bake taking `Mesh` (which
+       includes `vulkan.h`) would be untestable headlessly, and the coverage audit below
+       found exactly what that costs. *Testability is a property of where the boundary
+       goes, not something added to an algorithm afterwards.*
+     - **Rule 21a, discharged better than clips got it.** `NavMeshSourceComponent` names
+       the navmesh a piece of geometry feeds, so **the scene carries its own bake
+       inputs** — a loaded scene rebuilds its navmesh from nothing but the entities it
+       just created. No side file, nothing to keep in sync.
+       - **And it exposed a limit in the rule's usual shape.** A navmesh is derived from
+         the *whole scene*, not one asset file, so it cannot be reconstituted per-entity
+         the way `ModelImporter::ensureModelAssets` is: every source entity must exist
+         *and be parented* first, because the bake reads world transforms. So
+         reconstitution is a **post-load step**, not an inline one. Rule 21a says
+         something must rebuild the asset; it never said that something runs per
+         component, and navigation is the first case where it cannot.
+     - **Welding is load-bearing, not cleanup.** `buildAdjacency` matches edges by
+       *vertex index*, so triangles that merely touch share no edge until welded. An
+       unwelded bake makes every triangle its own island and every path `Unreachable` —
+       which reaches a user as *"pathfinding is broken"*, not *"the bake is wrong"*.
+       Hence `NavBakeStats::isolatedPolygons`: the statistic exists to name the cause of
+       the symptom (Rule 1).
+     - **Winding decides floor from ceiling** (signed normal vs. +Y), so a downward-
+       facing surface is rejected rather than becoming ground you stand on from below.
+       Degeneracy is checked **twice** — on area, then again *after* welding, since
+       welding can collapse a thin-but-valid triangle into a line, and a polygon with a
+       repeated index would match its own edge in `buildAdjacency`.
+     - **Triangles stay triangles, deliberately.** Merging coplanar neighbours (Recast
+       does) buys no correctness: the funnel string-pulls a triangulated floor into the
+       same straight line a merged one gives, so merging only shrinks the A* node count.
+       An optimization, and nothing has measured the search (Rule 18). The test pins the
+       claim — cross a triangulated plane, assert **one** waypoint.
+     - **An empty bake is never registered**, because that would be a *cached failure*:
+       `has(name)` would go true and convince `ensureBaked` the work was done. And
+       `ensureBaked` must not re-bake a name already registered — without that check the
+       post-load hook overwrites a good navmesh with the current harvest. *A hook that
+       destroys the thing it exists to restore is worse than the bug it fixes*, so it
+       gets its own test, break-tested.
+     - **Verified against the real app**, per the 17C.2 discipline: the ground cube bakes
+       to `12 triangles harvested → 10 rejected as too steep → 2 polygons, 4 vertices`
+       — the top face, welded, with the entity's 10×0.5×10 world scale applied. Headless
+       tests cannot cover the harvest (it needs a device); driving the editor can.
+     - Break-tested (Rule 9a): disabling welding and removing the `ensureBaked` guard
+       each turn `NavMeshBake` red while `Navigation` stays green — the isolation is
+       itself evidence the two tests cover different things. **29/29 `SUGAR_VALIDATE`**,
+       Debug and Release.
+   - **Coverage gap found and closed along the way.** `SceneSerializer::loadFromString`
+     could not run headless *at all* — it failed even for an entity holding only a name
+     and a transform, because `loadTextureWithFallback` reached for the built-in
+     checkerboard outside its own `try`, and `loadSceneFromText` turned the throw into a
+     bare `false`. **No component's scene-load path had ever been tested**, which is
+     precisely where Rule 21a's worked example (17C.2) went wrong. Fixed by making
+     headless an *explicit* state (`ResourceManager::isInitialized()`, Rule 13) instead
+     of an exception, reporting what the catch caught, and adding a **`SceneLoad`**
+     self-test over every optional component. Break-tested: deleting one component's
+     `add` in `createEntitiesFromObjects` turns `SceneLoad` red while `Serializer` and
+     `Navigation` stay green — the clearest possible demonstration the gap was real, and
+     the general lesson: *a golden test pins what is written; only a load test pins what
+     is read.*
+   - **18C — editor (DONE):** the first navigation work that is a *workflow* decision
+     rather than a runtime-correctness one — which is exactly why it lives in the editor.
+     - **Navigation panel** — navmeshes with polygon/vertex counts, live `NavBakeStats`,
+       and warnings that name *causes*: isolated polygons point at `weldEpsilon`,
+       all-triangles-rejected points at winding/slope, and an agent whose navmesh is
+       unbaked is told so by name (the Rule 21a symptom is otherwise a component that
+       looks perfectly correct and does nothing). Lists names that have *sources but no
+       bake*, since the entry you most need to see is the missing one.
+     - **Explicit Rebake, deliberately.** `ensureBaked` only fills a *missing* navmesh,
+       so editing geometry leaves it stale. Rebuilding automatically on every geometry
+       edit is a performance trade nobody has measured at scene scale — choosing it now
+       would be the speculative optimization Rule 18 rejects. A button keeps the
+       trade-off **evidence-driven**: when a real project finds manual rebaking annoying,
+       that annoyance *is* the evidence, and the button is what a policy would replace.
+     - **Overlay is ImGui, not a Vulkan pipeline** (Rule 11): navmesh polygons and agent
+       paths project to screen and draw through `ImDrawList`. No renderer change, no
+       shader, no pipeline state — and the overlay stays a pure *read* of ECS plus the
+       registry. Off by default for the mesh, since a navmesh covers the floor you are
+       trying to edit.
+     - **Authoritative fields are shown, not editable.** Destination/speed/arrival radius
+       are editable (what gameplay would set); `status`, `path`, `pathIndex` are
+       read-only — editing a path index by hand is editing the middle of a decision. *Set
+       Destination* goes through `setDestination`, so repeating a previously
+       `Unreachable` goal actually re-plans.
+     - **Overlay bug worth keeping, and it generalizes to any editor gizmo:** a polygon
+       with a corner **behind the camera** must be **clipped, not rejected**. A point
+       with `w <= 0` projects to a *mirrored* position in front of the viewer; the
+       tempting fix — skip any polygon with such a corner — fails exactly when it
+       matters, because standing on a large ground quad drops every corner behind you and
+       the navmesh vanishes at the moment you are close enough to care. Fixed with
+       Sutherland–Hodgman against the near plane (per-segment trimming for polylines).
+       Found by **instrumenting, not guessing** (DEV_ENVIRONMENT #3): one run logging
+       projected corners showed `(0,0) (0,0) (754,105)` — two silently failing to
+       project — which staring at screenshots would not have revealed.
+     - **Verified by screenshot**, the point of the phase: panel reporting
+       `level - 2 polys, 4 verts` with `2 polygons, 4 vertices, from 12 triangles;
+       10 rejected as too steep`, the `Systems` panel showing
+       `Navigation R:Transform|NavAgent W:Transform|NavAgent` at Stage 1, an agent
+       reading `following 0/1` in Play, and the baked top face drawn filled + outlined in
+       the viewport.
+   - **18D — erosion + local avoidance (DONE) → PHASE 18 COMPLETE.** The pipeline, and
+     the separation that keeps it reasonable:
+
+     ```
+     agent-radius erosion ──► A* ──► corridor ──► local avoidance ──► steering
+        (bake time)                                  (per step)
+     ```
+
+     - **Erosion before planning, avoidance after** — erosion changes the traversable
+       space itself (a property of the navmesh, baked once); avoidance responds to
+       transient conditions. Collapsing them gives a planner that disagrees with the
+       space it plans in.
+     - **The rule worth holding onto: avoidance changes _how_ an agent traverses its
+       corridor, never _which_ corridor it chose.** An agent stepping aside for a moving
+       crate is still on its planned route and rejoins it. If avoidance could edit
+       `path`, a transient condition would overwrite a planning decision — two things
+       with completely different lifetimes sharing one piece of state. The self-test
+       asserts the plan is byte-identical at *every step* of a detour, not just at the
+       end.
+     - **The bug the phase found: repulsion is not avoidance.** Pure radial push means
+       an obstacle squarely between agent and waypoint gives `desired + push == 0` — the
+       agent **stops dead a clearance-width short and never arrives**. Repulsion answers
+       *"get away from it"* when the question is *"get **around** it"*. Each obstacle now
+       adds a **tangential** term sided toward the goal; the tangent turns a standoff
+       into an orbit. Dead-ahead ties break on a fixed sign, never a random one — a
+       random nudge would break replay for the case that most needs to reproduce.
+     - **Avoidance is derived, and Rule 21b says exactly why:** it is a pure function of
+       the *present* (positions, radii, desired direction), so recomputing it cannot give
+       a different valid answer. The contrast with `path` — authoritative for precisely
+       the opposite reason — sits in the same component. The boundary is named in
+       advance: if reciprocal oscillation ever needs a remembered "preferred side", that
+       preference **is** history and must become an ECS field, not a private member.
+     - **Obstacles are not baked into the mesh.** Baked geometry says where an agent
+       *may* go; an obstacle is a condition met on the way. Baking them in would mean
+       rebaking whenever one moved. `NavObstacleComponent` carries only a radius — the
+       position is the entity's ordinary transform, never a second copy.
+     - **Erosion is polygon-granular and defaults to off.** It drops whole polygons
+       within the radius of a boundary rather than offsetting and re-triangulating, so it
+       over-erodes by up to one polygon's width — coarse but predictable. Off by default
+       because erosion that switched itself on would silently shrink an existing navmesh
+       on the next rebake. Two radii exist deliberately:
+       `NavBakeParams::agentRadius` answers *where may I plan?*, `NavAgentComponent::radius`
+       answers *how close may I pass?*.
+     - **`ViewportOverlay` extracted (editor infrastructure, not navigation's).** The
+       18C near-plane clipping is now a shared `Projector`: physics contacts, audio
+       ranges, camera frusta and AI perception cones all need it, and each would
+       otherwise rediscover the same bug. The framing that makes it obvious: `w <= 0`
+       does not mean *projection failed*, it means **the primitive crosses the near
+       plane** — so the pipeline is `clip → project → draw`, never
+       `project → if it failed, skip`. Deliberately free of ImGui and Vulkan, so it is
+       pure math and **headless-testable** despite being editor code.
+     - **The guard rail caught a real mistake:** iterating `registry.navObstacles.getAll()`
+       off a *non-const* Registry binds the non-const overload, which records a **write**
+       — so the system mutated a storage it declared read-only, and Phase 13B enforcement
+       rejected it. Fixed with a `const Registry&` view (the CollisionDispatch idiom).
+       Exactly the hidden-coupling class the declarations exist to surface.
+     - Break-tested three ways (Rule 9a), each red for its intended reason: removing the
+       tangential term, disabling erosion, and rejecting instead of clipping at the near
+       plane. In each case the *other* navigation tests stayed green — the isolation is
+       itself evidence the tests measure different things. **31/31 `SUGAR_VALIDATE`**
+       (was 29/29), Debug and Release. Obstacle overlay verified by screenshot.
+   - **Not built, deliberately:** off-mesh links (jumps/ladders — asset data plus a
+     status, no state-model change), full 3D multi-layer queries (a *baking* concern;
+     the polygon soup already supports stacked floors), crowd simulation and
+     agent-to-agent avoidance, true polygon-offset erosion, automatic navmesh
+     invalidation on geometry change, and hierarchical/portal-graph search for large
+     worlds (Rule 18 — measure first).
+
+   **Phase 18 complete.** Ownership was settled before any algorithm, and held under all
+   of them: 18A the state model and deterministic planning → 18B asset generation and
+   reconstruction → 18C editor tooling *without* editor ownership → 18D erosion and
+   avoidance slotted either side of planning. The editor remained a consumer of
+   navigation state rather than a participant in navigation, and no phase had to revisit
+   an earlier one's decision — the same progression Animation followed in Phase 17.
+
+5. **Next: asset-pipeline maturity, then packaging, then build pipeline.** Three items
+   left in the M3 Required floor.
 
 ---
 

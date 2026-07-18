@@ -2,6 +2,7 @@
 #include "Renderer.h"
 #include "animation/AnimationStateSystem.h"
 #include "animation/AnimationSystem.h"
+#include "navigation/NavigationSystem.h"
 #include "assets/ResourceManager.h"
 #include "audio/AudioSystem.h"
 #include "SelfTests.h"
@@ -798,6 +799,24 @@ void SuGarApp::setupSystemSchedule() {
                 }
                 behavior->onUpdate(registry, entity, dt);
             }
+        }});
+
+    // Navigation: plans a route for any agent whose destination changed this step,
+    // then walks it. Between Script and Animation on purpose — gameplay decides
+    // *where* to go, navigation moves the character there, and animation then
+    // depicts the movement rather than racing it. Ahead of physics for the same
+    // reason animation is: a navigated position should be an input to this step's
+    // collision, not a step stale.
+    systemSchedule.add(System{
+        "Navigation",
+        // NavObstacle and Hierarchy are read, not written: avoidance resolves each
+        // obstacle's world position, which walks parent transforms. The honest
+        // declaration, per the 13B lesson Audio taught.
+        maskOf(ComponentType::NavAgent, ComponentType::Transform,
+               ComponentType::NavObstacle, ComponentType::Hierarchy),
+        maskOf(ComponentType::NavAgent, ComponentType::Transform),
+        [this](float dt) {
+            NavigationSystem::update(registry, dt);
         }});
 
     // Animation: advances each player's authoritative time and writes the sampled

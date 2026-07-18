@@ -10,6 +10,7 @@
 #include "ecs/ComponentStorage.h"
 #include "ecs/Components.h"
 #include "ecs/EntityManager.h"
+#include "navigation/NavComponents.h"
 #include "physics/PhysicsComponents.h"
 #include "ui/UIComponents.h"
 
@@ -42,6 +43,9 @@ SUGAR_TRACK_COMPONENT(AnimationPlayerComponent, Animation);
 SUGAR_TRACK_COMPONENT(SkinnedMeshComponent, SkinnedMesh);
 SUGAR_TRACK_COMPONENT(AnimationStateComponent, AnimationState);
 SUGAR_TRACK_COMPONENT(AnimationParametersComponent, AnimationParameters);
+SUGAR_TRACK_COMPONENT(NavAgentComponent, NavAgent);
+SUGAR_TRACK_COMPONENT(NavMeshSourceComponent, NavMeshSource);
+SUGAR_TRACK_COMPONENT(NavObstacleComponent, NavObstacle);
 
 #undef SUGAR_TRACK_COMPONENT
 
@@ -89,6 +93,9 @@ public:
         skinnedMeshes.remove(entity);
         animationStates.remove(entity);
         animationParameters.remove(entity);
+        navAgents.remove(entity);
+        navMeshSources.remove(entity);
+        navObstacles.remove(entity);
         entityManager.destroyEntity(entity);
     }
 
@@ -147,6 +154,9 @@ public:
         skinnedMeshes.clear();
         animationStates.clear();
         animationParameters.clear();
+        navAgents.clear();
+        navMeshSources.clear();
+        navObstacles.clear();
         entityManager.reset();
     }
 
@@ -168,6 +178,9 @@ public:
     ComponentStorage<SkinnedMeshComponent> skinnedMeshes;
     ComponentStorage<AnimationStateComponent> animationStates;
     ComponentStorage<AnimationParametersComponent> animationParameters;
+    ComponentStorage<NavAgentComponent> navAgents;
+    ComponentStorage<NavMeshSourceComponent> navMeshSources;
+    ComponentStorage<NavObstacleComponent> navObstacles;
 
     // Injected by the Engine layer to release GPU/asset handles when an entity is
     // destroyed. Keeps the ECS (Core layer) free of any ResourceManager / Vulkan

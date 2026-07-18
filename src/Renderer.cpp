@@ -10,7 +10,12 @@
 #include "rendering/Camera.h"
 #include "editor/EditorCommands.h"
 #include "editor/EntityQuery.h"
+#include "editor/ViewportOverlay.h"
 #include "ecs/SystemSchedule.h"
+#include "navigation/NavComponents.h"
+#include "navigation/NavMesh.h"
+#include "navigation/NavMeshBaker.h"
+#include "navigation/NavMeshRegistry.h"
 #include <cmath>
 #include <cstdio>
 #include <memory>
@@ -1433,6 +1438,7 @@ void Renderer::buildEditorUi() {
     drawAssetBrowserPanel();
     drawQueryConsolePanel();
     drawSystemsPanel();
+    drawNavigationPanel();
 
     ImGui::Begin("Viewport");
 
@@ -1536,6 +1542,10 @@ void Renderer::buildEditorUi() {
 
         // Manipulator over the image (updates ImGuizmo::IsOver/IsUsing for picking).
         drawGizmo(imageMin.x, imageMin.y, size.x, size.y);
+
+        // Navigation overlay sits above the gizmo call so the gizmo's own hit-testing
+        // is unaffected: this draws only, and consumes no input.
+        drawNavigationOverlay(imageMin.x, imageMin.y, size.x, size.y);
 
         // Click-to-select: ray through the clicked pixel, unless the click landed
         // on the gizmo.
@@ -2024,6 +2034,233 @@ void Renderer::drawQueryConsolePanel() {
     ImGui::End();
 }
 
+// Phase 18C — the navigation workflow surface. Everything here is a *view* over
+// authoritative state plus one explicit action; the panel owns nothing.
+void Renderer::drawNavigationPanel() {
+    ImGui::Begin("Navigation");
+
+    if (registry == nullptr) {
+        ImGui::TextUnformatted("No registry bound.");
+        ImGui::End();
+        return;
+    }
+
+    ImGui::Checkbox("Show navmesh", &showNavMesh);
+    ImGui::SameLine();
+    ImGui::Checkbox("Show paths", &showNavPaths);
+    ImGui::Separator();
+
+    // Union of "named by a source" and "actually registered", so a navmesh whose
+    // sources exist but which has never baked is still listed. Otherwise the one
+    // entry a developer most needs to see — the missing one — is the only one absent.
+    std::vector<std::string> names = NavMeshBaker::sourceNavMeshNames(*registry);
+    for (const std::string& registered : NavMeshRegistry::names()) {
+        if (std::find(names.begin(), names.end(), registered) == names.end()) {
+            names.push_back(registered);
+        }
+    }
+    std::sort(names.begin(), names.end());
+
+    if (names.empty()) {
+        ImGui::TextDisabled("No navmeshes.");
+        ImGui::TextDisabled("Add a NavMesh Source component to walkable geometry.");
+    }
+
+    for (const std::string& name : names) {
+        ImGui::PushID(name.c_str());
+        const NavMesh* mesh = NavMeshRegistry::get(name);
+
+        if (mesh != nullptr) {
+            ImGui::Text("%s  -  %d polys, %d verts", name.c_str(),
+                        mesh->polygonCount(), static_cast<int>(mesh->vertices.size()));
+        } else {
+            ImGui::TextDisabled("%s  -  not baked", name.c_str());
+        }
+
+        // The explicit Rebake. A navmesh is baked from scene geometry, and
+        // NavMeshBaker::ensureBaked only fills in a *missing* one — so editing a
+        // platform leaves the navmesh stale until someone says otherwise. That
+        // "someone" is deliberately the developer rather than an automatic rebuild
+        // on every geometry edit: rebuilding is not free, nothing has measured how
+        // expensive it is at scene scale, and guessing would be exactly the
+        // speculative optimization Rule 18 rejects. When there is evidence, this
+        // button is what an automatic policy would replace.
+        if (ImGui::SmallButton("Rebake")) {
+            NavMeshBaker::bake(*registry, name);
+        }
+
+        if (const NavBakeStats* stats = NavMeshBaker::lastStats(name)) {
+            ImGui::SameLine();
+            ImGui::TextDisabled("%s", stats->describe().c_str());
+            // The leading cause of "pathfinding is broken" that isn't pathfinding.
+            if (stats->isolatedPolygons > 0) {
+                ImGui::TextColored(ImVec4(1.0f, 0.7f, 0.2f, 1.0f),
+                                   "  %d isolated polygons - raise weldEpsilon?",
+                                   stats->isolatedPolygons);
+            }
+            if (stats->polygons == 0 && stats->inputTriangles > 0) {
+                ImGui::TextColored(ImVec4(1.0f, 0.5f, 0.4f, 1.0f),
+                                   "  all %d triangles rejected - check winding/slope",
+                                   stats->inputTriangles);
+            }
+        }
+        ImGui::PopID();
+    }
+
+    ImGui::Separator();
+    ImGui::TextUnformatted("Agents");
+
+    const auto& agents = registry->navAgents.getAll();
+    if (agents.empty()) {
+        ImGui::TextDisabled("None.");
+    }
+    for (const auto& [entity, agent] : agents) {
+        const char* name = registry->names.has(entity)
+            ? registry->names.get(entity).name.c_str()
+            : "(unnamed)";
+        ImGui::Text("%s  [%s]  %s  %d/%d", name, agent.navMesh.c_str(),
+                    navAgentStatusName(agent.status), agent.pathIndex,
+                    static_cast<int>(agent.path.size()));
+    }
+
+    ImGui::End();
+}
+
+void Renderer::drawNavigationOverlay(float imageMinX, float imageMinY,
+                                     float imageWidth, float imageHeight) {
+    if (registry == nullptr || activePass == nullptr || imageWidth <= 0.0f || imageHeight <= 0.0f) {
+        return;
+    }
+    if (!showNavMesh && !showNavPaths) {
+        return;
+    }
+
+    Camera& camera = activePass->getCamera();
+    const glm::mat4 view = camera.getViewMatrix();
+    glm::mat4 proj = camera.getProjectionMatrix(imageWidth / imageHeight);
+    proj[1][1] *= -1.0f; // undo the Vulkan Y-flip, as drawGizmo does
+    const glm::mat4 viewProj = proj * view;
+
+    ImDrawList* draw = ImGui::GetWindowDrawList();
+
+    // All near-plane clipping and projection lives in ViewportOverlay::Projector —
+    // shared editor infrastructure, not navigation's (see editor/ViewportOverlay.h).
+    const ViewportOverlay::Projector projector(viewProj, imageMinX, imageMinY,
+                                               imageWidth, imageHeight);
+    const auto toImVec = [](const glm::vec2& p) { return ImVec2(p.x, p.y); };
+
+    draw->PushClipRect(ImVec2(imageMinX, imageMinY),
+                       ImVec2(imageMinX + imageWidth, imageMinY + imageHeight), true);
+
+    if (showNavMesh) {
+        for (const std::string& name : NavMeshRegistry::names()) {
+            const NavMesh* mesh = NavMeshRegistry::get(name);
+            if (mesh == nullptr) {
+                continue;
+            }
+            for (int p = 0; p < mesh->polygonCount(); ++p) {
+                const NavPolygon& polygon = mesh->polygons[static_cast<std::size_t>(p)];
+
+                std::vector<glm::vec3> corners;
+                corners.reserve(static_cast<std::size_t>(polygon.count));
+                for (int k = 0; k < polygon.count; ++k) {
+                    // Lifted slightly so the overlay does not z-fight the floor it
+                    // describes — cosmetic, and only in the overlay's own copy.
+                    corners.push_back(mesh->corner(p, k) + glm::vec3(0.0f, 0.02f, 0.0f));
+                }
+
+                const std::vector<glm::vec2> projected = projector.projectPolygon(corners);
+                if (projected.size() < 3) {
+                    continue;
+                }
+
+                std::vector<ImVec2> points;
+                points.reserve(projected.size());
+                for (const glm::vec2& vertex : projected) {
+                    points.push_back(toImVec(vertex));
+                }
+
+                draw->AddConvexPolyFilled(points.data(), static_cast<int>(points.size()),
+                                          IM_COL32(80, 170, 255, 40));
+                draw->AddPolyline(points.data(), static_cast<int>(points.size()),
+                                  IM_COL32(120, 200, 255, 140), ImDrawFlags_Closed, 1.0f);
+            }
+        }
+    }
+
+    // Obstacles draw with paths: an agent detouring for no visible reason is the
+    // thing you most want explained, and the explanation is a circle.
+    if (showNavPaths) {
+        for (const auto& [entity, obstacle] : registry->navObstacles.getAll()) {
+            if (!registry->transforms.has(entity) || !(obstacle.radius > 0.0f)) {
+                continue;
+            }
+            const glm::vec3 centre = getWorldPosition(entity, *registry);
+
+            std::vector<glm::vec3> ring;
+            constexpr int kSegments = 24;
+            ring.reserve(kSegments);
+            for (int i = 0; i < kSegments; ++i) {
+                const float angle = (static_cast<float>(i) / kSegments) * 6.28318531f;
+                ring.push_back(centre + glm::vec3(std::cos(angle) * obstacle.radius, 0.05f,
+                                                  std::sin(angle) * obstacle.radius));
+            }
+
+            const std::vector<glm::vec2> projected = projector.projectPolygon(ring);
+            if (projected.size() < 3) {
+                continue;
+            }
+            std::vector<ImVec2> points;
+            points.reserve(projected.size());
+            for (const glm::vec2& vertex : projected) {
+                points.push_back(toImVec(vertex));
+            }
+            draw->AddPolyline(points.data(), static_cast<int>(points.size()),
+                              IM_COL32(255, 110, 110, 200), ImDrawFlags_Closed, 1.5f);
+        }
+
+        for (const auto& [entity, agent] : registry->navAgents.getAll()) {
+            if (agent.path.empty() || !registry->transforms.has(entity)) {
+                continue;
+            }
+
+            // Starts at the agent's *current position*, not at path[0]: the path
+            // deliberately excludes where the agent is, and a line beginning at the
+            // next waypoint reads as though the agent has already skipped one.
+            const glm::vec3 lift(0.0f, 0.05f, 0.0f);
+            std::vector<glm::vec4> route;
+            route.push_back(projector.toClip(getWorldPosition(entity, *registry) + lift));
+            for (std::size_t i = static_cast<std::size_t>(std::max(0, agent.pathIndex));
+                 i < agent.path.size(); ++i) {
+                route.push_back(projector.toClip(agent.path[i] + lift));
+            }
+
+            // Per-segment, so a route running past the camera keeps the parts that
+            // are in front of it instead of disappearing wholesale.
+            for (std::size_t i = 0; i + 1 < route.size(); ++i) {
+                glm::vec2 a;
+                glm::vec2 b;
+                if (!projector.clipSegment(route[i], route[i + 1], a, b)) {
+                    continue;
+                }
+                draw->AddLine(toImVec(a), toImVec(b), IM_COL32(255, 210, 80, 220), 2.5f);
+                if (ViewportOverlay::Projector::inFront(route[i + 1])) {
+                    draw->AddCircleFilled(toImVec(b), 3.0f, IM_COL32(255, 210, 80, 255));
+                }
+            }
+
+            // The destination gets a ring, but only when it is actually in front of
+            // the camera — a marker drawn from a mirrored point is worse than none.
+            if (route.size() >= 2 && ViewportOverlay::Projector::inFront(route.back())) {
+                draw->AddCircle(toImVec(projector.toScreen(route.back())), 6.0f,
+                                IM_COL32(255, 120, 90, 255), 0, 2.0f);
+            }
+        }
+    }
+
+    draw->PopClipRect();
+}
+
 void Renderer::drawSystemsPanel() {
     ImGui::Begin("Systems");
 
@@ -2323,6 +2560,106 @@ void Renderer::drawInspectorPanel() {
         }
     }
 
+    // Phase 18C — navigation agent. `status`, `path` and `pathIndex` are shown but
+    // never edited: they are authoritative simulation state the system owns, and a
+    // developer typing a path index would be editing the middle of a decision. What
+    // *is* editable is what gameplay would legitimately set — the destination and
+    // the movement tuning.
+    if (registry->navAgents.has(selectedEntity)) {
+        ImGui::Separator();
+        ImGui::TextUnformatted("Nav Agent");
+        auto& agent = registry->navAgents.get(selectedEntity);
+
+        char navMeshBuffer[128];
+        std::snprintf(navMeshBuffer, sizeof(navMeshBuffer), "%s", agent.navMesh.c_str());
+        if (ImGui::InputText("NavMesh##agent", navMeshBuffer, sizeof(navMeshBuffer))) {
+            agent.navMesh = navMeshBuffer;
+        }
+
+        ImGui::DragFloat3("Destination", &agent.destination.x, 0.05f);
+        ImGui::DragFloat("Speed", &agent.speed, 0.05f, 0.0f, 100.0f);
+        ImGui::DragFloat("Arrival Radius", &agent.arrivalRadius, 0.01f, 0.0f, 10.0f);
+
+        // Goes through setDestination rather than poking `destination`, so a repeat
+        // of a previously-Unreachable goal actually re-plans (the one case the
+        // pathGoal comparison cannot see).
+        if (ImGui::Button("Set Destination")) {
+            agent.setDestination(agent.destination);
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Clear")) {
+            agent.clearDestination();
+        }
+
+        ImGui::Text("Status: %s   waypoint %d/%d", navAgentStatusName(agent.status),
+                    agent.pathIndex, static_cast<int>(agent.path.size()));
+        if (agent.status == NavAgentStatus::Unreachable) {
+            ImGui::TextColored(ImVec4(1.0f, 0.6f, 0.4f, 1.0f),
+                               "No route. Set a destination again to retry.");
+        } else if (agent.status == NavAgentStatus::Idle && agent.hasDestination &&
+                   !NavMeshRegistry::has(agent.navMesh)) {
+            // The Rule 21a symptom, named instead of left as a mystery: the component
+            // looks perfectly correct and does nothing.
+            ImGui::TextColored(ImVec4(1.0f, 0.7f, 0.2f, 1.0f),
+                               "NavMesh '%s' is not baked.", agent.navMesh.c_str());
+        }
+
+        if (ImGui::SmallButton("Remove##navagent")) {
+            const Entity e = selectedEntity;
+            const NavAgentComponent saved = agent;
+            registry->navAgents.remove(e);
+            commandHistory.push(std::make_unique<LambdaCommand>(
+                [e](Registry& r) { r.navAgents.remove(e); },
+                [e, saved](Registry& r) { r.navAgents.add(e, saved); }));
+        }
+    }
+
+    // Phase 18D — a transient obstacle agents steer around without replanning.
+    if (registry->navObstacles.has(selectedEntity)) {
+        ImGui::Separator();
+        ImGui::TextUnformatted("Nav Obstacle");
+        auto& obstacle = registry->navObstacles.get(selectedEntity);
+        ImGui::DragFloat("Radius##navobstacle", &obstacle.radius, 0.05f, 0.0f, 50.0f);
+        ImGui::TextDisabled("Agents deflect around this; the navmesh is unchanged.");
+
+        if (ImGui::SmallButton("Remove##navobstacle")) {
+            const Entity e = selectedEntity;
+            const NavObstacleComponent saved = obstacle;
+            registry->navObstacles.remove(e);
+            commandHistory.push(std::make_unique<LambdaCommand>(
+                [e](Registry& r) { r.navObstacles.remove(e); },
+                [e, saved](Registry& r) { r.navObstacles.add(e, saved); }));
+        }
+    }
+
+    // Phase 18C — navmesh bake input. Naming the navmesh here is what lets a loaded
+    // scene rebuild it from its own entities (Rule 21a).
+    if (registry->navMeshSources.has(selectedEntity)) {
+        ImGui::Separator();
+        ImGui::TextUnformatted("NavMesh Source");
+        auto& source = registry->navMeshSources.get(selectedEntity);
+
+        char sourceBuffer[128];
+        std::snprintf(sourceBuffer, sizeof(sourceBuffer), "%s", source.navMesh.c_str());
+        if (ImGui::InputText("NavMesh##source", sourceBuffer, sizeof(sourceBuffer))) {
+            source.navMesh = sourceBuffer;
+        }
+        if (!registry->meshes.has(selectedEntity)) {
+            ImGui::TextColored(ImVec4(1.0f, 0.7f, 0.2f, 1.0f),
+                               "No mesh on this entity - nothing to harvest.");
+        }
+        ImGui::TextDisabled("Rebake from the Navigation panel after editing geometry.");
+
+        if (ImGui::SmallButton("Remove##navsource")) {
+            const Entity e = selectedEntity;
+            const NavMeshSourceComponent saved = source;
+            registry->navMeshSources.remove(e);
+            commandHistory.push(std::make_unique<LambdaCommand>(
+                [e](Registry& r) { r.navMeshSources.remove(e); },
+                [e, saved](Registry& r) { r.navMeshSources.add(e, saved); }));
+        }
+    }
+
     // Add a value-only component (resource-bearing ones — Mesh/Material/AudioSource
     // — are assigned via drag-drop). Each add/remove is a single undo step.
     ImGui::Separator();
@@ -2336,6 +2673,24 @@ void Renderer::drawInspectorPanel() {
             commandHistory.push(std::make_unique<LambdaCommand>(
                 [e](Registry& r) { if (!r.rigidBodies.has(e)) r.rigidBodies.add(e, {}); },
                 [e](Registry& r) { r.rigidBodies.remove(e); }));
+        }
+        if (!registry->navAgents.has(e) && ImGui::Selectable("Nav Agent")) {
+            registry->navAgents.add(e, {});
+            commandHistory.push(std::make_unique<LambdaCommand>(
+                [e](Registry& r) { if (!r.navAgents.has(e)) r.navAgents.add(e, {}); },
+                [e](Registry& r) { r.navAgents.remove(e); }));
+        }
+        if (!registry->navMeshSources.has(e) && ImGui::Selectable("NavMesh Source")) {
+            registry->navMeshSources.add(e, {});
+            commandHistory.push(std::make_unique<LambdaCommand>(
+                [e](Registry& r) { if (!r.navMeshSources.has(e)) r.navMeshSources.add(e, {}); },
+                [e](Registry& r) { r.navMeshSources.remove(e); }));
+        }
+        if (!registry->navObstacles.has(e) && ImGui::Selectable("Nav Obstacle")) {
+            registry->navObstacles.add(e, {});
+            commandHistory.push(std::make_unique<LambdaCommand>(
+                [e](Registry& r) { if (!r.navObstacles.has(e)) r.navObstacles.add(e, {}); },
+                [e](Registry& r) { r.navObstacles.remove(e); }));
         }
         if (!registry->colliders.has(e) && ImGui::Selectable("Collider")) {
             registry->colliders.add(e, {});

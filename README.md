@@ -25,8 +25,13 @@ console, and — the headline — **code hot reload**: a layered
 `Editor -> Engine -> Core` split with gameplay in a DLL that hot-swaps live when
 recompiled, state preserved. **M3 so far:** Runtime UI (RmlUi) is **done** — the
 platform's missing player-facing half — and **Animation** is **done**: ECS-authoritative
-playback, glTF clip/skin import, GPU skinning, blend trees and state machines. Next up
-is Navigation.
+playback, glTF clip/skin import, GPU skinning, blend trees and state machines.
+**Navigation is done** (Phase 18): navmesh assets, deterministic A* + funnel
+string-pulling, agents whose *plan* — not just their position — is authoritative ECS
+state, a bake that turns scene geometry into a navmesh and rebuilds it on scene load, an
+editor with navmesh/path overlays and an explicit Rebake, and agent-radius erosion plus
+local obstacle avoidance. Next up: asset-pipeline maturity, packaging, build pipeline —
+the last three items of the M3 floor.
 
 > Positioning: *"A Vulkan engine designed for instant iteration and debuggable
 > systems — not just rendering power."* Open-source, dev-led, aimed at indie devs.
@@ -129,6 +134,63 @@ is Navigation.
   authoritative/derived split, and why an animation transition is authoritative
   where the identical-looking UI tween is derived
 
+### Navigation (Phase 18 — complete)
+
+* **The navmesh is an asset** — convex polygons over a shared vertex array with
+  per-edge adjacency *derived from the geometry* (never stored in the file, so no
+  asset can carry a stale neighbor table). `NavMeshRegistry` maps names → immutable
+  meshes, the `AnimationClipRegistry` / `BehaviorRegistry` pattern
+* **Deterministic A\*** over polygons, costed between **portal midpoints** (a centroid
+  measure over-charges long thin polygons and picks visibly silly routes). Ties break
+  on polygon index — a *total* order, so the priority queue's instability can't pick a
+  different equally-optimal route between runs
+* **Funnel string-pulling** turns the polygon corridor into the shortest actual line
+  through its portals. Without it agents walk polygon-center to polygon-center: the
+  classic zig-zag that makes a correct search look broken. Corridor and waypoints stay
+  separate — local avoidance (18D) will need to steer *within* the corridor
+* **The path is authoritative, not a cache** — the call this subsystem exists to get
+  right. A path *looks* like `f(navmesh, position, goal)`, but it is a function of
+  where the agent stood **when it planned**: at a corridor fork, an agent that took the
+  left route and an agent replanning from halfway down it can legitimately disagree, so
+  a "derived" path would quietly break replay. `NavAgentComponent` therefore serializes
+  the plan, the progress, the goal it was planned for, and the status — and a restored
+  agent *continues its journey* instead of re-deciding it
+* **`status` remembers that a plan was attempted** — an agent with an impossible goal
+  would otherwise re-run A* over the whole mesh every fixed step, forever
+* **Baking** (18B) — scene geometry becomes a navmesh. `NavMeshSourceComponent` names
+  the navmesh a mesh contributes to, so **the scene carries its own bake inputs** and a
+  loaded scene rebuilds its navmesh from the entities it just created (RULES.md Rule
+  21a). The split is the design: `buildNavMesh` (Core) takes a world-space **triangle
+  soup and nothing else** — no `Mesh`, no `ResourceManager`, no Vulkan — while
+  `NavMeshBaker` (Engine) is the only navigation code that knows those exist
+* **Welding is load-bearing** — adjacency matches edges by *vertex index*, so triangles
+  that merely touch share no edge until welded. An unwelded bake makes every triangle an
+  island and every path `Unreachable`, which reaches a user as "pathfinding is broken";
+  `NavBakeStats::isolatedPolygons` exists to name the cause of that symptom
+* **Editor** (18C) — a Navigation panel with live bake statistics, warnings that name
+  *causes* (isolated polygons → raise `weldEpsilon`; everything rejected → check winding
+  or slope), and an **explicit Rebake**. Rebaking is manual on purpose: automatic
+  rebuilds on every geometry edit are a performance trade nobody has measured, so the
+  button keeps the decision evidence-driven (Rule 18). Navmesh and agent paths overlay
+  the viewport through ImGui's draw list — no Vulkan pipeline, because the editor is
+  ImGui (Rule 11) and the overlay reads state without owning any
+* **Erosion before planning, avoidance after** (18D) — agent-radius erosion changes the
+  *traversable space*, so it happens at bake time and the planner sees its result; local
+  avoidance responds to *transient* conditions, so it happens during steering. The rule
+  that falls out: **avoidance changes _how_ an agent traverses its corridor, never
+  _which_ corridor it chose** — an agent stepping aside for a moving crate is still on
+  its planned route and rejoins it. The test asserts the plan is byte-identical at every
+  step of a detour
+* **Repulsion is not avoidance** — a purely radial push means an obstacle squarely
+  between an agent and its waypoint gives `desired + push == 0`, so the agent stops dead
+  a clearance-width short and never arrives. Each obstacle also contributes a
+  **tangential** term sided toward the goal; the tangent is what turns a standoff into
+  an orbit
+* Design: [docs/DESIGN_NAVIGATION.md](docs/DESIGN_NAVIGATION.md) — including the rule
+  the three design records converge on: *a cache is derived only if it is a function of
+  the **current** state; a value computed once from a past state is a function of
+  history, and history is authoritative*
+
 ### Audio
 
 * **Hand-rolled mixer** over a thin device backend (miniaudio used only as the
@@ -193,7 +255,7 @@ is Navigation.
 * Components: `Transform` (quaternion rotation), `Mesh`, `Material`, `Hierarchy`,
   `Name`, `Script`, `RigidBody`, `Collider`, `PrefabInstance`, `AudioSource`,
   `AudioListener`, `UIScreen`, `Focus`, `TextInput`, `AnimationPlayer`, `SkinnedMesh`,
-  `AnimationState`, `AnimationParameters`
+  `AnimationState`, `AnimationParameters`, `NavAgent`, `NavMeshSource`, `NavObstacle`
 * Hierarchical transforms with parent-child relationships
 * Deterministic draw list generation
 
@@ -296,7 +358,8 @@ $env:SUGAR_SELFTEST = "1"; build\Debug\SuGarEngine.exe; $env:SUGAR_SELFTEST = ""
 Prints a per-test PASS/FAIL table (with timings) for CoreBoundary, CommandHistory,
 EntityIdRecycling, EntityQuery, SnapshotStorage, Physics, PhysicsBroadphase,
 SystemScheduler, ComponentAccess, SnapshotPatch, RuntimeUI, Animation,
-AnimationImport, Skinning, SkinImport, AnimationGraph, Serializer, BehaviorRegistry,
+AnimationImport, Skinning, SkinImport, AnimationGraph, Navigation, NavMeshBake,
+NavAvoidance, ViewportOverlay, Serializer, SceneLoad, BehaviorRegistry,
 and RegistryGraph. A test that *throws* is reported as
 `FAIL ... threw: <message>` and the run continues — one broken subsystem shouldn't
 hide the other fourteen results.
@@ -391,8 +454,10 @@ debugging a build or GUI issue**). Milestone summary:
   hand-written Vulkan render interface, and the UI composited into the game viewport
   — screen stack, focus, text buffer and caret all live in ECS. **Animation is done**
   (Phase 17): playback, glTF clip/skin import, GPU skinning, blend trees and state
-  machines — all authoritative state in ECS, poses derived. **Next: Navigation**, then
-  Asset-pipeline maturity, Packaging, Build pipeline. Explicitly *not* required: AAA
+  machines — all authoritative state in ECS, poses derived. **Navigation is under way**
+  (Phase 18): the model layer — navmesh assets, deterministic A* + funnel, and agents
+  whose plan is authoritative — and the bake (18B) are done; editor visualization and
+  dynamic obstacles remain. Then Asset-pipeline maturity, Packaging, Build pipeline. Explicitly *not* required: AAA
   rendering, networking, console ports, world streaming, marketplace.
   * **The platform's missing half:** SuGar has a complete *developer* UI (Dear ImGui,
     permanently reserved for tooling) but intentionally **no *player* UI**. Runtime UI

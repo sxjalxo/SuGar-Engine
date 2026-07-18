@@ -7,7 +7,9 @@
 
 #include <chrono>
 #include <cmath>
+#include <cstddef>
 #include <exception>
+#include <functional>
 #include <iomanip>
 #include <iostream>
 #include <string>
@@ -35,6 +37,14 @@
 #include "editor/EditorCommand.h"
 #include "editor/EditorCommands.h"
 #include "editor/EntityQuery.h"
+#include "editor/ViewportOverlay.h"
+#include "navigation/NavComponents.h"
+#include "navigation/NavMesh.h"
+#include "navigation/NavMeshBaker.h"
+#include "navigation/NavMeshBuilder.h"
+#include "navigation/NavMeshRegistry.h"
+#include "navigation/NavPath.h"
+#include "navigation/NavigationSystem.h"
 #include "physics/PhysicsWorld.h"
 #include "rendering/Mesh.h"
 #include "scene/BehaviorRegistry.h"
@@ -1381,6 +1391,846 @@ inline bool testAnimationGraph() {
     return ok;
 }
 
+// --- Navigation: the navmesh is an asset, the path in progress is state -----
+// Builds navmeshes as grids of unit quads. A grid welds shared corners by
+// construction, which is exactly what NavMesh::buildAdjacency matches on — so the
+// fixture exercises the real adjacency path rather than a hand-written neighbor
+// table that could agree with a broken one.
+inline NavMesh makeGridNavMesh(int width, int height,
+                               const std::function<bool(int, int)>& walkable) {
+    NavMesh mesh;
+    const int stride = width + 1;
+    for (int z = 0; z <= height; ++z) {
+        for (int x = 0; x <= width; ++x) {
+            mesh.vertices.push_back(glm::vec3(static_cast<float>(x), 0.0f, static_cast<float>(z)));
+        }
+    }
+    for (int z = 0; z < height; ++z) {
+        for (int x = 0; x < width; ++x) {
+            if (!walkable(x, z)) {
+                continue;
+            }
+            NavPolygon polygon;
+            polygon.firstIndex = static_cast<int>(mesh.indices.size());
+            polygon.count = 4;
+            mesh.indices.push_back(z * stride + x);
+            mesh.indices.push_back(z * stride + x + 1);
+            mesh.indices.push_back((z + 1) * stride + x + 1);
+            mesh.indices.push_back((z + 1) * stride + x);
+            mesh.polygons.push_back(polygon);
+        }
+    }
+    mesh.buildAdjacency();
+    return mesh;
+}
+
+inline bool nearlyEqualXZ(const glm::vec3& a, const glm::vec3& b, float tolerance = 1e-3f) {
+    return std::fabs(a.x - b.x) < tolerance && std::fabs(a.z - b.z) < tolerance;
+}
+
+inline bool testNavigation() {
+    bool ok = true;
+    const float step = 1.0f / 60.0f;
+
+    // An L-shaped region: the column x in [0,1] over all z, plus the row z in [4,5]
+    // over all x. The concave corner is the vertex (1, 0, 4).
+    const auto lShape = [](int x, int z) { return x == 0 || z == 4; };
+
+    { // adjacency, containment, and height come out of the geometry
+        const NavMesh mesh = makeGridNavMesh(5, 5, lShape);
+        ok &= mesh.valid();
+        ok &= mesh.polygonCount() == 9; // 5 column cells + 5 row cells - 1 shared
+
+        const int polygon = mesh.findContainingPolygon(glm::vec3(0.5f, 0.0f, 0.5f));
+        ok &= polygon >= 0 && mesh.containsXZ(polygon, glm::vec3(0.5f, 0.0f, 0.5f));
+        ok &= std::fabs(mesh.heightAt(polygon, glm::vec3(0.5f, 0.0f, 0.5f))) < 1e-4f;
+
+        // Off the mesh entirely: no containing polygon, but a nearest one that snaps
+        // to the boundary — the case a gameplay click on a wall produces.
+        ok &= mesh.findContainingPolygon(glm::vec3(4.5f, 0.0f, 0.5f)) < 0;
+        glm::vec3 projected(0.0f);
+        ok &= mesh.findNearestPolygon(glm::vec3(4.5f, 0.0f, 0.5f), projected) >= 0;
+        ok &= projected.x <= 1.0f + 1e-3f;
+
+        // Every interior edge is reciprocal: if a names b across an edge, b names a.
+        for (int p = 0; p < mesh.polygonCount(); ++p) {
+            const NavPolygon& poly = mesh.polygons[static_cast<std::size_t>(p)];
+            for (int k = 0; k < poly.count; ++k) {
+                const int neighbor = mesh.neighbors[static_cast<std::size_t>(poly.firstIndex + k)];
+                if (neighbor < 0) {
+                    continue;
+                }
+                bool reciprocal = false;
+                const NavPolygon& other = mesh.polygons[static_cast<std::size_t>(neighbor)];
+                for (int j = 0; j < other.count; ++j) {
+                    reciprocal |= mesh.neighbors[static_cast<std::size_t>(other.firstIndex + j)] == p;
+                }
+                ok &= reciprocal;
+            }
+        }
+    }
+
+    { // the funnel string-pulls around the inner corner, rather than zig-zagging
+      // from polygon center to polygon center — the whole reason stringPull exists
+        const NavMesh mesh = makeGridNavMesh(5, 5, lShape);
+        std::vector<glm::vec3> path;
+        const NavPath::Result result =
+            NavPath::findPath(mesh, glm::vec3(0.5f, 0.0f, 0.5f), glm::vec3(4.5f, 0.0f, 4.5f), path);
+
+        ok &= result == NavPath::Result::Success;
+        // Exactly one bend, at the concave corner. A funnel with a flipped left/right
+        // convention hugs the *outer* corner instead and fails here; a missing funnel
+        // returns one waypoint per polygon crossed (8 of them) and also fails.
+        ok &= path.size() == 2;
+        if (path.size() == 2) {
+            ok &= nearlyEqualXZ(path[0], glm::vec3(1.0f, 0.0f, 4.0f));
+            ok &= nearlyEqualXZ(path[1], glm::vec3(4.5f, 0.0f, 4.5f));
+        }
+
+        // Same query twice is byte-identical. A* ties break on polygon index, a total
+        // order, so the priority queue's instability cannot pick a different (equally
+        // optimal) route between runs.
+        std::vector<glm::vec3> again;
+        NavPath::findPath(mesh, glm::vec3(0.5f, 0.0f, 0.5f), glm::vec3(4.5f, 0.0f, 4.5f), again);
+        ok &= again.size() == path.size();
+        for (std::size_t i = 0; i < path.size() && i < again.size(); ++i) {
+            ok &= path[i] == again[i]; // exact, not approximate
+        }
+    }
+
+    { // within one convex polygon the straight line is the path, by definition
+        const NavMesh mesh = makeGridNavMesh(5, 5, lShape);
+        std::vector<glm::vec3> path;
+        ok &= NavPath::findPath(mesh, glm::vec3(0.2f, 0.0f, 0.2f), glm::vec3(0.8f, 0.0f, 0.8f), path)
+              == NavPath::Result::Success;
+        ok &= path.size() == 1 && nearlyEqualXZ(path[0], glm::vec3(0.8f, 0.0f, 0.8f));
+    }
+
+    { // two disconnected islands: both ends are on the mesh, no corridor joins them
+        const NavMesh mesh = makeGridNavMesh(5, 1, [](int x, int) { return x == 0 || x == 4; });
+        std::vector<glm::vec3> path;
+        ok &= NavPath::findPath(mesh, glm::vec3(0.5f, 0.0f, 0.5f), glm::vec3(4.5f, 0.0f, 0.5f), path)
+              == NavPath::Result::Unreachable;
+
+        NavMesh empty;
+        ok &= NavPath::findPath(empty, glm::vec3(0.0f), glm::vec3(1.0f), path)
+              == NavPath::Result::EmptyNavMesh;
+    }
+
+    { // an agent walks its route and arrives
+        NavMeshRegistry::clear();
+        NavMeshRegistry::registerNavMesh("L", makeGridNavMesh(5, 5, lShape));
+
+        Registry reg;
+        const Entity walker = reg.createEntity();
+        Transform transform;
+        transform.position = glm::vec3(0.5f, 0.0f, 0.5f);
+        reg.transforms.add(walker, { transform });
+
+        NavAgentComponent agent;
+        agent.navMesh = "L";
+        agent.speed = 4.0f;
+        agent.setDestination(glm::vec3(4.5f, 0.0f, 4.5f));
+        reg.navAgents.add(walker, agent);
+
+        NavigationSystem::update(reg, step);
+        ok &= reg.navAgents.get(walker).status == NavAgentStatus::Following;
+        ok &= !reg.navAgents.get(walker).path.empty();
+        // Planned *and* moved in the same step — no frame of latency that depends on
+        // system order.
+        ok &= reg.transforms.get(walker).transform.position != glm::vec3(0.5f, 0.0f, 0.5f);
+
+        for (int i = 0; i < 600 && reg.navAgents.get(walker).status == NavAgentStatus::Following; ++i) {
+            NavigationSystem::update(reg, step);
+        }
+        ok &= reg.navAgents.get(walker).status == NavAgentStatus::Arrived;
+        ok &= nearlyEqualXZ(reg.transforms.get(walker).transform.position,
+                            glm::vec3(4.5f, 0.0f, 4.5f), 0.2f);
+        // Arrived agents drop the spent plan, so no restored snapshot can show one
+        // still carrying the route it finished.
+        ok &= reg.navAgents.get(walker).path.empty();
+    }
+
+    { // one step must spend its whole travel budget, crossing as many waypoints as
+      // it can reach. "Advance at most one waypoint per step" is the same bug shape
+      // as 17A's subtractive loop wrap, and this is the case that exposes it: a
+      // single step long enough to cross the entire L.
+        NavMeshRegistry::clear();
+        NavMeshRegistry::registerNavMesh("L", makeGridNavMesh(5, 5, lShape));
+
+        Registry reg;
+        const Entity sprinter = reg.createEntity();
+        Transform transform;
+        transform.position = glm::vec3(0.5f, 0.0f, 0.5f);
+        reg.transforms.add(sprinter, { transform });
+
+        NavAgentComponent agent;
+        agent.navMesh = "L";
+        agent.speed = 1000.0f; // budget far exceeds the whole route
+        agent.setDestination(glm::vec3(4.5f, 0.0f, 4.5f));
+        reg.navAgents.add(sprinter, agent);
+
+        NavigationSystem::update(reg, step);
+        ok &= reg.navAgents.get(sprinter).status == NavAgentStatus::Arrived;
+        ok &= nearlyEqualXZ(reg.transforms.get(sprinter).transform.position,
+                            glm::vec3(4.5f, 0.0f, 4.5f), 1e-3f);
+    }
+
+    { // a failed plan is remembered, not retried every step — `status` is the record
+      // that an attempt happened, which the present cannot reconstruct
+        NavMeshRegistry::clear();
+        NavMeshRegistry::registerNavMesh("Split",
+            makeGridNavMesh(5, 1, [](int x, int) { return x == 0 || x == 4; }));
+
+        Registry reg;
+        const Entity stuck = reg.createEntity();
+        Transform transform;
+        transform.position = glm::vec3(0.5f, 0.0f, 0.5f);
+        reg.transforms.add(stuck, { transform });
+
+        NavAgentComponent agent;
+        agent.navMesh = "Split";
+        agent.setDestination(glm::vec3(4.5f, 0.0f, 0.5f));
+        reg.navAgents.add(stuck, agent);
+
+        NavigationSystem::update(reg, step);
+        ok &= reg.navAgents.get(stuck).status == NavAgentStatus::Unreachable;
+        ok &= reg.navAgents.get(stuck).path.empty();
+
+        // Terminal until gameplay re-arms it: the destination is unchanged, so the
+        // next steps must not re-run A*, and the agent must not drift.
+        const glm::vec3 before = reg.transforms.get(stuck).transform.position;
+        for (int i = 0; i < 10; ++i) {
+            NavigationSystem::update(reg, step);
+        }
+        ok &= reg.navAgents.get(stuck).status == NavAgentStatus::Unreachable;
+        ok &= reg.transforms.get(stuck).transform.position == before;
+
+        // Re-arming the *same* destination retries — the one case a pure comparison
+        // against pathGoal cannot see, which is why setDestination exists.
+        reg.navAgents.get(stuck).setDestination(glm::vec3(0.8f, 0.0f, 0.5f));
+        NavigationSystem::update(reg, step);
+        ok &= reg.navAgents.get(stuck).status != NavAgentStatus::Unreachable;
+
+        // An unknown navmesh leaves the agent Idle rather than Unreachable: a mesh
+        // that is not baked yet is not the same fact as a route that does not exist,
+        // and the agent should plan as soon as the bake lands.
+        reg.navAgents.get(stuck).navMesh = "NotBakedYet";
+        reg.navAgents.get(stuck).setDestination(glm::vec3(0.2f, 0.0f, 0.5f));
+        NavigationSystem::update(reg, step);
+        ok &= reg.navAgents.get(stuck).status == NavAgentStatus::Idle;
+    }
+
+    { // the point of the whole design: a mid-journey snapshot restores the *plan*,
+      // so the agent continues the route it chose rather than re-deciding it
+        NavMeshRegistry::clear();
+        NavMeshRegistry::registerNavMesh("L", makeGridNavMesh(5, 5, lShape));
+
+        Registry reg;
+        std::vector<Light> lights;
+        const Entity walker = reg.createEntity();
+        reg.names.add(walker, { "Walker" });
+        Transform transform;
+        transform.position = glm::vec3(0.5f, 0.0f, 0.5f);
+        reg.transforms.add(walker, { transform });
+        reg.hierarchy.add(walker, {});
+
+        NavAgentComponent agent;
+        agent.navMesh = "L";
+        agent.speed = 2.0f;
+        agent.arrivalRadius = 0.25f;
+        agent.setDestination(glm::vec3(4.5f, 0.0f, 4.5f));
+        reg.navAgents.add(walker, agent);
+
+        for (int i = 0; i < 30; ++i) {
+            NavigationSystem::update(reg, step);
+        }
+
+        const NavAgentComponent midJourney = reg.navAgents.get(walker);
+        ok &= midJourney.status == NavAgentStatus::Following;
+        const std::string snapshot = SceneSerializer::saveToString(reg, lights);
+
+        // Run well past the snapshot, then restore it in place.
+        for (int i = 0; i < 60; ++i) {
+            NavigationSystem::update(reg, step);
+        }
+        ok &= SceneSerializer::patchFromString(reg, lights, snapshot);
+
+        const NavAgentComponent& restored = reg.navAgents.get(walker);
+        ok &= restored.status == midJourney.status;
+        ok &= restored.pathIndex == midJourney.pathIndex;
+        ok &= restored.path.size() == midJourney.path.size();
+        ok &= restored.pathGoal == midJourney.pathGoal;
+        ok &= restored.hasDestination && restored.navMesh == "L";
+        for (std::size_t i = 0; i < restored.path.size() && i < midJourney.path.size(); ++i) {
+            ok &= nearlyEqualXZ(restored.path[i], midJourney.path[i]);
+        }
+
+        // And it keeps walking that same plan: no replan is triggered, because the
+        // destination still matches the goal the restored path was planned for.
+        const std::size_t waypointsBefore = restored.path.size();
+        NavigationSystem::update(reg, step);
+        ok &= reg.navAgents.get(walker).path.size() == waypointsBefore;
+
+        // **Coverage gap, stated rather than hidden.** The full scene *load* path
+        // (createEntitiesFromObjects — which creates entities rather than patching
+        // them) is deliberately not exercised here, because `loadFromString` cannot
+        // run headless *at all*: it resolves assets through ResourceManager, so it
+        // fails even for an entity carrying no mesh and no material. Measured, not
+        // assumed — a bare "name + transform" entity saves fine and then fails to
+        // load. The limitation is pre-existing and engine-wide rather than
+        // navigation's, and it means no component's load path is self-tested today.
+        // The parsing half *is* covered above: patchFromString runs the same
+        // parseEntityObject this file's navagent block lives in.
+    }
+
+    { // the Navigation system honors its declared access: reads and writes NavAgent
+      // + Transform, and touches nothing else
+        NavMeshRegistry::clear();
+        NavMeshRegistry::registerNavMesh("L", makeGridNavMesh(5, 5, lShape));
+
+        Registry reg;
+        const Entity walker = reg.createEntity();
+        Transform transform;
+        transform.position = glm::vec3(0.5f, 0.0f, 0.5f);
+        reg.transforms.add(walker, { transform });
+        NavAgentComponent agent;
+        agent.navMesh = "L";
+        agent.setDestination(glm::vec3(4.5f, 0.0f, 4.5f));
+        reg.navAgents.add(walker, agent);
+
+        ComponentAccessTracker tracker;
+        {
+            ComponentAccess::Scope scope(&tracker);
+            NavigationSystem::update(reg, step);
+        }
+        // NavObstacle joins the read set in 18D: update() collects obstacles every
+        // step, so it touches that storage even when the scene has none. Writes stay
+        // NavAgent + Transform — avoidance steers, it never edits an obstacle.
+        const ComponentMask declared = maskOf(ComponentType::NavAgent, ComponentType::Transform,
+                                              ComponentType::NavObstacle, ComponentType::Hierarchy);
+        const ComponentMask written = maskOf(ComponentType::NavAgent, ComponentType::Transform);
+        ok &= (tracker.touched() & ~declared) == 0;
+        ok &= (tracker.mutated() & ~written) == 0;
+    }
+
+    NavMeshRegistry::clear(); // leave no meshes behind for later tests
+    return ok;
+}
+
+// --- NavMeshBake: triangle soup becomes a walkable, connected navmesh -------
+// Tests the *pure* half (buildNavMesh), which is the point of the Core/Engine split:
+// the bake takes plain world-space triangles, so it needs no Mesh, no
+// ResourceManager, and no Vulkan device to verify.
+inline bool testNavMeshBake() {
+    bool ok = true;
+
+    // A flat WxH grid of unit quads, each split into two triangles, wound so the
+    // normal points up. Corners are emitted at exact coordinates but as *separate*
+    // triangles, so welding is genuinely exercised rather than assumed.
+    const auto flatGrid = [](int width, int height, float y) {
+        std::vector<NavTriangle> triangles;
+        for (int z = 0; z < height; ++z) {
+            for (int x = 0; x < width; ++x) {
+                const auto corner = [&](int cx, int cz) {
+                    return glm::vec3(static_cast<float>(cx), y, static_cast<float>(cz));
+                };
+                // Wound so cross(b-a, c-a) points at +Y. Getting this backwards makes
+                // the whole grid a *ceiling* and the bake rejects all of it — which
+                // is the bake behaving correctly, and is exactly what it did the
+                // first time this fixture was written.
+                triangles.push_back({ corner(x, z), corner(x, z + 1), corner(x + 1, z + 1) });
+                triangles.push_back({ corner(x, z), corner(x + 1, z + 1), corner(x + 1, z) });
+            }
+        }
+        return triangles;
+    };
+
+    { // welding turns loose triangles into one connected mesh
+        NavBakeStats stats;
+        const NavMesh mesh = buildNavMesh(flatGrid(4, 4, 0.0f), {}, &stats);
+
+        ok &= mesh.valid();
+        ok &= stats.inputTriangles == 32 && stats.polygons == 32;
+        // 5x5 grid corners: without welding this would be 96 (3 per triangle), which
+        // is the assertion that actually proves the welder ran.
+        ok &= stats.vertices == 25;
+        ok &= stats.rejectedBySlope == 0 && stats.rejectedDegenerate == 0;
+        // Every triangle touches another: an unwelded bake reports all of them
+        // isolated, and every path over it comes back Unreachable.
+        ok &= stats.isolatedPolygons == 0;
+    }
+
+    { // a triangulated floor still string-pulls to a straight line — which is why
+      // merging coplanar polygons is an optimization (Rule 18) and not a fix
+        NavMeshRegistry::clear();
+        NavMeshRegistry::registerNavMesh("Floor", buildNavMesh(flatGrid(6, 6, 0.0f)));
+        const NavMesh* mesh = NavMeshRegistry::get("Floor");
+        ok &= mesh != nullptr;
+
+        if (mesh != nullptr) {
+            std::vector<glm::vec3> path;
+            ok &= NavPath::findPath(*mesh, glm::vec3(0.5f, 0.0f, 0.5f),
+                                    glm::vec3(5.5f, 0.0f, 5.5f), path) == NavPath::Result::Success;
+            // One waypoint: the goal. Not one per polygon crossed — this is the
+            // assertion that makes "merging is an optimization" a claim and not a hope.
+            ok &= path.size() == 1;
+        }
+    }
+
+    { // slope filtering, and that winding decides floor from ceiling
+        std::vector<NavTriangle> triangles = flatGrid(2, 2, 0.0f);
+        const std::size_t floorCount = triangles.size();
+
+        // A vertical wall: rejected at any sane slope limit.
+        triangles.push_back({ glm::vec3(0.0f, 0.0f, 0.0f), glm::vec3(0.0f, 1.0f, 0.0f),
+                              glm::vec3(0.0f, 0.0f, 1.0f) });
+        // A flat triangle wound the other way — a ceiling. Same geometry as a floor,
+        // opposite normal, and it must not become walkable ground.
+        triangles.push_back({ glm::vec3(5.0f, 0.0f, 0.0f), glm::vec3(6.0f, 0.0f, 0.0f),
+                              glm::vec3(5.0f, 0.0f, 1.0f) });
+
+        NavBakeStats stats;
+        const NavMesh mesh = buildNavMesh(triangles, {}, &stats);
+        ok &= stats.rejectedBySlope == 2; // the wall *and* the ceiling
+        ok &= stats.polygons == static_cast<int>(floorCount);
+        ok &= mesh.valid();
+    }
+
+    { // degenerate input is dropped, before and after welding
+        std::vector<NavTriangle> triangles;
+        // Zero area outright.
+        triangles.push_back({ glm::vec3(0.0f), glm::vec3(1.0f, 0.0f, 0.0f), glm::vec3(2.0f, 0.0f, 0.0f) });
+        // Non-degenerate on its own corners, but two of them weld together at the
+        // default epsilon — the case that would otherwise enter the mesh as a
+        // polygon with a repeated index and match its own edge in buildAdjacency.
+        triangles.push_back({ glm::vec3(0.0f, 0.0f, 0.0f), glm::vec3(0.0f, 0.0f, 0.001f),
+                              glm::vec3(1.0f, 0.0f, 0.0f) });
+
+        NavBakeStats stats;
+        const NavMesh mesh = buildNavMesh(triangles, {}, &stats);
+        ok &= stats.rejectedDegenerate == 2; // one by area, one only after welding
+        ok &= mesh.empty() && mesh.valid();
+    }
+
+    { // an epsilon too small for the source geometry leaves everything isolated.
+      // This is the diagnostic the stats exist for: the symptom a user reports is
+      // "pathfinding is broken", and the cause is a bake parameter.
+        // Two triangles that would share an edge, but whose two shared corners sit
+        // ~0.07 apart — touching to a human, separate to a 0.001 weld.
+        std::vector<NavTriangle> triangles;
+        triangles.push_back({ glm::vec3(0.0f, 0.0f, 0.0f), glm::vec3(0.0f, 0.0f, 1.0f),
+                              glm::vec3(1.0f, 0.0f, 1.0f) });
+        triangles.push_back({ glm::vec3(0.05f, 0.0f, 0.05f), glm::vec3(1.05f, 0.0f, 1.05f),
+                              glm::vec3(1.0f, 0.0f, 0.0f) });
+
+        NavBakeParams tight;
+        tight.weldEpsilon = 0.001f;
+        NavBakeStats tightStats;
+        buildNavMesh(triangles, tight, &tightStats);
+        ok &= tightStats.isolatedPolygons == 2; // never connected → every path fails
+
+        NavBakeParams loose;
+        loose.weldEpsilon = 0.1f;
+        NavBakeStats looseStats;
+        buildNavMesh(triangles, loose, &looseStats);
+        ok &= looseStats.isolatedPolygons == 0; // welded → they share an edge
+    }
+
+    { // baking is deterministic: same soup, byte-identical mesh
+        const std::vector<NavTriangle> soup = flatGrid(3, 3, 0.0f);
+        const NavMesh first = buildNavMesh(soup);
+        const NavMesh second = buildNavMesh(soup);
+        ok &= first.vertices.size() == second.vertices.size();
+        ok &= first.indices == second.indices;
+        ok &= first.neighbors == second.neighbors;
+        for (std::size_t i = 0; i < first.vertices.size() && i < second.vertices.size(); ++i) {
+            ok &= first.vertices[i] == second.vertices[i];
+        }
+    }
+
+    { // an agent walks a baked mesh end to end — the bake feeds the same planner
+      // 18A tested against hand-built meshes
+        NavMeshRegistry::clear();
+        NavMeshRegistry::registerNavMesh("Baked", buildNavMesh(flatGrid(6, 6, 0.0f)));
+
+        Registry reg;
+        const Entity walker = reg.createEntity();
+        Transform transform;
+        transform.position = glm::vec3(0.5f, 0.0f, 0.5f);
+        reg.transforms.add(walker, { transform });
+
+        NavAgentComponent agent;
+        agent.navMesh = "Baked";
+        agent.speed = 4.0f;
+        agent.setDestination(glm::vec3(5.5f, 0.0f, 5.5f));
+        reg.navAgents.add(walker, agent);
+
+        // Guarded on Arrived, not on Following: a freshly armed agent starts *Idle*
+        // and only becomes Following on its first update, so a `== Following` guard
+        // would exit before the first tick and assert against an agent that never
+        // moved.
+        for (int i = 0; i < 600 && reg.navAgents.get(walker).status != NavAgentStatus::Arrived; ++i) {
+            NavigationSystem::update(reg, 1.0f / 60.0f);
+        }
+        ok &= reg.navAgents.get(walker).status == NavAgentStatus::Arrived;
+        ok &= nearlyEqualXZ(reg.transforms.get(walker).transform.position,
+                            glm::vec3(5.5f, 0.0f, 5.5f), 0.2f);
+    }
+
+    { // the Rule 21a hook is wired: a scene naming a navmesh triggers a bake attempt
+      // on load. Headless it harvests nothing (no ResourceManager), so the name stays
+      // unregistered — which is the *designed* outcome: an empty bake must not be
+      // registered, or it would cache the failure and stop every later attempt.
+        NavMeshRegistry::clear();
+
+        Registry source;
+        std::vector<Light> lights;
+        const Entity ground = source.createEntity();
+        source.names.add(ground, { "Ground" });
+        source.transforms.add(ground, {});
+        source.navMeshSources.add(ground, { "level" });
+
+        const std::string text = SceneSerializer::saveToString(source, lights);
+        ok &= text.find("\"navmeshsource\": \"level\"") != std::string::npos;
+
+        Registry loaded;
+        std::vector<Light> loadedLights;
+        ok &= SceneSerializer::loadFromString(loaded, loadedLights, text);
+        ok &= loaded.navMeshSources.getAll().size() == 1;
+        ok &= !NavMeshRegistry::has("level"); // empty bake deliberately not registered
+
+        // And the guard that matters most: ensureBaked must **not** re-bake a name
+        // that is already registered. Without the has() check, this post-load hook
+        // would overwrite a perfectly good navmesh with whatever the current harvest
+        // returns — which headless is nothing at all. A hook that destroys the thing
+        // it exists to restore is a worse bug than the one it fixes.
+        NavMeshRegistry::registerNavMesh("level", buildNavMesh(flatGrid(2, 2, 0.0f)));
+        const int before = NavMeshRegistry::get("level")->polygonCount();
+        NavMeshBaker::ensureSceneNavMeshes(loaded);
+        ok &= NavMeshRegistry::has("level") &&
+              NavMeshRegistry::get("level")->polygonCount() == before && before > 0;
+    }
+
+    NavMeshRegistry::clear();
+    return ok;
+}
+
+// --- NavAvoidance: erosion before planning, avoidance after -----------------
+// The 18D separation, asserted rather than assumed:
+//
+//   A*  ->  corridor  ->  local avoidance  ->  steering
+//
+// Erosion changes the traversable space, so it happens at bake time and the planner
+// sees its result. Avoidance responds to transient conditions, so it happens during
+// steering and must never redefine which corridor the planner chose.
+inline bool testNavAvoidance() {
+    bool ok = true;
+    const float step = 1.0f / 60.0f;
+
+    const auto flatGrid = [](int width, int height) {
+        std::vector<NavTriangle> triangles;
+        for (int z = 0; z < height; ++z) {
+            for (int x = 0; x < width; ++x) {
+                const auto corner = [&](int cx, int cz) {
+                    return glm::vec3(static_cast<float>(cx), 0.0f, static_cast<float>(cz));
+                };
+                triangles.push_back({ corner(x, z), corner(x, z + 1), corner(x + 1, z + 1) });
+                triangles.push_back({ corner(x, z), corner(x + 1, z + 1), corner(x + 1, z) });
+            }
+        }
+        return triangles;
+    };
+
+    { // erosion drops polygons near the boundary, and is off unless asked for
+        NavBakeStats plain;
+        buildNavMesh(flatGrid(6, 6), {}, &plain);
+        ok &= plain.erodedByRadius == 0; // default agentRadius is 0
+
+        NavBakeParams eroding;
+        eroding.agentRadius = 1.5f;
+        NavBakeStats eroded;
+        const NavMesh mesh = buildNavMesh(flatGrid(6, 6), eroding, &eroded);
+
+        ok &= eroded.erodedByRadius > 0;
+        ok &= eroded.polygons < plain.polygons;
+        ok &= mesh.valid();
+
+        // The survivors are interior: nothing within the radius of the old edge.
+        for (int p = 0; p < mesh.polygonCount(); ++p) {
+            for (int k = 0; k < mesh.polygons[static_cast<std::size_t>(p)].count; ++k) {
+                const glm::vec3& corner = mesh.corner(p, k);
+                ok &= corner.x >= 1.5f - 1e-3f && corner.x <= 4.5f + 1e-3f;
+                ok &= corner.z >= 1.5f - 1e-3f && corner.z <= 4.5f + 1e-3f;
+            }
+        }
+
+        // Adjacency is rebuilt, not carried over: dropping polygons creates new
+        // boundaries, so a stale table would link to polygons that no longer exist.
+        ok &= mesh.neighbors.size() == mesh.indices.size();
+        for (int neighbor : mesh.neighbors) {
+            ok &= neighbor < mesh.polygonCount();
+        }
+
+        // A radius wider than the whole mesh erodes it away entirely rather than
+        // producing something subtly wrong.
+        NavBakeParams huge;
+        huge.agentRadius = 50.0f;
+        NavBakeStats gone;
+        ok &= buildNavMesh(flatGrid(6, 6), huge, &gone).empty();
+    }
+
+    { // **the load-bearing assertion**: an obstacle deflects the agent without
+      // touching the plan. Same path, same waypoint count, same goal.
+        NavMeshRegistry::clear();
+        NavMeshRegistry::registerNavMesh("Floor", buildNavMesh(flatGrid(10, 10)));
+
+        Registry reg;
+        const Entity walker = reg.createEntity();
+        Transform transform;
+        transform.position = glm::vec3(1.0f, 0.0f, 5.0f);
+        reg.transforms.add(walker, { transform });
+
+        NavAgentComponent agent;
+        agent.navMesh = "Floor";
+        agent.speed = 2.0f;
+        agent.radius = 0.4f;
+        agent.setDestination(glm::vec3(9.0f, 0.0f, 5.0f));
+        reg.navAgents.add(walker, agent);
+
+        // Plan first, with nothing in the way.
+        NavigationSystem::update(reg, step);
+        const std::vector<glm::vec3> plannedPath = reg.navAgents.get(walker).path;
+        ok &= reg.navAgents.get(walker).status == NavAgentStatus::Following;
+        // Not asserting a waypoint count: this route runs exactly along the grid's
+        // shared edges, where the funnel legitimately emits several collinear
+        // waypoints. What matters is that the plan does not *change* below.
+        ok &= !plannedPath.empty();
+
+        // Now drop an obstacle directly on the route.
+        const Entity crate = reg.createEntity();
+        Transform crateTransform;
+        crateTransform.position = glm::vec3(5.0f, 0.0f, 5.0f);
+        reg.transforms.add(crate, { crateTransform });
+        reg.navObstacles.add(crate, { 1.0f });
+
+        float maxLateral = 0.0f;
+        for (int i = 0; i < 600 && reg.navAgents.get(walker).status != NavAgentStatus::Arrived; ++i) {
+            NavigationSystem::update(reg, step);
+            const glm::vec3 at = reg.transforms.get(walker).transform.position;
+            maxLateral = std::max(maxLateral, std::fabs(at.z - 5.0f));
+
+            // Never inside the obstacle: clearance is respected the whole way.
+            const float dx = at.x - 5.0f;
+            const float dz = at.z - 5.0f;
+            ok &= std::sqrt(dx * dx + dz * dz) > 0.5f;
+
+            // And the plan is untouched at every single step — avoidance changes how
+            // the corridor is traversed, never which corridor it is.
+            const std::vector<glm::vec3>& live = reg.navAgents.get(walker).path;
+            if (!live.empty()) {
+                ok &= live.size() == plannedPath.size();
+                ok &= live.back() == plannedPath.back();
+            }
+        }
+
+        ok &= maxLateral > 0.05f; // it genuinely deviated rather than walking through
+        ok &= reg.navAgents.get(walker).status == NavAgentStatus::Arrived;
+        // Rejoined and finished at the same destination it planned for.
+        ok &= nearlyEqualXZ(reg.transforms.get(walker).transform.position,
+                            glm::vec3(9.0f, 0.0f, 5.0f), 0.3f);
+    }
+
+    { // avoidance is a function of the present only, so it is derived (Rule 21b):
+      // two identical worlds stepped identically end up bit-identical
+        NavMeshRegistry::clear();
+        NavMeshRegistry::registerNavMesh("Floor", buildNavMesh(flatGrid(10, 10)));
+
+        const auto buildWorld = [&](Registry& reg) {
+            const Entity walker = reg.createEntity();
+            Transform transform;
+            transform.position = glm::vec3(1.0f, 0.0f, 5.0f);
+            reg.transforms.add(walker, { transform });
+            NavAgentComponent agent;
+            agent.navMesh = "Floor";
+            agent.speed = 2.0f;
+            agent.setDestination(glm::vec3(9.0f, 0.0f, 5.0f));
+            reg.navAgents.add(walker, agent);
+
+            // Several obstacles, so the sum order actually matters — this is what
+            // the entity-id sort in NavigationSystem exists to pin.
+            for (int i = 0; i < 4; ++i) {
+                const Entity crate = reg.createEntity();
+                Transform crateTransform;
+                crateTransform.position =
+                    glm::vec3(3.0f + static_cast<float>(i), 0.0f, 5.0f + (i % 2 ? 0.4f : -0.4f));
+                reg.transforms.add(crate, { crateTransform });
+                reg.navObstacles.add(crate, { 0.8f });
+            }
+            return walker;
+        };
+
+        Registry first;
+        Registry second;
+        const Entity a = buildWorld(first);
+        const Entity b = buildWorld(second);
+        for (int i = 0; i < 240; ++i) {
+            NavigationSystem::update(first, step);
+            NavigationSystem::update(second, step);
+        }
+        ok &= first.transforms.get(a).transform.position ==
+              second.transforms.get(b).transform.position;
+        ok &= first.navAgents.get(a).pathIndex == second.navAgents.get(b).pathIndex;
+    }
+
+    { // an obstacle sitting exactly on the agent picks a fixed escape direction
+      // rather than a random one — a random nudge would break replay for the one
+      // case that most needs to reproduce
+        NavMeshRegistry::clear();
+        NavMeshRegistry::registerNavMesh("Floor", buildNavMesh(flatGrid(10, 10)));
+
+        const auto runOverlapping = [&](glm::vec3& out) {
+            Registry reg;
+            const Entity walker = reg.createEntity();
+            Transform transform;
+            transform.position = glm::vec3(5.0f, 0.0f, 5.0f);
+            reg.transforms.add(walker, { transform });
+            NavAgentComponent agent;
+            agent.navMesh = "Floor";
+            agent.speed = 2.0f;
+            agent.setDestination(glm::vec3(9.0f, 0.0f, 5.0f));
+            reg.navAgents.add(walker, agent);
+
+            const Entity crate = reg.createEntity();
+            reg.transforms.add(crate, { transform }); // exactly on top of the agent
+            reg.navObstacles.add(crate, { 1.0f });
+
+            for (int i = 0; i < 10; ++i) {
+                NavigationSystem::update(reg, step);
+            }
+            out = reg.transforms.get(walker).transform.position;
+        };
+
+        glm::vec3 first(0.0f);
+        glm::vec3 second(0.0f);
+        runOverlapping(first);
+        runOverlapping(second);
+        ok &= first == second;
+    }
+
+    { // the Navigation system still honors its declared access with obstacles present
+        NavMeshRegistry::clear();
+        NavMeshRegistry::registerNavMesh("Floor", buildNavMesh(flatGrid(6, 6)));
+
+        Registry reg;
+        const Entity walker = reg.createEntity();
+        Transform transform;
+        transform.position = glm::vec3(1.0f, 0.0f, 3.0f);
+        reg.transforms.add(walker, { transform });
+        NavAgentComponent agent;
+        agent.navMesh = "Floor";
+        agent.setDestination(glm::vec3(5.0f, 0.0f, 3.0f));
+        reg.navAgents.add(walker, agent);
+
+        const Entity crate = reg.createEntity();
+        Transform crateTransform;
+        crateTransform.position = glm::vec3(3.0f, 0.0f, 3.0f);
+        reg.transforms.add(crate, { crateTransform });
+        reg.navObstacles.add(crate, { 1.0f });
+
+        ComponentAccessTracker tracker;
+        {
+            ComponentAccess::Scope scope(&tracker);
+            for (int i = 0; i < 30; ++i) {
+                NavigationSystem::update(reg, step);
+            }
+        }
+        const ComponentMask declared = maskOf(ComponentType::NavAgent, ComponentType::Transform,
+                                              ComponentType::NavObstacle, ComponentType::Hierarchy);
+        const ComponentMask written = maskOf(ComponentType::NavAgent, ComponentType::Transform);
+        ok &= (tracker.touched() & ~declared) == 0;
+        ok &= (tracker.mutated() & ~written) == 0;
+    }
+
+    NavMeshRegistry::clear();
+    return ok;
+}
+
+// --- ViewportOverlay: near-plane clipping, not projection rejection ---------
+// Editor infrastructure, not navigation's — every future viewport visualization
+// (physics contacts, audio ranges, camera frusta, perception cones) needs it. Pure
+// math over matrices, so it tests headlessly despite being editor code.
+inline bool testViewportOverlay() {
+    bool ok = true;
+
+    // Camera at the origin looking down -Z, the OpenGL/glm convention.
+    const glm::mat4 view = glm::lookAt(glm::vec3(0.0f), glm::vec3(0.0f, 0.0f, -1.0f),
+                                       glm::vec3(0.0f, 1.0f, 0.0f));
+    const glm::mat4 proj = glm::perspective(glm::radians(60.0f), 1.0f, 0.1f, 100.0f);
+    const ViewportOverlay::Projector projector(proj * view, 0.0f, 0.0f, 100.0f, 100.0f);
+
+    { // a point straight ahead lands in the middle of the rect
+        const glm::vec4 clip = projector.toClip(glm::vec3(0.0f, 0.0f, -10.0f));
+        ok &= ViewportOverlay::Projector::inFront(clip);
+        const glm::vec2 screen = projector.toScreen(clip);
+        ok &= std::fabs(screen.x - 50.0f) < 0.01f && std::fabs(screen.y - 50.0f) < 0.01f;
+    }
+
+    { // a point behind the camera is *not* in front — and would project to a
+      // mirrored position if anyone divided by its w anyway
+        ok &= !ViewportOverlay::Projector::inFront(projector.toClip(glm::vec3(0.0f, 0.0f, 10.0f)));
+    }
+
+    { // **the whole point**: a quad straddling the near plane is CLIPPED, not
+      // dropped. Two corners in front, two behind — the case that made the
+      // navigation overlay draw nothing when it rejected instead of clipping.
+        const std::vector<glm::vec3> straddling = {
+            glm::vec3(-5.0f, 0.0f, -10.0f), // in front
+            glm::vec3( 5.0f, 0.0f, -10.0f), // in front
+            glm::vec3( 5.0f, 0.0f,  10.0f), // behind
+            glm::vec3(-5.0f, 0.0f,  10.0f)  // behind
+        };
+        const std::vector<glm::vec2> screen = projector.projectPolygon(straddling);
+        // Survives with vertices to spare: two kept corners plus the two points where
+        // the outline crosses the near plane.
+        ok &= screen.size() == 4;
+        for (const glm::vec2& point : screen) {
+            ok &= std::isfinite(point.x) && std::isfinite(point.y);
+        }
+    }
+
+    { // entirely behind: nothing survives, and that is a real answer, not a failure
+        const std::vector<glm::vec3> behind = {
+            glm::vec3(-5.0f, 0.0f, 10.0f),
+            glm::vec3( 5.0f, 0.0f, 10.0f),
+            glm::vec3( 0.0f, 5.0f, 10.0f)
+        };
+        ok &= projector.projectPolygon(behind).empty();
+    }
+
+    { // entirely in front: passes through untouched, same vertex count
+        const std::vector<glm::vec3> ahead = {
+            glm::vec3(-1.0f, 0.0f, -5.0f),
+            glm::vec3( 1.0f, 0.0f, -5.0f),
+            glm::vec3( 0.0f, 1.0f, -5.0f)
+        };
+        ok &= projector.projectPolygon(ahead).size() == 3;
+    }
+
+    { // segments: trimmed at the near plane rather than discarded
+        glm::vec2 a;
+        glm::vec2 b;
+        ok &= projector.clipSegment(projector.toClip(glm::vec3(0.0f, 0.0f, -10.0f)),
+                                    projector.toClip(glm::vec3(0.0f, 0.0f, 10.0f)), a, b);
+        ok &= std::isfinite(b.x) && std::isfinite(b.y);
+        // Both endpoints behind: no line at all.
+        ok &= !projector.clipSegment(projector.toClip(glm::vec3(0.0f, 0.0f, 5.0f)),
+                                     projector.toClip(glm::vec3(0.0f, 0.0f, 10.0f)), a, b);
+    }
+
+    return ok;
+}
+
 // --- Serializer: save produces byte-exact scene text ------------------------
 // A golden test, deliberately brittle: it pins the exact bytes for an entity that
 // carries every optional component the headless build can hold, so the whole
@@ -1438,6 +2288,18 @@ inline bool testSerializer() {
 
     reg.skinnedMeshes.add(e, { "hero.gltf#Armature" });
 
+    NavAgentComponent agent;
+    agent.navMesh = "level";
+    agent.destination = glm::vec3(7.0f, 0.0f, 8.0f);
+    agent.hasDestination = true;
+    agent.path = { glm::vec3(1.0f, 0.0f, 2.0f), glm::vec3(3.0f, 0.0f, 4.0f) };
+    agent.pathIndex = 1;
+    agent.pathGoal = glm::vec3(7.0f, 0.0f, 8.0f);
+    agent.status = NavAgentStatus::Following;
+    agent.speed = 3.0f;
+    agent.arrivalRadius = 0.1f;
+    reg.navAgents.add(e, agent);
+
     const std::string expected =
         "{\n"
         "  \"version\": 2,\n"
@@ -1489,7 +2351,18 @@ inline bool testSerializer() {
         "        \"playing\": true,\n"
         "        \"loop\": false\n"
         "      },\n"
-        "      \"skinnedmesh\": \"hero.gltf#Armature\"\n"
+        "      \"skinnedmesh\": \"hero.gltf#Armature\",\n"
+        "      \"navagent\": {\n"
+        "        \"navmesh\": \"level\",\n"
+        "        \"destination\": [7, 0, 8],\n"
+        "        \"hasDestination\": true,\n"
+        "        \"path\": [[1, 0, 2], [3, 0, 4]],\n"
+        "        \"pathIndex\": 1,\n"
+        "        \"pathGoal\": [7, 0, 8],\n"
+        "        \"status\": \"following\",\n"
+        "        \"speed\": 3,\n"
+        "        \"arrivalRadius\": 0.1\n"
+        "      }\n"
         "    }\n"
         "  ],\n"
         "  \"lights\": [\n"
@@ -1506,10 +2379,179 @@ inline bool testSerializer() {
     // The trailing optional must close *without* a comma. Dropping the last field
     // is the case a comma-chain gets wrong, so assert it separately rather than
     // trusting the golden text above to have covered it by luck.
-    reg.skinnedMeshes.remove(e);
-    const std::string withoutSkin = SceneSerializer::saveToString(reg, lights);
-    return withoutSkin.find("\"skinnedmesh\"") == std::string::npos &&
-           withoutSkin.find("      }\n    }\n  ],\n") != std::string::npos;
+    reg.navAgents.remove(e);
+    const std::string withoutAgent = SceneSerializer::saveToString(reg, lights);
+    return withoutAgent.find("\"navagent\"") == std::string::npos &&
+           withoutAgent.find("\"skinnedmesh\": \"hero.gltf#Armature\"\n    }\n  ],\n") != std::string::npos;
+}
+
+// --- SceneLoad: every optional component survives a real load ---------------
+// The counterpart to testSerializer, which is save-only. A golden test pins what
+// the writer *emits*; only a load can pin what the reader *reconstructs*, and the
+// two are separate code — `createEntitiesFromObjects` creates entities, where
+// `patchFromString` updates existing ones, so neither covers the other.
+//
+// This path had no coverage at all until Phase 18A, because loadFromString could
+// not run headless: asset resolution threw without a Vulkan device, and
+// loadSceneFromText's catch-all turned that into a bare `false`. It is exactly the
+// path RULES.md Rule 21a's worked example (17C.2) went wrong on — a scene loaded
+// from disk keeping components that resolve to nothing.
+//
+// Mesh and material are deliberately *not* asserted to survive: with no device
+// there is nothing to resolve them to, and loading without them is the designed
+// degradation rather than a failure.
+inline bool testSceneLoad() {
+    Registry source;
+    std::vector<Light> lights;
+
+    const Entity parent = source.createEntity();
+    source.names.add(parent, { "Parent" });
+    Transform parentTransform;
+    parentTransform.position = glm::vec3(1.0f, 2.0f, 3.0f);
+    source.transforms.add(parent, { parentTransform });
+    source.hierarchy.add(parent, {});
+
+    const Entity child = source.createEntity();
+    source.names.add(child, { "Child" });
+    source.transforms.add(child, {});
+    source.hierarchy.add(child, {});
+    source.setParent(child, parent);
+
+    source.scripts.add(child, { "Spin", false });
+
+    RigidBodyComponent body;
+    body.velocity = glm::vec3(4.0f, 5.0f, 6.0f);
+    body.mass = 2.0f;
+    source.rigidBodies.add(child, body);
+
+    ColliderComponent collider;
+    collider.type = ColliderType::Sphere;
+    collider.radius = 2.0f;
+    source.colliders.add(child, collider);
+
+    source.prefabInstances.add(child, { "p.prefab" });
+    source.audioListeners.add(child, { 0.75f });
+
+    UIScreenComponent screen;
+    screen.screenStack = { "HUD", "Inventory" };
+    source.uiScreens.add(child, screen);
+    source.focus.add(child, { "SlotA" });
+    source.textInputs.add(child, { "name", "abc", 2 });
+
+    AnimationPlayerComponent player;
+    player.clip = "Slide";
+    player.time = 0.25f;
+    player.speed = 1.5f;
+    player.loop = false;
+    source.animations.add(child, player);
+
+    source.skinnedMeshes.add(child, { "hero.gltf#Armature" });
+
+    AnimationStateComponent machine;
+    machine.graph = "Locomotion";
+    machine.currentState = "Walk";
+    machine.statePhase = 0.5f;
+    machine.transitionTarget = "Run";
+    machine.targetPhase = 0.25f;
+    machine.transitionElapsed = 0.1f;
+    machine.transitionDuration = 0.2f;
+    source.animationStates.add(child, machine);
+
+    AnimationParametersComponent parameters;
+    parameters.values["speed"] = 3.25f;
+    source.animationParameters.add(child, parameters);
+
+    NavAgentComponent agent;
+    agent.navMesh = "level";
+    agent.destination = glm::vec3(7.0f, 0.0f, 8.0f);
+    agent.hasDestination = true;
+    agent.path = { glm::vec3(1.0f, 0.0f, 2.0f), glm::vec3(3.0f, 0.0f, 4.0f) };
+    agent.pathIndex = 1;
+    agent.pathGoal = glm::vec3(7.0f, 0.0f, 8.0f);
+    agent.status = NavAgentStatus::Following;
+    agent.speed = 3.0f;
+    agent.arrivalRadius = 0.1f;
+    source.navAgents.add(child, agent);
+
+    const std::string text = SceneSerializer::saveToString(source, lights);
+
+    Registry loaded;
+    std::vector<Light> loadedLights;
+    if (!SceneSerializer::loadFromString(loaded, loadedLights, text)) {
+        std::cout << "[selftest] scene load returned false\n";
+        return false;
+    }
+
+    bool ok = loaded.transforms.getAll().size() == 2;
+
+    // Find the loaded entities by name — ids are freshly allocated on load.
+    Entity loadedParent = INVALID_ENTITY;
+    Entity loadedChild = INVALID_ENTITY;
+    for (const auto& [entity, nameComponent] : loaded.names.getAll()) {
+        if (nameComponent.name == "Parent") {
+            loadedParent = entity;
+        } else if (nameComponent.name == "Child") {
+            loadedChild = entity;
+        }
+    }
+    ok &= loadedParent != INVALID_ENTITY && loadedChild != INVALID_ENTITY;
+    if (!ok) {
+        return false;
+    }
+
+    // Parent index is resolved within the objects array, not carried as an id.
+    ok &= loaded.hierarchy.has(loadedChild) &&
+          loaded.hierarchy.get(loadedChild).parent == loadedParent;
+    ok &= loaded.transforms.get(loadedParent).transform.position == glm::vec3(1.0f, 2.0f, 3.0f);
+
+    ok &= loaded.scripts.has(loadedChild) && loaded.scripts.get(loadedChild).behavior == "Spin";
+    ok &= loaded.rigidBodies.has(loadedChild) &&
+          loaded.rigidBodies.get(loadedChild).velocity == glm::vec3(4.0f, 5.0f, 6.0f) &&
+          loaded.rigidBodies.get(loadedChild).mass == 2.0f;
+    ok &= loaded.colliders.has(loadedChild) &&
+          loaded.colliders.get(loadedChild).type == ColliderType::Sphere &&
+          loaded.colliders.get(loadedChild).radius == 2.0f;
+    ok &= loaded.prefabInstances.has(loadedChild);
+    ok &= loaded.audioListeners.has(loadedChild);
+
+    ok &= loaded.uiScreens.has(loadedChild) &&
+          loaded.uiScreens.get(loadedChild).screenStack.size() == 2;
+    ok &= loaded.focus.has(loadedChild) &&
+          loaded.focus.get(loadedChild).focusedElement == "SlotA";
+    ok &= loaded.textInputs.has(loadedChild) &&
+          loaded.textInputs.get(loadedChild).buffer == "abc" &&
+          loaded.textInputs.get(loadedChild).caret == 2;
+
+    ok &= loaded.animations.has(loadedChild) &&
+          loaded.animations.get(loadedChild).clip == "Slide" &&
+          loaded.animations.get(loadedChild).time == 0.25f &&
+          loaded.animations.get(loadedChild).loop == false;
+    ok &= loaded.skinnedMeshes.has(loadedChild) &&
+          loaded.skinnedMeshes.get(loadedChild).skin == "hero.gltf#Armature";
+
+    ok &= loaded.animationStates.has(loadedChild);
+    if (loaded.animationStates.has(loadedChild)) {
+        const auto& restored = loaded.animationStates.get(loadedChild);
+        ok &= restored.graph == "Locomotion" && restored.currentState == "Walk";
+        ok &= restored.transitionTarget == "Run" && restored.transitionElapsed == 0.1f;
+    }
+    ok &= loaded.animationParameters.has(loadedChild) &&
+          loaded.animationParameters.get(loadedChild).get("speed") == 3.25f;
+
+    ok &= loaded.navAgents.has(loadedChild);
+    if (loaded.navAgents.has(loadedChild)) {
+        const auto& restored = loaded.navAgents.get(loadedChild);
+        ok &= restored.navMesh == "level";
+        ok &= restored.destination == glm::vec3(7.0f, 0.0f, 8.0f);
+        ok &= restored.hasDestination;
+        ok &= restored.path.size() == 2;
+        ok &= restored.pathIndex == 1;
+        ok &= restored.pathGoal == glm::vec3(7.0f, 0.0f, 8.0f);
+        ok &= restored.status == NavAgentStatus::Following;
+        ok &= restored.arrivalRadius == 0.1f;
+    }
+
+    return ok;
 }
 
 // --- BehaviorRegistry: register / resolve by name / clear -------------------
@@ -1771,7 +2813,12 @@ inline std::pair<int, int> run() {
         { "Skinning",         testSkinning },
         { "SkinImport",       testSkinImport },
         { "AnimationGraph",   testAnimationGraph },
+        { "Navigation",       testNavigation },
+        { "NavMeshBake",      testNavMeshBake },
+        { "NavAvoidance",     testNavAvoidance },
+        { "ViewportOverlay",  testViewportOverlay },
         { "Serializer",       testSerializer },
+        { "SceneLoad",        testSceneLoad },
         { "BehaviorRegistry", testBehaviorRegistry },
         { "RegistryGraph",    testRegistryGraph },
     };

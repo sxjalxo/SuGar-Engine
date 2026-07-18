@@ -28,6 +28,12 @@ public:
         VkQueue graphicsQueue
     );
 
+    // True once init() has supplied a Vulkan upload context. Public so callers can
+    // *ask* instead of discovering it by catching an exception — a headless run
+    // (self-tests, CI, a future asset-cooking tool) is a legitimate state, not an
+    // error, and code that can degrade should be able to see it coming (Rule 13).
+    static bool isInitialized();
+
     static AssetHandle loadMesh(const std::string& path);
     static AssetHandle loadTexture(const std::string& path);
     static AssetHandle loadAudioClip(const std::string& path);

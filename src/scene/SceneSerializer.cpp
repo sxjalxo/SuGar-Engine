@@ -1,5 +1,6 @@
 #include "scene/SceneSerializer.h"
 #include "assets/ModelImporter.h"
+#include "navigation/NavMeshBaker.h"
 #include "assets/ResourceManager.h"
 #include "audio/AudioClip.h"
 #include "ecs/Registry.h"
@@ -12,6 +13,7 @@
 #include <cctype>
 #include <cstddef>
 #include <fstream>
+#include <iostream>
 #include <functional>
 #include <ostream>
 #include <sstream>
@@ -372,8 +374,18 @@ void writeQuat(std::ostream& output, const glm::quat& value) {
     output << "[" << value.x << ", " << value.y << ", " << value.z << ", " << value.w << "]";
 }
 
+// Every asset-resolving helper below opens the same way: with no Vulkan upload
+// context there is nothing to resolve *to*, so the entity loads without the asset
+// rather than the whole scene load failing.
+//
+// This is what makes scene loading testable headlessly at all. It used to throw —
+// and because loadSceneFromText catches everything, the failure surfaced as
+// `load returned false` with no reason, for *any* scene, including one holding a
+// single entity with no mesh and no material (loadTextureWithFallback's empty-key
+// branch reached for the built-in checkerboard outside its own try). The engine's
+// most important load path was therefore covered by no test at all.
 AssetHandle loadMeshWithFallback(const std::string& meshKey) {
-    if (meshKey.empty()) {
+    if (meshKey.empty() || !ResourceManager::isInitialized()) {
         return INVALID_HANDLE;
     }
 
@@ -387,7 +399,7 @@ AssetHandle loadMeshWithFallback(const std::string& meshKey) {
 // Audio has no sensible default clip, so a missing/undecodable file just yields
 // an empty handle (a silent source) rather than substituting something.
 AssetHandle loadAudioClipWithFallback(const std::string& clipKey) {
-    if (clipKey.empty()) {
+    if (clipKey.empty() || !ResourceManager::isInitialized()) {
         return INVALID_HANDLE;
     }
 
@@ -399,6 +411,10 @@ AssetHandle loadAudioClipWithFallback(const std::string& clipKey) {
 }
 
 AssetHandle loadTextureWithFallback(const std::string& textureKey) {
+    if (!ResourceManager::isInitialized()) {
+        return INVALID_HANDLE;
+    }
+
     if (textureKey.empty()) {
         return ResourceManager::loadTexture(ResourceManager::CheckerboardTextureId);
     }
@@ -726,6 +742,81 @@ void writeEntityObject(std::ostream& output, const Registry& registry, Entity en
         });
     }
 
+    // Optional: navigation agent (Phase 18A). All authoritative — *including the
+    // path*, which is the one classification docs/DESIGN_NAVIGATION.md exists to get
+    // right. A path looks like a cache of f(navmesh, position, goal), but it is a
+    // function of where the agent stood when it planned: drop it and a restored
+    // agent may legitimately re-decide its route at a fork, so two runs of the same
+    // frame diverge. `status` is here for the same reason — it records that a plan
+    // was *attempted*, which the present cannot reconstruct.
+    //
+    // Written whenever the component exists, without the "non-empty name" guard the
+    // clip/skin fields use: an agent whose navmesh is not yet assigned is a real
+    // authoring state (add the component, then pick the mesh), not an inert one.
+    if (registry.navAgents.has(entity)) {
+        fields.push_back([&](std::ostream& out) {
+            const auto& agent = registry.navAgents.get(entity);
+            writeIndent(out, 3);
+            out << "\"navagent\": {\n";
+            writeIndent(out, 4);
+            out << "\"navmesh\": \"" << escapeJsonString(agent.navMesh) << "\",\n";
+            writeIndent(out, 4);
+            out << "\"destination\": ";
+            writeVec3(out, agent.destination);
+            out << ",\n";
+            writeIndent(out, 4);
+            out << "\"hasDestination\": " << (agent.hasDestination ? "true" : "false") << ",\n";
+            writeIndent(out, 4);
+            out << "\"path\": [";
+            for (std::size_t i = 0; i < agent.path.size(); i++) {
+                writeVec3(out, agent.path[i]);
+                if (i + 1 < agent.path.size()) {
+                    out << ", ";
+                }
+            }
+            out << "],\n";
+            writeIndent(out, 4);
+            out << "\"pathIndex\": " << agent.pathIndex << ",\n";
+            writeIndent(out, 4);
+            out << "\"pathGoal\": ";
+            writeVec3(out, agent.pathGoal);
+            out << ",\n";
+            writeIndent(out, 4);
+            // A string, not the enum's integer: an integer would make the scene file
+            // depend on enumerator order, so inserting a status would silently
+            // reinterpret every saved agent.
+            out << "\"status\": \"" << navAgentStatusName(agent.status) << "\",\n";
+            writeIndent(out, 4);
+            out << "\"speed\": " << agent.speed << ",\n";
+            writeIndent(out, 4);
+            out << "\"arrivalRadius\": " << agent.arrivalRadius << "\n";
+            writeIndent(out, 3);
+            out << "}";
+        });
+    }
+
+    // Optional: navmesh bake input (Phase 18B). Not the mesh, just the name of the
+    // navmesh this geometry feeds — which is what lets a loaded scene rebuild its
+    // own navmesh from the entities it just created (Rule 21a).
+    if (registry.navMeshSources.has(entity) && !registry.navMeshSources.get(entity).navMesh.empty()) {
+        fields.push_back([&](std::ostream& out) {
+            writeIndent(out, 3);
+            out << "\"navmeshsource\": \""
+                << escapeJsonString(registry.navMeshSources.get(entity).navMesh)
+                << "\"";
+        });
+    }
+
+    // Optional: navigation obstacle (Phase 18D). Only the radius — the position is
+    // the entity's ordinary transform, and a second copy of it here would be a
+    // second owner.
+    if (registry.navObstacles.has(entity)) {
+        fields.push_back([&](std::ostream& out) {
+            writeIndent(out, 3);
+            out << "\"navobstacle\": " << registry.navObstacles.get(entity).radius;
+        });
+    }
+
     // Closes the material object — the last mandatory field, so it takes a comma
     // only when an optional actually follows it.
     writeIndent(output, 3);
@@ -851,6 +942,12 @@ struct PendingEntityData {
     AnimationStateComponent animationState{};
     bool hasAnimationParams = false;
     AnimationParametersComponent animationParams{};
+    bool hasNavAgent = false;
+    NavAgentComponent navAgent{};
+    bool hasNavMeshSource = false;
+    NavMeshSourceComponent navMeshSource{};
+    bool hasNavObstacle = false;
+    NavObstacleComponent navObstacle{};
 };
 
 // Parses one object entry from the JSON. `sceneVersion` selects modern vs. the
@@ -1075,6 +1172,53 @@ PendingEntityData parseEntityObject(const JsonValue& objectValue, int sceneVersi
         }
     }
 
+    if (const JsonValue* navValue = findObjectField(objectData, "navagent")) {
+        const auto& navData = requireObject(*navValue, "object.navagent");
+        pendingEntity.hasNavAgent = true;
+        auto& agent = pendingEntity.navAgent;
+        if (const JsonValue* v = findObjectField(navData, "navmesh")) {
+            agent.navMesh = getStringValue(*v, "navagent.navmesh");
+        }
+        if (const JsonValue* v = findObjectField(navData, "destination")) {
+            agent.destination = parseVec3(*v, "navagent.destination");
+        }
+        if (const JsonValue* v = findObjectField(navData, "hasDestination")) {
+            agent.hasDestination = getBoolValue(*v, "navagent.hasDestination");
+        }
+        if (const JsonValue* v = findObjectField(navData, "path")) {
+            const auto& waypoints = requireArray(*v, "navagent.path");
+            agent.path.reserve(waypoints.size());
+            for (const JsonValue& waypoint : waypoints) {
+                agent.path.push_back(parseVec3(waypoint, "navagent.path[]"));
+            }
+        }
+        if (const JsonValue* v = findObjectField(navData, "pathIndex")) {
+            agent.pathIndex = getIntValue(*v, "navagent.pathIndex");
+        }
+        if (const JsonValue* v = findObjectField(navData, "pathGoal")) {
+            agent.pathGoal = parseVec3(*v, "navagent.pathGoal");
+        }
+        if (const JsonValue* v = findObjectField(navData, "status")) {
+            agent.status = navAgentStatusFromName(getStringValue(*v, "navagent.status"));
+        }
+        if (const JsonValue* v = findObjectField(navData, "speed")) {
+            agent.speed = getFloatValue(*v, "navagent.speed");
+        }
+        if (const JsonValue* v = findObjectField(navData, "arrivalRadius")) {
+            agent.arrivalRadius = getFloatValue(*v, "navagent.arrivalRadius");
+        }
+    }
+
+    if (const JsonValue* sourceValue = findObjectField(objectData, "navmeshsource")) {
+        pendingEntity.hasNavMeshSource = true;
+        pendingEntity.navMeshSource.navMesh = getStringValue(*sourceValue, "object.navmeshsource");
+    }
+
+    if (const JsonValue* obstacleValue = findObjectField(objectData, "navobstacle")) {
+        pendingEntity.hasNavObstacle = true;
+        pendingEntity.navObstacle.radius = getFloatValue(*obstacleValue, "object.navobstacle");
+    }
+
     return pendingEntity;
 }
 
@@ -1179,6 +1323,18 @@ std::vector<Entity> createEntitiesFromObjects(Registry& registry, const std::vec
 
         if (pendingEntity.hasAnimationParams) {
             registry.animationParameters.add(entity, pendingEntity.animationParams);
+        }
+
+        if (pendingEntity.hasNavAgent) {
+            registry.navAgents.add(entity, pendingEntity.navAgent);
+        }
+
+        if (pendingEntity.hasNavMeshSource) {
+            registry.navMeshSources.add(entity, pendingEntity.navMeshSource);
+        }
+
+        if (pendingEntity.hasNavObstacle) {
+            registry.navObstacles.add(entity, pendingEntity.navObstacle);
         }
     }
 
@@ -1424,6 +1580,36 @@ void patchEntity(Registry& registry, Entity entity, const PendingEntityData& dat
     } else if (registry.animationParameters.has(entity)) {
         registry.animationParameters.remove(entity);
     }
+
+    if (data.hasNavAgent) {
+        if (registry.navAgents.has(entity)) {
+            registry.navAgents.get(entity) = data.navAgent;
+        } else {
+            registry.navAgents.add(entity, data.navAgent);
+        }
+    } else if (registry.navAgents.has(entity)) {
+        registry.navAgents.remove(entity);
+    }
+
+    if (data.hasNavMeshSource) {
+        if (registry.navMeshSources.has(entity)) {
+            registry.navMeshSources.get(entity) = data.navMeshSource;
+        } else {
+            registry.navMeshSources.add(entity, data.navMeshSource);
+        }
+    } else if (registry.navMeshSources.has(entity)) {
+        registry.navMeshSources.remove(entity);
+    }
+
+    if (data.hasNavObstacle) {
+        if (registry.navObstacles.has(entity)) {
+            registry.navObstacles.get(entity) = data.navObstacle;
+        } else {
+            registry.navObstacles.add(entity, data.navObstacle);
+        }
+    } else if (registry.navObstacles.has(entity)) {
+        registry.navObstacles.remove(entity);
+    }
 }
 
 // In-place restore (Phase 14A). Parses the snapshot, checks it matches the live
@@ -1494,6 +1680,13 @@ bool patchSceneFromText(Registry& registry, std::vector<Light>& lights, const st
         }
 
         lights = std::move(pendingLights);
+
+        // Same Rule 21a obligation as the load path, and for the same reason: a
+        // snapshot restored into a session that never ran the bake would leave agents
+        // naming a navmesh nobody built. No-ops when it is already registered, which
+        // is the common case for a scrub.
+        NavMeshBaker::ensureSceneNavMeshes(registry);
+
         return true;
     } catch (...) {
         return false;
@@ -1534,8 +1727,30 @@ bool loadSceneFromText(Registry& registry, std::vector<Light>& lights, const std
         createEntitiesFromObjects(registry, objectValues, sceneVersion);
         lights = std::move(pendingLights);
 
+        // RULES.md Rule 21a for navigation (Phase 18B). Agents name their navmesh,
+        // so something must rebuild it from that name on a cold load — otherwise the
+        // components round-trip perfectly and resolve to nothing, which is the 17C.2
+        // failure exactly.
+        //
+        // **After** entity creation, not inside it, and that is the interesting part:
+        // a navmesh is derived from the whole scene rather than from one asset file,
+        // so it cannot be reconstituted per-entity the way
+        // ModelImporter::ensureModelAssets is. Every source entity has to exist and
+        // be parented first, because the bake reads world transforms.
+        NavMeshBaker::ensureSceneNavMeshes(registry);
+
         return true;
+    } catch (const std::exception& error) {
+        // Report what was caught. A bare `catch (...)` returning false is why the
+        // headless-load failure above took instrumentation to find rather than one
+        // run: "the scene did not load" is not a diagnosis, and better error
+        // messages are a feature (Rule 1).
+        std::cerr << "[scene] load failed: " << error.what() << "\n";
+        registry.reset();
+        lights.clear();
+        return false;
     } catch (...) {
+        std::cerr << "[scene] load failed: unknown error\n";
         registry.reset();
         lights.clear();
         return false;

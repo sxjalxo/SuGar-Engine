@@ -118,7 +118,40 @@ immediately afterward. The self-tests are the primary safeguard against partial 
 — the one real occurrence of this was caught by a failing self-test within seconds,
 not by using the UI. Prefer per-hunk edits, or assert every anchor before replacing.
 
-## 6. GPU resources outlive CPU objects
+## 6. Never script-edit a test file — the suite cannot detect its own dilution
+
+A PowerShell one-liner used to strip temporary debug prints from `SelfTests.h` matched
+each `[dbg]` line, then skipped to the next line ending in `;` — which for
+single-line statements was the *following* line. It silently deleted **six
+assertions**.
+
+Everything still compiled. The suite still reported **PASS**. It reported PASS
+*because* the assertions were gone.
+
+```
+suite detects   wrong behavior          ✔
+suite detects   fewer checks than before ✘
+```
+
+This is the asymmetry worth internalizing: a test suite verifies the code, and
+**nothing in the suite verifies the suite**. Rule 9a (break-test it) proves a test
+*could* fail — it says nothing about whether the test still checks everything it did
+last week. A green run after an edit to test code is not evidence.
+
+Practical defenses, in the order they actually catch things:
+
+1. **Read the diff of test files, always.** This is what caught it.
+2. **Hand-edit tests.** Use targeted per-hunk edits with unique anchors; never a
+   pattern-match sweep across a file full of assertions.
+3. **Watch the assertion count**, not just PASS/FAIL, when editing a test.
+4. Mutation testing / coverage-drop alerts, where the tooling exists.
+
+Related: item 5 above (scripted edits partially apply). Same root cause — bulk text
+manipulation of source — but a strictly worse failure mode, because a partially
+applied *engine* edit breaks a test, while a partially applied *test* edit breaks
+nothing visible.
+
+## 7. GPU resources outlive CPU objects
 
 Destroying Vulkan buffers immediately after RmlUi releases them is unsafe:
 

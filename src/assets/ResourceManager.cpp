@@ -415,6 +415,10 @@ void ResourceManager::release(AssetHandle handle) {
     }
 }
 
+bool ResourceManager::isInitialized() {
+    return initialized;
+}
+
 bool ResourceManager::isValid(AssetHandle handle) {
     return meshTable.find(handle) != meshTable.end() ||
            textureTable.find(handle) != textureTable.end() ||

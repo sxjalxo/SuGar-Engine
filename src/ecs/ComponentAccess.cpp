@@ -20,6 +20,9 @@ const char* componentTypeName(ComponentType type) {
         case ComponentType::SkinnedMesh:    return "SkinnedMesh";
         case ComponentType::AnimationState: return "AnimationState";
         case ComponentType::AnimationParameters: return "AnimationParameters";
+        case ComponentType::NavAgent:       return "NavAgent";
+        case ComponentType::NavMeshSource:  return "NavMeshSource";
+        case ComponentType::NavObstacle:    return "NavObstacle";
         case ComponentType::Count:          break;
     }
     return "<unknown>";

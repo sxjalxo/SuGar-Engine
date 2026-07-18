@@ -105,6 +105,17 @@ add_library(SuGarCore SHARED
     src/animation/SkinRegistry.cpp
     src/animation/Skinning.h
     src/animation/Skinning.cpp
+    src/navigation/NavComponents.h
+    src/navigation/NavMesh.h
+    src/navigation/NavMesh.cpp
+    src/navigation/NavMeshRegistry.h
+    src/navigation/NavMeshRegistry.cpp
+    src/navigation/NavPath.h
+    src/navigation/NavPath.cpp
+    src/navigation/NavMeshBuilder.h
+    src/navigation/NavMeshBuilder.cpp
+    src/navigation/NavigationSystem.h
+    src/navigation/NavigationSystem.cpp
     src/ui/UIComponents.h
     src/ui/UIIntent.h
     src/ui/RuntimeUISystem.h
@@ -171,6 +182,7 @@ add_executable(SuGarEngine
     src/editor/EditorCommand.h
     src/editor/EditorCommands.h
     src/editor/EntityQuery.h
+    src/editor/ViewportOverlay.h
     src/SelfTests.h
     src/Benchmarks.h
     src/StressTests.h
@@ -188,6 +200,8 @@ add_executable(SuGarEngine
     src/audio/AudioSystem.h
     src/audio/AudioSystem.cpp
     src/audio/miniaudio_impl.cpp
+    src/navigation/NavMeshBaker.h
+    src/navigation/NavMeshBaker.cpp
     src/physics/PhysicsWorld.cpp
     src/physics/PhysicsWorld.h
     src/scene/DrawList.cpp

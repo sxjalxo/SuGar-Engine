@@ -38,6 +38,9 @@ enum class ComponentType : uint32_t {
     SkinnedMesh,
     AnimationState,
     AnimationParameters,
+    NavAgent,
+    NavMeshSource,
+    NavObstacle,
     Count
 };
 

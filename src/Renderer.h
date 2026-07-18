@@ -119,6 +119,13 @@ private:
     void drawHierarchyPanel();
     void drawInspectorPanel();
     void drawAssetBrowserPanel();
+    // Phase 18C. Navmesh list, bake statistics, and the explicit Rebake action.
+    void drawNavigationPanel();
+    // Phase 18C. Projects the navmesh and each agent's path onto the viewport image
+    // with ImGui's draw list — no Vulkan pipeline, because this is *editor* chrome
+    // and the editor is ImGui (RULES.md Rule 11). It also keeps the overlay a pure
+    // read of ECS + the navmesh registry: it renders state, and owns none.
+    void drawNavigationOverlay(float imageMinX, float imageMinY, float imageWidth, float imageHeight);
     // Casts a ray from the viewport pixel (relative to the image's top-left)
     // through the scene and returns the nearest entity hit, or INVALID_ENTITY.
     Entity pickEntityAt(float pixelX, float pixelY, float viewportWidth, float viewportHeight) const;
@@ -197,6 +204,11 @@ private:
     enum class GizmoOp { Translate, Rotate, Scale };
     GizmoOp gizmoOp = GizmoOp::Translate;
     bool gizmoWorldSpace = true;
+
+    // Phase 18C overlay toggles. Off by default: a navmesh covers the whole floor,
+    // so leaving it on would bury the scene you are trying to edit.
+    bool showNavMesh = false;
+    bool showNavPaths = true;
 
     // Transform-edit boundary capture (for undo). The gizmo and the inspector each
     // track their own drag so they never fight over the shared flag.

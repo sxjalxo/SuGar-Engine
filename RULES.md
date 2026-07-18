@@ -455,6 +455,73 @@ effect of *import*, and a scene loaded from disk never runs the importer
 component — materials, audio clips, fonts, meshes, behaviors, animation graphs. When
 adding one, ask: *what rebuilds this from the name when the scene is loaded cold?*
 
+## Rule 21b — A cache is derived only if it is a function of the *present*
+
+The authoritative/derived split is not decided by how expensive a value is to
+recompute. It is decided by **whether recomputing it needs information that still
+exists**.
+
+> A value computed once from a *past* state is a function of **history**, not of the
+> current state — and history is authoritative.
+
+The trap is that history-dependent values look exactly like caches. Navigation found
+the sharpest case (Phase 18A). A path *appears* to be `f(navmesh, position, goal)`, so
+"recompute it after a restore" sounds right — until an agent stands at a corridor fork:
+
+```
+run A:  planned at t=0 from P0 → took the left corridor → now halfway down it
+run B:  restored at t=5, replans from that same point → takes the right corridor
+```
+
+Both routes are optimal, both are legal, the planner is deterministic — and the two
+runs have diverged. The path was a function of where the agent stood **when it
+planned**, and the present cannot reconstruct that.
+
+Apply the test to the candidate, not to its shape:
+
+```
+Pose         = f(clip, time)            <- present      -> derived
+Blend weight = f(parameters)            <- present      -> derived
+Path         = f(navmesh, start, goal)  <- *past* start -> authoritative
+Transition   = f(start time, now)       <- *past* start -> authoritative
+"already attempted" / "already fired"   <- past event   -> authoritative
+```
+
+The rule earned its place by arriving three times, from three subsystems, with three
+different-looking symptoms — which is why it is stated as history rather than as
+"remember to serialize this":
+
+| State | What it actually encodes |
+|---|---|
+| `AnimationStateComponent::transitionElapsed` | progress through a transition that *started* at some past moment |
+| Which animation events have fired | past occurrences |
+| `NavAgentComponent::path` + `status` | a planning decision *made* at a past position |
+
+The common thread is **not serialization**. Serialization is the remedy; history is
+the diagnosis. Stated as "serialize paths" the rule teaches nothing transferable and
+has to be rediscovered per subsystem. Stated as history, the next case is answerable
+before it is written:
+
+> **If recomputing a value from the present can legitimately produce a different valid
+> answer, the original value is part of the simulation state.**
+
+Note "legitimately" and "valid". This is not about nondeterminism or floating-point
+drift — the recomputation may be perfectly deterministic and its answer perfectly
+correct. It is about the answer being *a different correct one*, because the input it
+was originally computed from is gone.
+
+This is why [docs/DESIGN_ANIMATION.md](docs/DESIGN_ANIMATION.md) makes an animation
+transition authoritative while the identical-looking UI tween is derived, why animation
+events need explicit "already fired" state, and why a navigation agent's `status` must
+record that a plan was *attempted* — otherwise a stuck agent re-plans forever and a
+restore silently restarts the attempt. One rule, discovered three times.
+
+**The failure mode is why this is a rule and not a note.** Getting it wrong does not
+crash, dangle, or corrupt: every value stays individually valid and plausible, and the
+system looks like it works. Only scrubbing to the same frame twice and comparing shows
+the divergence — which is exactly the guarantee snapshots and time travel exist to
+provide, silently withdrawn.
+
 ---
 
 # Decision Checklist
