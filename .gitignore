@@ -24,6 +24,12 @@ compile_commands.json
 # Generated at runtime (ImGui window layout)
 imgui.ini
 
+# Ad-hoc debug logs. The GUI build produces no capturable stdout (see
+# docs/DEV_ENVIRONMENT.md #2), so logging to a file is the documented way to get
+# runtime diagnostics — which means stray *.log files are a normal by-product of
+# debugging, not something to commit.
+*.log
+
 # Hot-reload: uniquely-named live copies of the game DLL the loader makes each
 # reload (Phase 12C). Normally created in the build output dir, but ignore them
 # anywhere in case the executable is run from elsewhere.
@@ -33,4 +39,20 @@ imgui.ini
 Thumbs.db
 .DS_Store
 
-# Project docs are intentionally tracked — do not ignore markdown
+# Development docs (docs/) stay out of the repo until the engine is complete.
+# They are working records -- architecture decisions mid-flight, toolchain traps,
+# per-phase lessons -- and they change with the code they describe. They ship when
+# the platform does; the design record behind Runtime UI is the first one earmarked
+# for publication (see ROADMAP.md, M3 completion).
+#
+# The top-level docs (README, ROADMAP, RULES, REQUIREMENTS_AND_SCOPE) stay tracked.
+# NOTE: docs/ files already committed remain tracked -- a .gitignore rule does not
+# untrack anything. `git rm --cached docs/<file>` is what stops tracking them.
+/docs/
+
+# Cooked asset artifacts (Phase 19B). Derived from source assets + .meta settings,
+# reproducible byte-for-byte, and safe to delete wholesale -- so never committed.
+# Covered by /build/ already; named here because the cache is an asset-pipeline
+# concept, not a build-system one, and deleting /build/ should not look like the
+# only reason it is ignored.
+/build/assetcache/

@@ -15,7 +15,7 @@
 #include "scene/Transform.h"
 #include "ui/RuntimeUIView.h"
 
-class AssetRegistry;
+class AssetDatabase;
 class BasicTrianglePass;
 class RenderPass;
 class Registry;
@@ -37,7 +37,17 @@ public:
 
     void drawFrame();
     void setDrawList(const DrawList* drawList);
-    void setAssetRegistry(AssetRegistry* assetRegistry) { this->assetRegistry = assetRegistry; }
+    void setAssetDatabase(AssetDatabase* assetDatabase) { this->assetDatabase = assetDatabase; }
+
+    // The editor *requests* a reimport; SuGarApp performs it, next frame, with the
+    // device idle (19D). The editor must not run the import itself: reloading destroys
+    // GPU resources mid-frame, and a second import path would be a second answer to
+    // what importing means. Consumed once — an empty string means "nothing pending".
+    std::string takeAssetReimportRequest() {
+        std::string request;
+        request.swap(assetReimportRequest);
+        return request;
+    }
     void setRegistry(Registry* registry) { this->registry = registry; }
     // Runtime UI callbacks emit into this queue; set before init().
     void setUIIntentQueue(UIIntentQueue* queue) { this->uiIntentQueue = queue; }
@@ -119,6 +129,7 @@ private:
     void drawHierarchyPanel();
     void drawInspectorPanel();
     void drawAssetBrowserPanel();
+    void drawAssetDetails();
     // Phase 18C. Navmesh list, bake statistics, and the explicit Rebake action.
     void drawNavigationPanel();
     // Phase 18C. Projects the navmesh and each agent's path onto the viewport image
@@ -172,7 +183,14 @@ private:
     
     SuGarApp* app;
     GLFWwindow* window = nullptr;
-    AssetRegistry* assetRegistry = nullptr;
+    AssetDatabase* assetDatabase = nullptr;
+
+    // Editor-local view state only: which tile the developer clicked, and the reimport
+    // the engine has not picked up yet. No asset *state* lives here — cook keys, edges
+    // and settings are read from the database every frame (Rule 21: the editor is a
+    // consumer, never a second owner).
+    std::string selectedAssetKey;
+    std::string assetReimportRequest;
     Registry* registry = nullptr;
     const SystemScheduler* systemSchedule = nullptr;
     const DrawList* drawList = nullptr;

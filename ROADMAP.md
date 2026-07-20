@@ -53,7 +53,7 @@ SuGar Engine
 └── Runtime UI    → RmlUi (planned)   (player UI, HTML/CSS)
 ```
 
-> ### ⚠ Current State — the platform's missing half
+> ### Current State — the platform's missing half
 > SuGar has a **complete developer interface** (Dear ImGui) but **intentionally has
 > no player-facing interface**. Dear ImGui is permanently reserved for engine
 > tooling and must never render game UI. **Runtime UI begins with RmlUi.**
@@ -91,11 +91,11 @@ version that shapes roadmap decisions:
 
 ## Milestones
 
-### M1 — Engine Foundation ✅
+### M1 — Engine Foundation (done)
 Vulkan renderer, ECS, editor, asset pipeline, physics, audio, prefabs, serialization.
 *(Detail in the appendix.)*
 
-### M2 — Developer Iteration ✅
+### M2 — Developer Iteration (done)
 Time travel, snapshot system, query console, self-tests, native code hot reload,
 scheduler + architecture enforcement, in-place restore, stable entity recreation,
 uniform-grid physics broadphase, benchmark + stress harnesses. *(Detail in the appendix.)*
@@ -112,16 +112,16 @@ yes/no answer. It is bounded on both sides:
 
 | Capability      | State |
 |-----------------|-------|
-| Editor          | ✅ done |
-| Hot Reload      | ✅ done |
-| Debugging (time travel / query / profiler) | ✅ done |
-| Physics · Audio · ECS · Rendering | ✅ done |
-| **Runtime UI (RmlUi)** | ✅ done (Phase 16) |
-| **Animation** (skeletal, blend trees, state machines) | ✅ done (Phase 17) |
-| **Navigation** | ✅ done (Phase 18) |
-| **Asset Pipeline** (maturity: cooking, importers) | 🚧 |
-| **Packaging / standalone export** | 🚧 |
-| **Build Pipeline** | 🚧 |
+| Editor          | done |
+| Hot Reload      | done |
+| Debugging (time travel / query / profiler) | done |
+| Physics · Audio · ECS · Rendering | done |
+| **Runtime UI (RmlUi)** | done (Phase 16) |
+| **Animation** (skeletal, blend trees, state machines) | done (Phase 17) |
+| **Navigation** | done (Phase 18) |
+| **Asset Pipeline** (maturity: cooking, importers) | done (Phase 19) |
+| **Packaging / standalone export** | not started |
+| **Build Pipeline** | not started |
 
 **Explicitly *not* required for M3** (so the milestone can't expand forever):
 
@@ -132,8 +132,8 @@ yes/no answer. It is bounded on both sides:
 - Plugin marketplace
 
 **On M3 completion — publish the Runtime UI design as a standalone article.**
-Expand [docs/DESIGN_RUNTIME_UI.md](docs/DESIGN_RUNTIME_UI.md) +
-[docs/RUNTIME_UI_LESSONS.md](docs/RUNTIME_UI_LESSONS.md) into a technical write-up:
+Expand `docs/DESIGN_RUNTIME_UI.md` +
+`docs/RUNTIME_UI_LESSONS.md` into a technical write-up:
 *integrating a retained-mode UI library (RmlUi) with an immediate/ECS gameplay model
 while preserving determinism, replay, hot reload, and ECS authority.* Very little
 exists publicly on this specific problem — the reasoning (authoritative vs derived,
@@ -182,7 +182,7 @@ this unblock building a game at all?*):
    `ImGui::Begin("HUD")` — violating the engine's own architecture. It is the *last
    missing piece of the platform*, so it leads.
    - **Architecture decided before code:** see
-     **[docs/DESIGN_RUNTIME_UI.md](docs/DESIGN_RUNTIME_UI.md)** — the governing
+     **`docs/DESIGN_RUNTIME_UI.md`** — the governing
      invariant is `UI = f(ECS, input)`: RmlUi is a *view*, authoritative UI state
      lives in ECS ([RULES.md](RULES.md) Rule 21), callbacks emit intents only, and
      the UI system polls ECS (never subscribes). This makes snapshot restore /
@@ -195,9 +195,9 @@ this unblock building a game at all?*):
      Verified by the `RuntimeUI` self-test (intent logic + in-place snapshot survival
      with id preserved). Keyboard focus is authoritative; mouse hover stays derived
      (lives in the future view).
-   - **16B.1 � RmlUi build + link + FreeType smoke path (DONE):** RmlUi 6.3
+   - **16B.1 — RmlUi build + link + FreeType smoke path (DONE):** RmlUi 6.3
      and FreeType are vendored under `external/`, built via CMake, and
-     **static-linked into the engine only** (never Core � Rule 15). SuGar-side
+     **static-linked into the engine only** (never Core — Rule 15). SuGar-side
      `RmlSystemInterface` (time + logging) and a placeholder no-op
      `RenderInterface` compile against the RmlUi API. `SUGAR_UITEST` now proves
      the headless view foundation end-to-end: initialise RmlUi with the FreeType
@@ -330,7 +330,7 @@ this unblock building a game at all?*):
    authoritative text (16B.7) → focus-routed text (16B.8). Screen stack, focus, text
    buffer and caret all live in ECS; hover, layout and rendering are derived — with no
    exceptions. Rationale and the bugs found along the way are captured in
-   **[docs/RUNTIME_UI_LESSONS.md](docs/RUNTIME_UI_LESSONS.md)** (why not `<input>`,
+   **`docs/RUNTIME_UI_LESSONS.md`** (why not `<input>`,
    why focus is authoritative, why callbacks only emit intents, why polling beat
    subscriptions, why the RenderInterface is hand-written, and the one ImGui flag
    behind two unrelated-looking bugs).
@@ -344,7 +344,7 @@ this unblock building a game at all?*):
    Rule 21 constraint: playback state (current time, active state) is authoritative →
    ECS / serializable; graph evaluation caches are derived → rebuildable.
    - **Architecture decided before code**, as with Runtime UI: see
-     **[docs/DESIGN_ANIMATION.md](docs/DESIGN_ANIMATION.md)**. The governing invariant
+     **`docs/DESIGN_ANIMATION.md`**. The governing invariant
      is `Pose = f(clip data, playback state)` — clips are immutable assets, playback
      state lives in ECS, and the pose is *recomputed*, never stored. Rule 21 uses an
      animator hiding `currentTime` as its worked example of the bug this prevents.
@@ -530,30 +530,7 @@ this unblock building a game at all?*):
      - **Phase, not seconds — the one thing the record didn't predict.** A blend tree
        mixes clips of different lengths (a walk is slower than a run); advance them by
        wall-clock seconds and the feet slide, because each reaches its foot-plant at a
-       different moment. `statePhase` is normalized [0,1) and each clip is sampled at
-       `phase * duration`, keeping contacts aligned. Named `phase` so it can't be
-       confused with `AnimationPlayerComponent::time`, which *is* seconds — a lone
-       clip has nothing to stay in sync with.
-     - **Transition progress is authoritative**, as the record argued in 17A against
-       the identical-looking UI tween. The self-test pins it: a character saved
-       mid-cross-fade, run 40 steps past it, then scrubbed back, is mid-blend again
-       with the same phases and elapsed time — not snapped to either end.
-     - **Break-tested (Rule 9a):** making transitions complete instantly instead of
-       blending fails `AnimationGraph`. 25/25 `SUGAR_VALIDATE`.
-     - **Not built, deliberately:** 2D directional blending (1D covers
-       idle/walk/run; the 17B CUBICSPLINE lesson says don't guess the shape of a
-       feature no asset has asked for), transition interruption (needs a second
-       outgoing pose, and "queue vs. interrupt" is a real design question no character
-       here has posed), and animation **events** — which still need explicit
-       "already fired" ECS state, since a private `lastFiredTime` in the system is
-       Rule 21's anti-pattern under a different field name.
-
-   **Phase 17 complete.** Ownership was settled before rendering, and held under it:
-   17A playback model → 17B glTF translated at the import boundary → 17C.1 the ECS
-   hierarchy *is* the skeleton → 17C.2 GPU skinning as a pure consumer → 17D graphs on
-   top. The renderer never became an owner of animation state, and no phase had to
-   revisit an earlier one's decision. Rationale in
-   **[docs/DESIGN_ANIMATION.md](docs/DESIGN_ANIMATION.md)**.
+       different moment. `statePhase` is normalized `docs/DESIGN_ANIMATION.md`**.
 3. **QA + hardening pass (DONE, between Phase 17 and 18).** Before starting a new
    subsystem, stabilise the last one and clear known debt:
    - **Scene-UBO write-while-in-flight race fixed.** The scene uniform buffer was a
@@ -578,7 +555,7 @@ this unblock building a game at all?*):
      determinism across two runs and snapshot survival at scale. 26/26 `SUGAR_VALIDATE`.
 4. **Navigation — DONE (Phase 18).** The third M3 platform item, and the third
    subsystem to have its architecture decided **before** any code:
-   **[docs/DESIGN_NAVIGATION.md](docs/DESIGN_NAVIGATION.md)**. The governing invariant
+   **`docs/DESIGN_NAVIGATION.md`**. The governing invariant
    is `Route = f(navmesh, start, goal)` — *and* the deliberate counterweight to it,
    which is what the record exists for: **following a route is state, not a cache.**
    - **The record's own contribution — a path is authoritative.** The tempting
@@ -838,8 +815,105 @@ this unblock building a game at all?*):
    navigation state rather than a participant in navigation, and no phase had to revisit
    an earlier one's decision — the same progression Animation followed in Phase 17.
 
-5. **Next: asset-pipeline maturity, then packaging, then build pipeline.** Three items
-   left in the M3 Required floor.
+5. **Asset pipeline — IN PROGRESS (Phase 19).** The fourth M3 platform item, and the
+   one the other two depend on: packaging exports what cooking produced, and the build
+   pipeline runs the cooker.
+   - **Architecture decided before code:** see
+     **`docs/DESIGN_ASSET_PIPELINE.md`** — the governing
+     invariant is `Cooked = f(source bytes, import settings, cooker version)`, with
+     `Runtime = f(cooked)`. Asset identity stays the normalized path key (Rule 21a);
+     **GUIDs are rejected** because an id database is a function of *history*, not of
+     the present (Rule 21b), and text scenes must stay diffable.
+   - Ownership split settled first: `AssetDatabase` (catalog + `.meta` + staleness),
+     `AssetCooker` (source → cooked, headless, deterministic), `ResourceManager`
+     (runtime instances + GPU). Editor consumes the catalog; it never owns cook state.
+   - Phasing: **19A** database + `.meta` sidecars + content-hash staleness →
+     **19B** cooked formats and cache, runtime stops parsing source formats →
+     **19C** importer maturity (settings applied, reimport, dependency edges) →
+     **19D** editor Asset Browser surface.
+   - **19D done — Phase 19 complete.** The editor surface, built *around* the pipeline
+     rather than inside it. Asset Browser: click a tile to inspect; read-only bookkeeping
+     (content hash, cook key, cooked artifact path, `.meta` present) above editable
+     *intent* (per-type import settings — scale / flipY / gain — plus Apply and
+     Reimport); catalog problems surfaced in a warning banner; References /
+     Referenced-by lists that walk the dependency graph.
+   - **The boundary that mattered:** the editor *requests* work, it never performs it.
+     `AssetReimport::reimport` is the one implementation of importing, called by the
+     file watcher (`force=false`, so a touched-but-unedited file costs nothing) and by
+     the editor (`force=true`, because "nothing changed" is the state Reimport exists to
+     escape). No editor-only shortcut exists — that is how "works when I save the file
+     but not when I press the button" bugs are born. The editor sets a request string;
+     `SuGarApp` performs it next frame, outside the render frame and with the device
+     idle, since a reload destroys GPU resources.
+   - Editor holds no asset state: only the selected key and the pending request. Cook
+     keys, edges and settings are read from the database each frame.
+   - Self-test `AssetReimport`; shown to fail (Rule 9a) by ignoring `force` (proved by
+     deleting an artifact behind the cooker's memo — only a forced reimport clears it)
+     and by dropping the `.meta` -> owner mapping.
+   - Verified in the running editor by screenshot (`PrintWindow`), not by assertion
+     alone: the panel shows the audio Gain widget, the cooked artifact path, and the
+     "no dependencies discovered" note for an asset with none.
+
+   - **19C done.** Import settings are applied at *cook* time — `scale` (model),
+     `flipY` (texture), `gain` (audio) — so the setting is baked into the artifact, the
+     runtime does no per-load work, and invalidation falls out of the 19A key formula
+     (the `.meta` bytes are already hashed) rather than being coded. Malformed values
+     cook with the default: a `.meta` is hand-edited, and a typo must not stop an asset
+     from loading. Dependency edges make the catalog a graph **without moving
+     ownership**: `AssetDatabase` stores them (`dependenciesOf` / `dependentsOf`),
+     `AssetCooker` discovers them (only it parses glTF) and *reports* them rather than
+     keeping a second table, and `ResourceManager` never learns why an artifact was
+     rebuilt. Edges are derived (Rule 21b) — `scan()` clears them, nothing serializes
+     them. Editing a `.meta` now reimports its asset (`assetKeyForMetaPath` maps the
+     sidecar the catalog deliberately does not list back to its owner). Self-test
+     `AssetImport`; shown to fail (Rule 9a) by ignoring the `scale` setting and by
+     letting edges survive a rescan.
+     - **Bug the phase surfaced:** tinygltf is built with image decoding off (it must not
+       clash with the engine's stb_image), and without a loader callback it treated an
+       image it could not decode as a **parse failure** — so any glTF that merely
+       *referenced* an external texture failed to load entirely, taking its nodes,
+       materials and animations with it. No repo model had an external texture, so
+       nothing had ever exercised it. Fixed with an explicit no-op image loader in
+       `GltfLoader`: URIs are recorded, pixels come from the cooker.
+     - **The rule that keeps edges honest later:** if a cooked artifact ever *embeds* a
+       dependency's content, that dependency's cook key must be folded into the
+       artifact's key. Today none do, so edges are reachability metadata (what packaging
+       ships, what the editor shows).
+   - **19B done.** `CookedAsset` (the `.sgc` container: magic, format version, cooker
+     version, kind, payload — every scalar written little-endian byte by byte, because a
+     struct dump would bake in this compiler's padding and quietly turn "recooks
+     byte-identically" into "on this toolchain") and `AssetCooker` (cook keys, the
+     `build/assetcache` cache, cook-on-demand). `ResourceManager` now reads cooked
+     artifacts only: glTF, OBJ, stb_image and audio decoding all moved behind the
+     cooker, and its `normalizeResourceKey` stopped calling `weakly_canonical` — that
+     resolved symlinks, making a key depend on machine-local filesystem layout, the same
+     objection that rejected GUIDs. `SUGAR_COOK=1` is a headless cook-and-exit gate (no
+     window, no device) — the build pipeline's "cook, then build" already works.
+     Self-test `AssetCooking` cooks a hermetic OBJ/TGA/WAV tree into two caches and
+     compares bytes; shown to fail (Rule 9a) by putting a timestamp in the header and by
+     dropping the sub-selector from the artifact key.
+     - **Layering correction the design record now carries:** the cooker cannot live in
+       Core. It parses source formats (tinygltf/stb/miniaudio, which Rule 15 keeps out
+       of Core) and produces `Mesh`/`Texture`/`AudioClip` (Vulkan headers). *Needing no
+       GPU* was the real requirement; *living in Core* was a guess at how to get it.
+     - An animation-only glTF (`AnimatedSpinner.gltf`) has no geometry to cook. `cookAll`
+       skips it rather than failing: a build that exits nonzero over a legitimate asset
+       teaches developers to ignore the build.
+   - **19A done.** `AssetPath` (the identity function, specified in the design record
+     and implemented once), `AssetHash` (FNV-1a + the `CookerVersion` counter that any
+     format *or hash algorithm* change bumps), `AssetMeta` (`.meta` sidecar read/write,
+     deterministic bytes), `AssetDatabase` (catalog, cook keys, problem reporting) —
+     all in Core and headless. The old `AssetRegistry` is gone; the editor browser and
+     the hot-reload path read the database, and the file watcher's mtime signal is now
+     only a trigger to check the content hash: touching a file no longer reloads it.
+     Self-test `AssetDatabase` covers normalization, `.meta` round-trip, catalog
+     determinism and staleness; shown to fail (Rule 9a) by dropping the case fold in
+     `AssetPath` and by dropping the content hash from the cook key.
+
+6. **Next: packaging, then build pipeline.** The last two items in the M3 Required
+   floor — and both are now mostly *walks over things Phase 19 built*: packaging copies
+   the cooked artifacts the catalog says are reachable (cook keys + dependency edges),
+   and the build pipeline is `SUGAR_COOK=1` followed by a build.
 
 ---
 
@@ -904,7 +978,7 @@ SuGar is not trying to be the largest engine — it's trying to be one of the
 
 Collapsed for reference; full phase-by-phase history is in git.
 
-### M1 — Engine Foundation ✅ (Track A)
+### M1 — Engine Foundation (done, Track A)
 - **Rendering** — Vulkan forward renderer, offscreen viewport → ImGui dockspace,
   shadow mapping (PCF); cross-platform texture loading via stb_image.
 - **ECS** — authoritative, data-oriented registry; handle-based `ResourceManager` +
@@ -922,7 +996,7 @@ Collapsed for reference; full phase-by-phase history is in git.
   multi-select, hierarchy reparenting, component add/remove, prefab revert/apply,
   asset thumbnails.
 
-### M2 — Developer Iteration ✅ (Track B — the wedge)
+### M2 — Developer Iteration (done, Track B — the wedge)
 - **Editor command system** — transactional history, command compression, persistent
   command IDs; later made id-remap unnecessary (see below).
 - **Time travel** — snapshot ring-buffer (~10 s), timeline scrubbing + frame stepping,

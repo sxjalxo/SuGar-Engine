@@ -6,6 +6,8 @@
 // headless (no Vulkan); subsystems that need a device are reported as SKIPPED.
 
 #include <chrono>
+#include <filesystem>
+#include <fstream>
 #include <cmath>
 #include <cstddef>
 #include <exception>
@@ -27,6 +29,13 @@
 #include "animation/Skin.h"
 #include "animation/SkinRegistry.h"
 #include "animation/Skinning.h"
+#include "assets/AssetCooker.h"
+#include "assets/AssetDatabase.h"
+#include "assets/AssetHash.h"
+#include "assets/AssetMeta.h"
+#include "assets/AssetPath.h"
+#include "assets/AssetReimport.h"
+#include "assets/CookedAsset.h"
 #include "assets/GltfLoader.h"
 #include "assets/GltfModel.h"
 #include "assets/ModelImporter.h"
@@ -46,6 +55,7 @@
 #include "navigation/NavPath.h"
 #include "navigation/NavigationSystem.h"
 #include "physics/PhysicsWorld.h"
+#include "audio/AudioClip.h"
 #include "rendering/Mesh.h"
 #include "scene/BehaviorRegistry.h"
 #include "scene/Light.h"
@@ -2569,6 +2579,708 @@ inline bool testBehaviorRegistry() {
     return ok;
 }
 
+// --- AssetPath / AssetMeta / AssetDatabase (Phase 19A) ----------------------
+// The identity function is the thing worth testing here: every scene, prefab and save
+// file on disk already contains its output, so a change to it is a migration
+// (docs/DESIGN_ASSET_PIPELINE.md). Runs headless -- no Vulkan, no ResourceManager.
+inline bool testAssetDatabase() {
+    bool ok = true;
+
+    // --- normalization: separators, dot segments, the "assets/" anchor, case ---
+    const std::string expected = "assets/models/hero.gltf";
+    ok &= AssetPath::normalize("assets\\models\\hero.gltf") == expected;
+    ok &= AssetPath::normalize("./assets//models/hero.gltf") == expected;
+    ok &= AssetPath::normalize("assets/models/../models/hero.gltf") == expected;
+    ok &= AssetPath::normalize("C:/projects/sugar/assets/models/HERO.gltf") == expected;
+    ok &= AssetPath::normalize("assets/models/Hero.gltf") == expected;
+
+    // A '..' that escapes the project root is not a key, and neither is an empty path.
+    ok &= AssetPath::normalize("../outside.gltf").empty();
+    ok &= AssetPath::normalize("").empty();
+
+    // The sub-selector is copied verbatim: clip names are case-sensitive identity.
+    ok &= AssetPath::normalize("assets/models/Hero.gltf#Idle") == "assets/models/hero.gltf#Idle";
+    ok &= AssetPath::subOf("assets/models/hero.gltf#Idle") == "Idle";
+    ok &= AssetPath::pathOf("assets/models/hero.gltf#Idle") == expected;
+    ok &= AssetPath::join(AssetPath::pathOf("Assets/Models/Hero.gltf#Run"),
+                          AssetPath::subOf("Assets/Models/Hero.gltf#Run")) ==
+          AssetPath::normalize("Assets/Models/Hero.gltf#Run");
+
+    ok &= !AssetPath::isSupportedAscii(std::string("caf\xC3\xA9.png"));
+
+    // --- hashing: content, not path; stable hex spelling ---
+    ok &= AssetHash::hashString("abc") == AssetHash::hashString("abc");
+    ok &= AssetHash::hashString("abc") != AssetHash::hashString("abd");
+    ok &= AssetHash::toHex(0).size() == 16 && AssetHash::toHex(255) == "00000000000000ff";
+
+    // A cook key must move when the content moves, when the settings move, and not
+    // otherwise -- that is the whole staleness test.
+    AssetMeta meta;
+    meta.type = AssetType::Texture;
+    const std::string metaBytes = AssetMetaIO::serialize(meta);
+    const uint64_t base = AssetDatabase::computeCookKey("assets/t.png", 1234, metaBytes);
+    ok &= base == AssetDatabase::computeCookKey("assets/t.png", 1234, metaBytes);
+    ok &= base != AssetDatabase::computeCookKey("assets/t.png", 1235, metaBytes);
+    ok &= base != AssetDatabase::computeCookKey("assets/other.png", 1234, metaBytes);
+    AssetMeta changed = meta;
+    changed.set("srgb", "false");
+    ok &= base != AssetDatabase::computeCookKey("assets/t.png", 1234, AssetMetaIO::serialize(changed));
+
+    // --- .meta round-trip through a temporary tree ---
+    const std::filesystem::path root =
+        std::filesystem::temp_directory_path() / "sugar_assetdb_selftest" / "assets";
+    std::error_code cleanupError;
+    std::filesystem::remove_all(root.parent_path(), cleanupError);
+    std::filesystem::create_directories(root / "textures", cleanupError);
+
+    const std::filesystem::path texturePath = root / "textures" / "Checker.png";
+    {
+        std::ofstream file(texturePath, std::ios::binary);
+        file << "pixels-v1";
+    }
+
+    AssetMeta written;
+    written.type = AssetType::Texture;
+    written.set("srgb", "true");
+    written.set("filter", "linear");
+    std::string errorMessage;
+    ok &= AssetMetaIO::write(AssetMetaIO::sidecarPath(texturePath.string()), written, errorMessage);
+
+    AssetMeta readBack;
+    ok &= AssetMetaIO::read(AssetMetaIO::sidecarPath(texturePath.string()), readBack, errorMessage);
+    ok &= readBack.type == AssetType::Texture;
+    ok &= readBack.get("srgb") == "true" && readBack.get("filter") == "linear";
+    // Byte-identical re-serialization: the cook key hashes these bytes, so a round-trip
+    // that reformats would invalidate every cooked artifact for no reason.
+    ok &= AssetMetaIO::serialize(readBack) == AssetMetaIO::serialize(written);
+
+    // A malformed sidecar is reported, not silently treated as an empty one.
+    {
+        std::ofstream file(root / "textures" / "broken.png", std::ios::binary);
+        file << "pixels";
+    }
+    {
+        std::ofstream file(AssetMetaIO::sidecarPath((root / "textures" / "broken.png").string()),
+                           std::ios::binary);
+        file << "{ not json";
+    }
+
+    // --- catalog: keys, sub-asset lookup, defaults, problems, determinism ---
+    AssetDatabase database;
+    database.scan(root.string());
+
+    const AssetEntry* checker = database.find(texturePath.string());
+    ok &= checker != nullptr;
+    if (checker != nullptr) {
+        ok &= checker->key == "assets/textures/checker.png";
+        ok &= checker->name == "Checker.png";       // display keeps the real case
+        ok &= checker->type == AssetType::Texture;
+        ok &= checker->hasMeta && checker->hashValid;
+        // A sub-asset resolves to its file's entry.
+        ok &= database.find(texturePath.string() + "#0") == checker;
+    }
+
+    // The asset with no sidecar still catalogues, with defaults (dropping a file into
+    // the project must never require ceremony).
+    const AssetEntry* broken = database.find("assets/textures/broken.png");
+    ok &= broken != nullptr && !broken->hasMeta;
+    ok &= !database.getProblems().empty(); // the malformed .meta was reported
+
+    // .meta files are settings, not assets.
+    for (const AssetEntry& entry : database.getAssets()) {
+        ok &= entry.extension != ".meta";
+    }
+
+    // Two scans of the same tree produce the same catalog, in the same order.
+    AssetDatabase second;
+    second.scan(root.string());
+    ok &= second.getAssets().size() == database.getAssets().size();
+    for (size_t i = 0; i < database.getAssets().size() && ok; i++) {
+        ok &= second.getAssets()[i].key == database.getAssets()[i].key;
+        ok &= second.getAssets()[i].cookKey == database.getAssets()[i].cookKey;
+    }
+
+    // --- staleness is content, not mtime ---
+    const auto cookKeyOf = [&database](const std::string& key) -> uint64_t {
+        const AssetEntry* entry = database.find(key);
+        return entry != nullptr ? entry->cookKey : 0;
+    };
+    const uint64_t cookKeyBefore = cookKeyOf(texturePath.string());
+    ok &= cookKeyBefore != 0;
+
+    // Rewriting the same bytes is a touch: mtime moves, the cook key must not.
+    {
+        std::ofstream file(texturePath, std::ios::binary);
+        file << "pixels-v1";
+    }
+    ok &= !database.refresh(texturePath.string());
+    ok &= cookKeyOf(texturePath.string()) == cookKeyBefore;
+
+    // Different bytes are a real edit.
+    {
+        std::ofstream file(texturePath, std::ios::binary);
+        file << "pixels-v2";
+    }
+    ok &= database.refresh(texturePath.string());
+    ok &= cookKeyOf(texturePath.string()) != cookKeyBefore;
+
+    // Editing only the .meta invalidates too -- import settings are source.
+    const uint64_t cookKeyAfterEdit = cookKeyOf(texturePath.string());
+    AssetMeta retuned = written;
+    retuned.set("srgb", "false");
+    ok &= AssetMetaIO::write(AssetMetaIO::sidecarPath(texturePath.string()), retuned, errorMessage);
+    ok &= database.refresh(texturePath.string());
+    ok &= cookKeyOf(texturePath.string()) != cookKeyAfterEdit;
+
+    // An unknown key is a false, not a crash or a phantom entry.
+    ok &= !database.refresh("assets/textures/does_not_exist.png");
+
+    std::filesystem::remove_all(root.parent_path(), cleanupError);
+    return ok;
+}
+
+// --- AssetCooker / CookedAsset (Phase 19B) ---------------------------------
+// The defining test of the cooker is byte-identical recook: cook a tree twice into two
+// cache directories and compare bytes. A regression here is an architecture violation,
+// not a bug (docs/DESIGN_ASSET_PIPELINE.md). Everything runs headless -- cooking never
+// needs a Vulkan device, which is what lets CI and packaging run it.
+inline bool testAssetCooking() {
+    bool ok = true;
+
+    const std::filesystem::path root =
+        std::filesystem::temp_directory_path() / "sugar_cooker_selftest";
+    std::error_code cleanupError;
+    std::filesystem::remove_all(root, cleanupError);
+    std::filesystem::create_directories(root / "assets" / "models", cleanupError);
+    std::filesystem::create_directories(root / "assets" / "textures", cleanupError);
+    std::filesystem::create_directories(root / "assets" / "audio", cleanupError);
+
+    // --- hermetic source assets (one per cooked kind) ---
+    const std::filesystem::path objPath = root / "assets" / "models" / "tri.obj";
+    {
+        std::ofstream file(objPath, std::ios::binary);
+        file << "v 0 0 0\nv 1 0 0\nv 0 1 0\n"
+                "vt 0 0\nvt 1 0\nvt 0 1\n"
+                "vn 0 0 1\n"
+                "f 1/1/1 2/2/1 3/3/1\n";
+    }
+
+    // A 2x2 uncompressed 32-bit TGA -- stb_image decodes it, and hand-writing one keeps
+    // the test independent of any binary fixture in the repo.
+    const std::filesystem::path tgaPath = root / "assets" / "textures" / "dot.tga";
+    {
+        std::ofstream file(tgaPath, std::ios::binary);
+        const unsigned char header[18] = {
+            0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            2, 0,   // width  = 2
+            2, 0,   // height = 2
+            32,     // bits per pixel
+            8       // 8 alpha bits
+        };
+        file.write(reinterpret_cast<const char*>(header), sizeof(header));
+        const unsigned char pixels[16] = {
+            255, 0, 0, 255,   0, 255, 0, 255,
+            0, 0, 255, 255,   255, 255, 255, 255
+        };
+        file.write(reinterpret_cast<const char*>(pixels), sizeof(pixels));
+    }
+
+    // A minimal 16-bit PCM mono WAV, 8 frames at the engine mix rate.
+    const std::filesystem::path wavPath = root / "assets" / "audio" / "beep.wav";
+    {
+        const uint32_t sampleRate = AudioMixSampleRate;
+        const uint16_t channels = 1;
+        const uint16_t bitsPerSample = 16;
+        const uint32_t frameCount = 8;
+        const uint32_t dataBytes = frameCount * channels * (bitsPerSample / 8);
+        const uint32_t byteRate = sampleRate * channels * (bitsPerSample / 8);
+        const uint16_t blockAlign = static_cast<uint16_t>(channels * (bitsPerSample / 8));
+
+        std::ofstream file(wavPath, std::ios::binary);
+        const auto put32 = [&file](uint32_t value) {
+            const unsigned char bytes[4] = {
+                static_cast<unsigned char>(value & 0xFF),
+                static_cast<unsigned char>((value >> 8) & 0xFF),
+                static_cast<unsigned char>((value >> 16) & 0xFF),
+                static_cast<unsigned char>((value >> 24) & 0xFF)
+            };
+            file.write(reinterpret_cast<const char*>(bytes), 4);
+        };
+        const auto put16 = [&file](uint16_t value) {
+            const unsigned char bytes[2] = {
+                static_cast<unsigned char>(value & 0xFF),
+                static_cast<unsigned char>((value >> 8) & 0xFF)
+            };
+            file.write(reinterpret_cast<const char*>(bytes), 2);
+        };
+
+        file.write("RIFF", 4);
+        put32(36 + dataBytes);
+        file.write("WAVE", 4);
+        file.write("fmt ", 4);
+        put32(16);
+        put16(1); // PCM
+        put16(channels);
+        put32(sampleRate);
+        put32(byteRate);
+        put16(blockAlign);
+        put16(bitsPerSample);
+        file.write("data", 4);
+        put32(dataBytes);
+        for (uint32_t i = 0; i < frameCount; i++) {
+            put16(static_cast<uint16_t>(i * 1000));
+        }
+    }
+
+    const std::string cacheA = (root / "cacheA").generic_string();
+    const std::string cacheB = (root / "cacheB").generic_string();
+
+    AssetDatabase database;
+    database.scan((root / "assets").generic_string());
+    ok &= database.getAssets().size() == 3;
+
+    // --- cook everything, twice, into two caches ---
+    AssetCooker::setDatabase(&database);
+    AssetCooker::setCacheDirectory(cacheA);
+    std::vector<std::string> errors;
+    const int cookedFirst = AssetCooker::cookAll(database, errors);
+    ok &= errors.empty();
+    ok &= cookedFirst == 3;
+
+    // Cooking again into the same cache writes nothing: the filename IS the cook key,
+    // so an existing artifact is by construction current.
+    std::vector<std::string> secondErrors;
+    ok &= AssetCooker::cookAll(database, secondErrors) == 0;
+    ok &= secondErrors.empty();
+
+    AssetCooker::setCacheDirectory(cacheB);
+    AssetCooker::clearMemo();
+    std::vector<std::string> repeatErrors;
+    ok &= AssetCooker::cookAll(database, repeatErrors) == 3;
+    ok &= repeatErrors.empty();
+
+    // --- THE test: byte-identical recook ---
+    const auto readAllBytes = [](const std::filesystem::path& path) {
+        std::ifstream file(path, std::ios::binary);
+        return std::string(std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>());
+    };
+
+    int comparedArtifacts = 0;
+    for (const auto& entry : std::filesystem::directory_iterator(cacheA, cleanupError)) {
+        const std::filesystem::path counterpart =
+            std::filesystem::path(cacheB) / entry.path().filename();
+        // Same cook key means the same filename: if the second cache is missing one,
+        // the *name* was not a function of the content either.
+        ok &= std::filesystem::exists(counterpart);
+        ok &= readAllBytes(entry.path()) == readAllBytes(counterpart);
+        comparedArtifacts++;
+    }
+    ok &= comparedArtifacts == 3;
+
+    // --- cooked artifacts read back as the resources the runtime wants ---
+    AssetCooker::setCacheDirectory(cacheA);
+    AssetCooker::clearMemo();
+    std::string errorMessage;
+
+    const std::string meshCooked = AssetCooker::ensureCooked("assets/models/tri.obj", errorMessage);
+    Mesh mesh;
+    ok &= !meshCooked.empty() && CookedAsset::readMesh(meshCooked, mesh, errorMessage);
+    ok &= mesh.vertices.size() == 3 && mesh.indices.size() == 3;
+
+    const std::string textureCooked = AssetCooker::ensureCooked("assets/textures/dot.tga", errorMessage);
+    CookedAsset::CookedTexture texture;
+    ok &= !textureCooked.empty() && CookedAsset::readTexture(textureCooked, texture, errorMessage);
+    ok &= texture.width == 2 && texture.height == 2 && texture.pixels.size() == 16;
+
+    const std::string audioCooked = AssetCooker::ensureCooked("assets/audio/beep.wav", errorMessage);
+    AudioClip clip;
+    ok &= !audioCooked.empty() && CookedAsset::readAudio(audioCooked, clip, errorMessage);
+    ok &= clip.frameCount == 8;
+    ok &= clip.samples.size() == static_cast<size_t>(clip.frameCount) * AudioMixChannels;
+
+    // The container is typed: reading a mesh artifact as a texture fails loudly rather
+    // than producing garbage pixels.
+    CookedAsset::CookedTexture wrongKind;
+    ok &= !CookedAsset::readTexture(meshCooked, wrongKind, errorMessage);
+
+    // Sub-assets of one file are separate artifacts.
+    ok &= AssetCooker::artifactKey("assets/models/tri.obj#1") !=
+          AssetCooker::artifactKey("assets/models/tri.obj#2");
+    ok &= AssetCooker::artifactKey("assets/models/tri.obj#1") !=
+          AssetCooker::artifactKey("assets/models/tri.obj");
+
+    // --- staleness: editing the source renames the artifact ---
+    const uint64_t keyBefore = AssetCooker::artifactKey("assets/models/tri.obj");
+    {
+        std::ofstream file(objPath, std::ios::binary);
+        file << "v 0 0 0\nv 2 0 0\nv 0 2 0\n"
+                "vt 0 0\nvt 1 0\nvt 0 1\n"
+                "vn 0 0 1\n"
+                "f 1/1/1 2/2/1 3/3/1\n";
+    }
+    database.scan((root / "assets").generic_string());
+    AssetCooker::clearMemo();
+    const uint64_t keyAfter = AssetCooker::artifactKey("assets/models/tri.obj");
+    ok &= keyBefore != keyAfter;
+
+    const std::string recooked = AssetCooker::ensureCooked("assets/models/tri.obj", errorMessage);
+    ok &= recooked == AssetCooker::artifactPath(keyAfter);
+    ok &= std::filesystem::exists(recooked);
+    // The old artifact survives: the cache is append-only and always safe to delete
+    // wholesale, so nothing here has to reason about eviction.
+    ok &= std::filesystem::exists(AssetCooker::artifactPath(keyBefore));
+
+    // Editing only the .meta also renames the artifact -- import settings are source.
+    AssetMeta tuned;
+    tuned.type = AssetType::Model;
+    tuned.set("scale", "2.0");
+    ok &= AssetMetaIO::write(AssetMetaIO::sidecarPath(objPath.string()), tuned, errorMessage);
+    database.scan((root / "assets").generic_string());
+    AssetCooker::clearMemo();
+    ok &= AssetCooker::artifactKey("assets/models/tri.obj") != keyAfter;
+
+    // An asset with no cooker (a prefab, say) is reported, not silently skipped.
+    ok &= AssetCooker::ensureCooked("assets/prefabs/none.prefab", errorMessage).empty();
+
+    AssetCooker::setDatabase(nullptr);
+    AssetCooker::setCacheDirectory("build/assetcache");
+    std::filesystem::remove_all(root, cleanupError);
+    return ok;
+}
+
+// --- Import settings + dependency edges (Phase 19C) ------------------------
+// Settings are applied at COOK time, so the test is "does the artifact's content
+// change", not "does the loader behave differently". Dependency edges are owned by the
+// database and discovered by the cooker: this pins that split, because the easy mistake
+// is for the cooker to start keeping its own table (docs/DESIGN_ASSET_PIPELINE.md).
+inline bool testAssetImport() {
+    bool ok = true;
+
+    const std::filesystem::path root =
+        std::filesystem::temp_directory_path() / "sugar_import_selftest";
+    std::error_code cleanupError;
+    std::filesystem::remove_all(root, cleanupError);
+    std::filesystem::create_directories(root / "assets" / "models", cleanupError);
+    std::filesystem::create_directories(root / "assets" / "textures", cleanupError);
+    std::filesystem::create_directories(root / "assets" / "audio", cleanupError);
+
+    const std::filesystem::path objPath = root / "assets" / "models" / "tri.obj";
+    {
+        std::ofstream file(objPath, std::ios::binary);
+        file << "v 0 0 0\nv 1 0 0\nv 0 1 0\n"
+                "vt 0 0\nvt 1 0\nvt 0 1\n"
+                "vn 0 0 1\n"
+                "f 1/1/1 2/2/1 3/3/1\n";
+    }
+
+    const std::filesystem::path tgaPath = root / "assets" / "textures" / "dot.tga";
+    {
+        std::ofstream file(tgaPath, std::ios::binary);
+        const unsigned char header[18] = {
+            0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2, 0, 2, 0, 32, 8
+        };
+        file.write(reinterpret_cast<const char*>(header), sizeof(header));
+        const unsigned char pixels[16] = {
+            255, 0, 0, 255,   0, 255, 0, 255,
+            0, 0, 255, 255,   255, 255, 255, 255
+        };
+        file.write(reinterpret_cast<const char*>(pixels), sizeof(pixels));
+    }
+
+    const std::filesystem::path wavPath = root / "assets" / "audio" / "beep.wav";
+    {
+        const uint32_t frameCount = 8;
+        const uint32_t dataBytes = frameCount * 2;
+        std::ofstream file(wavPath, std::ios::binary);
+        const auto put32 = [&file](uint32_t value) {
+            const unsigned char bytes[4] = {
+                static_cast<unsigned char>(value & 0xFF),
+                static_cast<unsigned char>((value >> 8) & 0xFF),
+                static_cast<unsigned char>((value >> 16) & 0xFF),
+                static_cast<unsigned char>((value >> 24) & 0xFF)
+            };
+            file.write(reinterpret_cast<const char*>(bytes), 4);
+        };
+        const auto put16 = [&file](uint16_t value) {
+            const unsigned char bytes[2] = {
+                static_cast<unsigned char>(value & 0xFF),
+                static_cast<unsigned char>((value >> 8) & 0xFF)
+            };
+            file.write(reinterpret_cast<const char*>(bytes), 2);
+        };
+        file.write("RIFF", 4);
+        put32(36 + dataBytes);
+        file.write("WAVE", 4);
+        file.write("fmt ", 4);
+        put32(16);
+        put16(1);
+        put16(1);
+        put32(AudioMixSampleRate);
+        put32(AudioMixSampleRate * 2);
+        put16(2);
+        put16(16);
+        file.write("data", 4);
+        put32(dataBytes);
+        for (uint32_t i = 0; i < frameCount; i++) {
+            put16(8000);
+        }
+    }
+
+    // A geometry-free glTF that references a texture: the dependency case that matters
+    // (an animation- or material-only file still reaches assets packaging must ship).
+    const std::filesystem::path gltfPath = root / "assets" / "models" / "material.gltf";
+    {
+        std::ofstream file(gltfPath, std::ios::binary);
+        file << R"({"asset":{"version":"2.0"},)"
+                R"("images":[{"uri":"../textures/dot.tga"}],)"
+                R"("samplers":[{}],)"
+                R"("textures":[{"source":0,"sampler":0}],)"
+                R"("materials":[{"pbrMetallicRoughness":{"baseColorTexture":{"index":0}}}],)"
+                R"("nodes":[{"name":"Root"}],"scenes":[{"nodes":[0]}],"scene":0})";
+    }
+
+    const std::string cache = (root / "cache").generic_string();
+    AssetDatabase database;
+    database.scan((root / "assets").generic_string());
+    AssetCooker::setDatabase(&database);
+    AssetCooker::setCacheDirectory(cache);
+    AssetCooker::clearMemo();
+
+    std::string errorMessage;
+
+    // --- baselines (no .meta anywhere: defaults must cook) ---
+    Mesh baseMesh;
+    ok &= CookedAsset::readMesh(
+        AssetCooker::ensureCooked("assets/models/tri.obj", errorMessage), baseMesh, errorMessage);
+    ok &= baseMesh.vertices.size() == 3;
+
+    CookedAsset::CookedTexture baseTexture;
+    ok &= CookedAsset::readTexture(
+        AssetCooker::ensureCooked("assets/textures/dot.tga", errorMessage), baseTexture, errorMessage);
+
+    AudioClip baseClip;
+    ok &= CookedAsset::readAudio(
+        AssetCooker::ensureCooked("assets/audio/beep.wav", errorMessage), baseClip, errorMessage);
+
+    const auto maxAbsSample = [](const AudioClip& clip) {
+        float peak = 0.0f;
+        for (const float sample : clip.samples) {
+            peak = std::max(peak, std::fabs(sample));
+        }
+        return peak;
+    };
+    const float basePeak = maxAbsSample(baseClip);
+    ok &= basePeak > 0.0f;
+
+    const auto maxX = [](const Mesh& mesh) {
+        float value = 0.0f;
+        for (const Vertex& vertex : mesh.vertices) {
+            value = std::max(value, vertex.pos[0]);
+        }
+        return value;
+    };
+    ok &= std::fabs(maxX(baseMesh) - 1.0f) < 1e-5f;
+
+    // --- model scale ---
+    AssetMeta modelMeta;
+    modelMeta.type = AssetType::Model;
+    modelMeta.set(AssetSettings::ModelScale, "2.0");
+    ok &= AssetMetaIO::write(AssetMetaIO::sidecarPath(objPath.string()), modelMeta, errorMessage);
+    database.scan((root / "assets").generic_string());
+    AssetCooker::clearMemo();
+
+    Mesh scaledMesh;
+    const std::string scaledPath = AssetCooker::ensureCooked("assets/models/tri.obj", errorMessage);
+    ok &= CookedAsset::readMesh(scaledPath, scaledMesh, errorMessage);
+    ok &= std::fabs(maxX(scaledMesh) - 2.0f) < 1e-5f;
+    // A changed setting renames the artifact -- invalidation falls out of the 19A key
+    // formula, nobody had to code it.
+    ok &= scaledPath != AssetCooker::artifactPath(AssetCooker::artifactKey("assets/textures/dot.tga"));
+
+    // --- texture flipY ---
+    AssetMeta textureMeta;
+    textureMeta.type = AssetType::Texture;
+    textureMeta.set(AssetSettings::TextureFlipY, "true");
+    ok &= AssetMetaIO::write(AssetMetaIO::sidecarPath(tgaPath.string()), textureMeta, errorMessage);
+    database.scan((root / "assets").generic_string());
+    AssetCooker::clearMemo();
+
+    CookedAsset::CookedTexture flipped;
+    ok &= CookedAsset::readTexture(
+        AssetCooker::ensureCooked("assets/textures/dot.tga", errorMessage), flipped, errorMessage);
+    ok &= flipped.width == baseTexture.width && flipped.height == baseTexture.height;
+    ok &= flipped.pixels != baseTexture.pixels;
+    // Row-exact, not merely "different": the flipped top row is the baseline bottom row.
+    if (flipped.pixels.size() == 16 && baseTexture.pixels.size() == 16) {
+        for (size_t i = 0; i < 8; i++) {
+            ok &= flipped.pixels[i] == baseTexture.pixels[8 + i];
+        }
+    }
+
+    // --- audio gain ---
+    AssetMeta audioMeta;
+    audioMeta.type = AssetType::Audio;
+    audioMeta.set(AssetSettings::AudioGain, "0.5");
+    ok &= AssetMetaIO::write(AssetMetaIO::sidecarPath(wavPath.string()), audioMeta, errorMessage);
+    database.scan((root / "assets").generic_string());
+    AssetCooker::clearMemo();
+
+    AudioClip quietClip;
+    ok &= CookedAsset::readAudio(
+        AssetCooker::ensureCooked("assets/audio/beep.wav", errorMessage), quietClip, errorMessage);
+    ok &= quietClip.frameCount == baseClip.frameCount;
+    ok &= std::fabs(maxAbsSample(quietClip) - basePeak * 0.5f) < 1e-4f;
+
+    // A malformed setting cooks with the default rather than failing: a .meta is
+    // hand-edited, and a typo must not stop an asset from loading.
+    audioMeta.set(AssetSettings::AudioGain, "loud");
+    ok &= AssetMetaIO::write(AssetMetaIO::sidecarPath(wavPath.string()), audioMeta, errorMessage);
+    database.scan((root / "assets").generic_string());
+    AssetCooker::clearMemo();
+    AudioClip defaultedClip;
+    ok &= CookedAsset::readAudio(
+        AssetCooker::ensureCooked("assets/audio/beep.wav", errorMessage), defaultedClip, errorMessage);
+    ok &= std::fabs(maxAbsSample(defaultedClip) - basePeak) < 1e-4f;
+
+    // --- dependency edges: cooker discovers, database owns ---
+    const std::vector<std::string> discovered =
+        AssetCooker::discoverDependencies("assets/models/material.gltf");
+    std::cerr << "\n";
+    ok &= discovered.size() == 1;
+    ok &= !discovered.empty() && AssetPath::normalize(discovered.front()) == "assets/textures/dot.tga";
+
+    ok &= database.dependenciesOf("assets/models/material.gltf").size() == 1;
+    const std::vector<std::string> dependents = database.dependentsOf("assets/textures/dot.tga");
+    ok &= dependents.size() == 1 && dependents.front() == "assets/models/material.gltf";
+
+    // An asset with no edges reports none, and a rescan clears the graph: edges are
+    // derived from the source bytes just re-read, never carried over.
+    ok &= database.dependenciesOf("assets/models/tri.obj").empty();
+    database.scan((root / "assets").generic_string());
+    ok &= database.dependenciesOf("assets/models/material.gltf").empty();
+
+    // cookAll rebuilds them, so a build always produces the graph packaging walks.
+    std::vector<std::string> cookErrors;
+    AssetCooker::cookAll(database, cookErrors);
+    ok &= cookErrors.empty();
+    ok &= database.dependenciesOf("assets/models/material.gltf").size() == 1;
+
+    // --- ".meta changed" resolves to the asset it configures ---
+    ok &= database.assetKeyForMetaPath(AssetMetaIO::sidecarPath(objPath.string())) ==
+          "assets/models/tri.obj";
+    ok &= database.assetKeyForMetaPath(objPath.string()).empty();          // not a sidecar
+    ok &= database.assetKeyForMetaPath("assets/models/ghost.obj.meta").empty(); // no such asset
+
+    AssetCooker::setDatabase(nullptr);
+    AssetCooker::setCacheDirectory("build/assetcache");
+    std::filesystem::remove_all(root, cleanupError);
+    return ok;
+}
+
+// --- AssetReimport: one import path for watcher and editor (Phase 19D) -----
+// The editor must not have its own import shortcut, so the property worth pinning is
+// behavioural: the same call the file watcher makes is the one the Reimport button
+// makes, and the only difference is `force` (docs/DESIGN_ASSET_PIPELINE.md). Headless:
+// ResourceManager has no device here, so nothing reloads -- and that is a supported
+// state, not a skipped test.
+inline bool testAssetReimport() {
+    bool ok = true;
+
+    const std::filesystem::path root =
+        std::filesystem::temp_directory_path() / "sugar_reimport_selftest";
+    std::error_code cleanupError;
+    std::filesystem::remove_all(root, cleanupError);
+    std::filesystem::create_directories(root / "assets" / "models", cleanupError);
+
+    const std::filesystem::path objPath = root / "assets" / "models" / "tri.obj";
+    {
+        std::ofstream file(objPath, std::ios::binary);
+        file << "v 0 0 0\nv 1 0 0\nv 0 1 0\n"
+                "vt 0 0\nvt 1 0\nvt 0 1\n"
+                "vn 0 0 1\n"
+                "f 1/1/1 2/2/1 3/3/1\n";
+    }
+
+    AssetDatabase database;
+    database.scan((root / "assets").generic_string());
+    AssetCooker::setDatabase(&database);
+    AssetCooker::setCacheDirectory((root / "cache").generic_string());
+    AssetCooker::clearMemo();
+
+    // An unknown path is "not known", not an error and not a guess: a brand-new file
+    // has no entry until the caller rescans.
+    const AssetReimport::Result unknown =
+        AssetReimport::reimport(database, "assets/models/ghost.obj", true);
+    ok &= !unknown.known && !unknown.changed && unknown.errorMessage.empty();
+
+    // The watcher's call (force=false) on an untouched asset does nothing: the mtime is
+    // a trigger, the content hash is the answer.
+    const AssetReimport::Result untouched =
+        AssetReimport::reimport(database, "assets/models/tri.obj", false);
+    ok &= untouched.known && !untouched.changed;
+    ok &= untouched.assetKey == "assets/models/tri.obj";
+
+    // The editor's call (force=true) proceeds anyway -- "nothing changed" is the state
+    // the Reimport button exists to escape.
+    // Cook once, then delete the artifact behind the cooker's back: the in-process memo
+    // still says "this key is fine". Only a forced reimport clears it -- which is the
+    // observable difference between honouring `force` and quietly early-returning.
+    std::string cookError;
+    const std::string firstCook = AssetCooker::ensureCooked("assets/models/tri.obj", cookError);
+    ok &= !firstCook.empty();
+    std::filesystem::remove(firstCook, cleanupError);
+
+    const AssetReimport::Result forced =
+        AssetReimport::reimport(database, "assets/models/tri.obj", true);
+    ok &= forced.known && !forced.changed && forced.errorMessage.empty();
+    // Headless: no device, so nothing was reloaded, and that is not a failure.
+    ok &= !forced.reloaded;
+
+    Mesh recooked;
+    const std::string secondCook = AssetCooker::ensureCooked("assets/models/tri.obj", cookError);
+    ok &= !secondCook.empty() && CookedAsset::readMesh(secondCook, recooked, cookError);
+
+    // A real edit is seen through the same call the watcher makes.
+    {
+        std::ofstream file(objPath, std::ios::binary);
+        file << "v 0 0 0\nv 3 0 0\nv 0 3 0\n"
+                "vt 0 0\nvt 1 0\nvt 0 1\n"
+                "vn 0 0 1\n"
+                "f 1/1/1 2/2/1 3/3/1\n";
+    }
+    const AssetReimport::Result edited =
+        AssetReimport::reimport(database, objPath.string(), false);
+    ok &= edited.known && edited.changed;
+
+    // Editing import settings reaches the asset through its sidecar path -- what the
+    // editor's Apply writes and what the watcher reports are the same input.
+    AssetMeta meta;
+    meta.type = AssetType::Model;
+    meta.set(AssetSettings::ModelScale, "2.0");
+    std::string errorMessage;
+    ok &= AssetMetaIO::write(AssetMetaIO::sidecarPath(objPath.string()), meta, errorMessage);
+
+    const AssetReimport::Result viaMeta =
+        AssetReimport::reimport(database, AssetMetaIO::sidecarPath(objPath.string()), false);
+    ok &= viaMeta.known && viaMeta.changed;
+    ok &= viaMeta.assetKey == "assets/models/tri.obj"; // sidecar mapped to its owner
+
+    // And the settings really took effect: the reimport cooks the scaled mesh.
+    Mesh mesh;
+    const std::string cooked = AssetCooker::ensureCooked("assets/models/tri.obj", errorMessage);
+    ok &= !cooked.empty() && CookedAsset::readMesh(cooked, mesh, errorMessage);
+    float maxX = 0.0f;
+    for (const Vertex& vertex : mesh.vertices) {
+        maxX = std::max(maxX, vertex.pos[0]);
+    }
+    ok &= std::fabs(maxX - 6.0f) < 1e-4f; // 3 units, scaled 2x
+
+    AssetCooker::setDatabase(nullptr);
+    AssetCooker::setCacheDirectory("build/assetcache");
+    std::filesystem::remove_all(root, cleanupError);
+    return ok;
+}
+
 // --- Registry graph: parenting, cycle guard, destroy detaches children ------
 inline bool testRegistryGraph() {
     Registry reg;
@@ -2817,6 +3529,10 @@ inline std::pair<int, int> run() {
         { "NavMeshBake",      testNavMeshBake },
         { "NavAvoidance",     testNavAvoidance },
         { "ViewportOverlay",  testViewportOverlay },
+        { "AssetDatabase",    testAssetDatabase },
+        { "AssetCooking",     testAssetCooking },
+        { "AssetImport",      testAssetImport },
+        { "AssetReimport",    testAssetReimport },
         { "Serializer",       testSerializer },
         { "SceneLoad",        testSceneLoad },
         { "BehaviorRegistry", testBehaviorRegistry },

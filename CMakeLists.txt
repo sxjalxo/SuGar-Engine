@@ -122,6 +122,14 @@ add_library(SuGarCore SHARED
     src/ui/RuntimeUISystem.cpp
     src/audio/AudioComponents.h
     src/assets/AssetHandle.h
+    src/assets/AssetPath.h
+    src/assets/AssetPath.cpp
+    src/assets/AssetHash.h
+    src/assets/AssetHash.cpp
+    src/assets/AssetMeta.h
+    src/assets/AssetMeta.cpp
+    src/assets/AssetDatabase.h
+    src/assets/AssetDatabase.cpp
     src/rendering/Material.h
 )
 
@@ -170,8 +178,12 @@ add_executable(SuGarEngine
     src/assets/ModelImporter.cpp
     src/assets/ModelImporter.h
     src/assets/tiny_gltf_impl.cpp
-    src/assets/AssetRegistry.cpp
-    src/assets/AssetRegistry.h
+    src/assets/AssetCooker.cpp
+    src/assets/AssetCooker.h
+    src/assets/AssetReimport.cpp
+    src/assets/AssetReimport.h
+    src/assets/CookedAsset.cpp
+    src/assets/CookedAsset.h
     src/assets/FileWatcher.cpp
     src/assets/FileWatcher.h
     src/assets/ResourceManager.cpp

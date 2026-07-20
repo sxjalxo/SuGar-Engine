@@ -1,7 +1,10 @@
 #include "Renderer.h"
 #include "SuGarApp.h"
 #include "BasicTrianglePass.h"
-#include "assets/AssetRegistry.h"
+#include "assets/AssetCooker.h"
+#include "assets/AssetDatabase.h"
+#include "assets/AssetHash.h"
+#include "assets/AssetMeta.h"
 #include "assets/ModelImporter.h"
 #include "assets/ResourceManager.h"
 #include "audio/AudioClip.h"
@@ -2723,8 +2726,8 @@ void Renderer::drawInspectorPanel() {
             const std::string prefabPath = "assets/prefabs/" + prefabName + ".prefab";
             if (SceneSerializer::savePrefab(*registry, selectedEntity, prefabPath)) {
                 editorStatusMessage = "Saved prefab: " + prefabPath;
-                if (assetRegistry != nullptr) {
-                    assetRegistry->scan("assets");
+                if (assetDatabase != nullptr) {
+                    assetDatabase->scan("assets");
                 }
             } else {
                 editorStatusMessage = "Failed to save prefab.";
@@ -2777,8 +2780,8 @@ void Renderer::drawInspectorPanel() {
         if (ImGui::Button("Apply to Prefab")) {
             if (SceneSerializer::savePrefab(*registry, selectedEntity, prefabPath)) {
                 editorStatusMessage = "Applied overrides to prefab: " + prefabPath;
-                if (assetRegistry != nullptr) {
-                    assetRegistry->scan("assets");
+                if (assetDatabase != nullptr) {
+                    assetDatabase->scan("assets");
                 }
             } else {
                 editorStatusMessage = "Apply failed: " + prefabPath;
@@ -2872,14 +2875,30 @@ void Renderer::drawInspectorPanel() {
 void Renderer::drawAssetBrowserPanel() {
     ImGui::Begin("Assets");
 
-    if (assetRegistry == nullptr) {
-        ImGui::TextUnformatted("No asset registry bound.");
+    if (assetDatabase == nullptr) {
+        ImGui::TextUnformatted("No asset database bound.");
         ImGui::End();
         return;
     }
 
     ImGui::TextDisabled("Drag a tile onto an entity. Double-click a prefab to "
-                        "instantiate, a model to import.");
+                        "instantiate, a model to import. Click to inspect.");
+
+    // Catalog problems, surfaced rather than swallowed (Rule 13): a non-ASCII filename
+    // or a case-only key collision produces an asset that works on one machine and not
+    // another, and a malformed .meta silently cooks with defaults. All three are
+    // invisible without this.
+    if (!assetDatabase->getProblems().empty()) {
+        ImGui::TextColored(ImVec4(1.0f, 0.7f, 0.2f, 1.0f), "%d asset problem(s)",
+                           static_cast<int>(assetDatabase->getProblems().size()));
+        if (ImGui::IsItemHovered()) {
+            ImGui::BeginTooltip();
+            for (const std::string& problem : assetDatabase->getProblems()) {
+                ImGui::TextUnformatted(problem.c_str());
+            }
+            ImGui::EndTooltip();
+        }
+    }
     ImGui::Separator();
 
     // Color-coded thumbnail grid. (Live image/mesh render previews are a later
@@ -2889,7 +2908,7 @@ void Renderer::drawAssetBrowserPanel() {
     const int perRow = std::max(1, static_cast<int>(available / (tileSize + 8.0f)));
     int column = 0;
 
-    for (const auto& asset : assetRegistry->getAssets()) {
+    for (const auto& asset : assetDatabase->getAssets()) {
         const std::string& ext = asset.extension;
         const bool isPrefab = ext == ".prefab";
         const bool isModel = ext == ".gltf" || ext == ".glb" || ext == ".obj";
@@ -2923,6 +2942,10 @@ void Renderer::drawAssetBrowserPanel() {
             ImGui::SetTooltip("%s\n%s", asset.name.c_str(), asset.path.c_str());
         }
 
+        if (ImGui::IsItemClicked(ImGuiMouseButton_Left)) {
+            selectedAssetKey = asset.key;
+        }
+
         // Drag onto an entity to assign (handled by the inspector drop target).
         if (ImGui::BeginDragDropSource()) {
             ImGui::SetDragDropPayload("ASSET_PATH", asset.path.c_str(), asset.path.size() + 1);
@@ -2950,8 +2973,8 @@ void Renderer::drawAssetBrowserPanel() {
                         const std::string prefabPath = "assets/prefabs/" + (stem.empty() ? "Model" : stem) + ".prefab";
                         if (SceneSerializer::savePrefab(*registry, root, prefabPath)) {
                             registry->prefabInstances.add(root, { prefabPath });
-                            if (assetRegistry != nullptr) {
-                                assetRegistry->scan("assets");
+                            if (assetDatabase != nullptr) {
+                                assetDatabase->scan("assets");
                             }
                             editorStatusMessage = "Imported " + asset.name + " -> " + prefabPath;
                         } else {
@@ -2973,7 +2996,136 @@ void Renderer::drawAssetBrowserPanel() {
         }
     }
 
+    drawAssetDetails();
     ImGui::End();
+}
+
+// The 19D surface. Read-only bookkeeping above, editable *intent* below: the editor
+// edits import settings and asks for a reimport, and never touches cook keys, artifacts
+// or the dependency graph. Everything shown is read from the database each frame rather
+// than cached here -- the editor is a consumer of asset state, not a second owner.
+void Renderer::drawAssetDetails() {
+    if (selectedAssetKey.empty()) {
+        return;
+    }
+
+    const AssetEntry* asset = assetDatabase->find(selectedAssetKey);
+    if (asset == nullptr) {
+        selectedAssetKey.clear(); // deleted or renamed under us; a rescan already knew
+        return;
+    }
+
+    ImGui::Separator();
+    if (!ImGui::CollapsingHeader("Asset Details", ImGuiTreeNodeFlags_DefaultOpen)) {
+        return;
+    }
+
+    ImGui::Text("%s", asset->name.c_str());
+    ImGui::TextDisabled("key:  %s", asset->key.c_str());
+    ImGui::TextDisabled("type: %s", assetTypeName(asset->type));
+
+    // --- read-only bookkeeping -------------------------------------------------
+    const uint64_t artifactKey = AssetCooker::artifactKey(asset->key);
+    const std::string artifactPath = AssetCooker::artifactPath(artifactKey);
+    const bool cooked = artifactKey != 0 && std::filesystem::exists(artifactPath);
+
+    ImGui::TextDisabled("content:  %s", AssetHash::toHex(asset->contentHash).c_str());
+    ImGui::TextDisabled("cook key: %s", AssetHash::toHex(asset->cookKey).c_str());
+    if (cooked) {
+        ImGui::TextDisabled("cooked:   %s", artifactPath.c_str());
+    } else {
+        // Not an error: artifacts cook on demand, so "not cooked" only means nothing
+        // has asked for this asset yet in this cache.
+        ImGui::TextDisabled("cooked:   no (cooks on first use)");
+    }
+    ImGui::TextDisabled(".meta:    %s", asset->hasMeta ? "present" : "defaults (none on disk)");
+
+    // --- editable intent -------------------------------------------------------
+    // Widgets edit a local copy; nothing is written until Apply, so a half-typed number
+    // never lands on disk and renames an artifact mid-keystroke.
+    static std::string editedKey;
+    static AssetMeta editedMeta;
+    if (editedKey != asset->key) {
+        editedKey = asset->key;
+        editedMeta = asset->meta;
+    }
+
+    switch (asset->type) {
+        case AssetType::Model: {
+            float scale = editedMeta.getFloat(AssetSettings::ModelScale, 1.0f);
+            if (ImGui::DragFloat("Scale", &scale, 0.01f, 0.001f, 1000.0f)) {
+                editedMeta.set(AssetSettings::ModelScale, std::to_string(scale));
+            }
+            break;
+        }
+        case AssetType::Texture: {
+            bool flipY = editedMeta.getBool(AssetSettings::TextureFlipY, false);
+            if (ImGui::Checkbox("Flip Y", &flipY)) {
+                editedMeta.set(AssetSettings::TextureFlipY, flipY ? "true" : "false");
+            }
+            break;
+        }
+        case AssetType::Audio: {
+            float gain = editedMeta.getFloat(AssetSettings::AudioGain, 1.0f);
+            if (ImGui::DragFloat("Gain", &gain, 0.01f, 0.0f, 4.0f)) {
+                editedMeta.set(AssetSettings::AudioGain, std::to_string(gain));
+            }
+            break;
+        }
+        default:
+            ImGui::TextDisabled("No import settings for this asset type.");
+            break;
+    }
+
+    if (ImGui::Button("Apply Import Settings")) {
+        // Writing the sidecar is editing *source*. The reimport that follows is a
+        // request: the engine performs it next frame, through the same AssetReimport
+        // path a file change uses. The watcher would eventually notice this write too --
+        // that is fine, and it is the point: there is one import path, not two.
+        AssetMeta toWrite = editedMeta;
+        toWrite.type = asset->type;
+        std::string errorMessage;
+        if (AssetMetaIO::write(AssetMetaIO::sidecarPath(asset->path), toWrite, errorMessage)) {
+            assetReimportRequest = asset->key;
+            editorStatusMessage = "Saved import settings: " + asset->name;
+        } else {
+            editorStatusMessage = errorMessage;
+        }
+    }
+
+    ImGui::SameLine();
+    if (ImGui::Button("Reimport")) {
+        // Forced: "nothing changed" is exactly the state this button exists to escape
+        // (a cooker fix, a deleted cache, a source edited by a tool that kept the mtime).
+        assetReimportRequest = asset->key;
+        editorStatusMessage = "Reimport requested: " + asset->name;
+    }
+
+    // --- dependency graph (owned by the database, shown here) ------------------
+    const std::vector<std::string>& dependencies = assetDatabase->dependenciesOf(asset->key);
+    const std::vector<std::string> dependents = assetDatabase->dependentsOf(asset->key);
+
+    if (!dependencies.empty() && ImGui::TreeNode("References")) {
+        for (const std::string& dependency : dependencies) {
+            if (ImGui::Selectable(dependency.c_str())) {
+                selectedAssetKey = dependency; // walk the graph
+            }
+        }
+        ImGui::TreePop();
+    }
+    if (!dependents.empty() && ImGui::TreeNode("Referenced by")) {
+        for (const std::string& dependent : dependents) {
+            if (ImGui::Selectable(dependent.c_str())) {
+                selectedAssetKey = dependent;
+            }
+        }
+        ImGui::TreePop();
+    }
+    if (dependencies.empty() && dependents.empty()) {
+        // Edges are discovered at cook time, so "none" and "not cooked yet" look the
+        // same here. Said plainly rather than shown as an empty list that reads as fact.
+        ImGui::TextDisabled("No dependencies discovered (edges are found when cooking).");
+    }
 }
 
 void Renderer::renderImGui(VkCommandBuffer cmd) {

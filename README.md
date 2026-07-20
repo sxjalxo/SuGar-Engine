@@ -30,8 +30,18 @@ playback, glTF clip/skin import, GPU skinning, blend trees and state machines.
 string-pulling, agents whose *plan* — not just their position — is authoritative ECS
 state, a bake that turns scene geometry into a navmesh and rebuilds it on scene load, an
 editor with navmesh/path overlays and an explicit Rebake, and agent-radius erosion plus
-local obstacle avoidance. Next up: asset-pipeline maturity, packaging, build pipeline —
-the last three items of the M3 floor.
+local obstacle avoidance. **The asset pipeline is in progress** (Phase 19,
+`docs/DESIGN_ASSET_PIPELINE.md`): `Cooked = f(source
+bytes, import settings, cooker version)`, asset identity is the normalized path (no
+GUIDs, no id database), and 19A has landed the headless asset database, `.meta` import
+sidecars and content-hash staleness, and 19B the cooked-artifact cache — the runtime
+no longer parses a source format, and `SUGAR_COOK=1` cooks the whole tree headless.
+19C applies import settings at cook time and makes the catalog a dependency graph
+(database owns the edges, cooker discovers them), and 19D adds the editor surface —
+import settings, Reimport, dependencies and catalog problems — where the editor
+*requests* an import through the same path the file watcher uses and never runs one
+itself. **Phase 19 is complete**; packaging and the build pipeline remain. Then packaging and the build pipeline — the last
+two items of the M3 floor.
 
 > Positioning: *"A Vulkan engine designed for instant iteration and debuggable
 > systems — not just rendering power."* Open-source, dev-led, aimed at indie devs.
@@ -60,8 +70,8 @@ the last three items of the M3 floor.
   hand-written Vulkan `RenderInterface` into the game viewport. All authoritative UI
   state (screen stack, focus, text buffer, caret) lives in **ECS**, so it snapshots,
   time-travels and hot-reloads like any other component; hover/layout/rendering are
-  derived. Design: [docs/DESIGN_RUNTIME_UI.md](docs/DESIGN_RUNTIME_UI.md) — rationale
-  and lessons: [docs/RUNTIME_UI_LESSONS.md](docs/RUNTIME_UI_LESSONS.md)
+  derived. Design: `docs/DESIGN_RUNTIME_UI.md` — rationale
+  and lessons: `docs/RUNTIME_UI_LESSONS.md`
 * **Editor Systems panel** (Phase 13C) — a live view of the gameplay pipeline:
   each system's declared read/write masks, the computed parallel stages, and any
   access violations (green when every system stays within its declaration)
@@ -127,10 +137,7 @@ the last three items of the M3 floor.
   (active state, phase, transition target + elapsed) is ECS, so a character saved
   **mid-cross-fade** scrubs back mid-cross-fade. Parameters live in their own component
   because they are *gameplay's* state that the animator only reads
-* **Phase, not seconds** — a state's position is normalized [0,1) and each clip sampled
-  at `phase * duration`, so a blend tree mixing a slow walk with a fast run keeps the
-  foot-plants aligned instead of sliding
-* Design: [docs/DESIGN_ANIMATION.md](docs/DESIGN_ANIMATION.md) — the
+* **Phase, not seconds** — a state's position is normalized `docs/DESIGN_ANIMATION.md` — the
   authoritative/derived split, and why an animation transition is authoritative
   where the identical-looking UI tween is derived
 
@@ -186,7 +193,7 @@ the last three items of the M3 floor.
   a clearance-width short and never arrives. Each obstacle also contributes a
   **tangential** term sided toward the goal; the tangent is what turns a standoff into
   an orbit
-* Design: [docs/DESIGN_NAVIGATION.md](docs/DESIGN_NAVIGATION.md) — including the rule
+* Design: `docs/DESIGN_NAVIGATION.md` — including the rule
   the three design records converge on: *a cache is derived only if it is a function of
   the **current** state; a value computed once from a past state is a function of
   history, and history is authoritative*
@@ -434,11 +441,17 @@ write a file), then diff runs across commits.
 Full plan in **[ROADMAP.md](ROADMAP.md)**; architectural constraints in
 **[RULES.md](RULES.md)**; dependency boundaries in
 **[REQUIREMENTS_AND_SCOPE.md](REQUIREMENTS_AND_SCOPE.md)**. Architecture records live
-in **[docs/](docs/)** — [DESIGN_RUNTIME_UI.md](docs/DESIGN_RUNTIME_UI.md) and
-[DESIGN_ANIMATION.md](docs/DESIGN_ANIMATION.md) (*what*),
-[RUNTIME_UI_LESSONS.md](docs/RUNTIME_UI_LESSONS.md) (*why*), and
-[DEV_ENVIRONMENT.md](docs/DEV_ENVIRONMENT.md) (toolchain traps — **read before
-debugging a build or GUI issue**). Milestone summary:
+in **`docs/`** — `DESIGN_RUNTIME_UI.md`, `DESIGN_ANIMATION.md`,
+`DESIGN_NAVIGATION.md` and `DESIGN_ASSET_PIPELINE.md` (*what*),
+`RUNTIME_UI_LESSONS.md` (*why*), and `DEV_ENVIRONMENT.md` (toolchain traps — **read
+before debugging a build or GUI issue**).
+
+> **`docs/` is development-local until the platform is complete.** Those files are
+> working records that change with the code they describe, so they are git-ignored and
+> ship with the engine rather than ahead of it. The Runtime UI design record is the
+> first earmarked for publication, at the M3 → M4 hand-off.
+
+Milestone summary:
 
 * **M1 — Engine Foundation** *(done)* — Vulkan renderer + shadows, ECS, editor, asset
   pipeline, physics, audio, prefabs + glTF, serialization.
@@ -454,10 +467,14 @@ debugging a build or GUI issue**). Milestone summary:
   hand-written Vulkan render interface, and the UI composited into the game viewport
   — screen stack, focus, text buffer and caret all live in ECS. **Animation is done**
   (Phase 17): playback, glTF clip/skin import, GPU skinning, blend trees and state
-  machines — all authoritative state in ECS, poses derived. **Navigation is under way**
-  (Phase 18): the model layer — navmesh assets, deterministic A* + funnel, and agents
-  whose plan is authoritative — and the bake (18B) are done; editor visualization and
-  dynamic obstacles remain. Then Asset-pipeline maturity, Packaging, Build pipeline. Explicitly *not* required: AAA
+  machines — all authoritative state in ECS, poses derived. **Navigation is done**
+  (Phase 18): navmesh assets, deterministic A* + funnel, agents whose *plan* is
+  authoritative, scene-geometry bake, editor overlays, agent-radius erosion and local
+  avoidance. **The asset pipeline is done** (Phase 19): one identity function for asset
+  keys, `.meta` import sidecars, a deterministic cooker whose cache is content-hash
+  keyed, a runtime that reads only cooked artifacts, a dependency graph the database
+  owns, and an editor surface that *requests* imports through the same path the file
+  watcher uses. Packaging and the Build pipeline remain. Explicitly *not* required: AAA
   rendering, networking, console ports, world streaming, marketplace.
   * **The platform's missing half:** SuGar has a complete *developer* UI (Dear ImGui,
     permanently reserved for tooling) but intentionally **no *player* UI**. Runtime UI

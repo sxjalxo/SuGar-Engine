@@ -3,6 +3,8 @@
 #include "animation/AnimationStateSystem.h"
 #include "animation/AnimationSystem.h"
 #include "navigation/NavigationSystem.h"
+#include "assets/AssetCooker.h"
+#include "assets/AssetReimport.h"
 #include "assets/ResourceManager.h"
 #include "audio/AudioSystem.h"
 #include "SelfTests.h"
@@ -181,6 +183,31 @@ void SuGarApp::run() {
         return;
     }
 
+    // Opt-in headless cook (Phase 19B): scan the asset tree, cook every asset that
+    // has a cooker, and exit. No window, no Vulkan device — which is the whole reason
+    // AssetCooker was kept device-free, and what lets the build pipeline (the next M3
+    // item) run "cook, then build" instead of inventing a second path.
+    if (std::getenv("SUGAR_COOK") != nullptr) {
+        AssetDatabase database;
+        database.scan("assets");
+        AssetCooker::setDatabase(&database);
+
+        for (const std::string& problem : database.getProblems()) {
+            std::cerr << "[cook] catalog: " << problem << "\n";
+        }
+
+        std::vector<std::string> errors;
+        const int cooked = AssetCooker::cookAll(database, errors);
+        for (const std::string& error : errors) {
+            std::cerr << "[cook] " << error << "\n";
+        }
+
+        std::cout << "[cook] " << database.getAssets().size() << " assets catalogued, "
+                  << cooked << " cooked, " << errors.size() << " failed\n";
+        std::cout << "[cook] cache: " << AssetCooker::cacheDirectory() << "\n";
+        std::exit(errors.empty() ? 0 : 1);
+    }
+
     // Single confidence entry point: run every correctness gate and exit nonzero
     // if any failed (for CI). Deliberately only aggregates real pass/fail gates —
     // self-tests + stress; benchmarks are measurements, not gates, so they stay
@@ -273,8 +300,14 @@ void SuGarApp::initScene() {
     drawList.items.clear();
     drawList.lights.clear();
     orbitParent = INVALID_ENTITY;
-    assetRegistry.scan("assets");
+    assetDatabase.scan("assets");
     fileWatcher.watch("assets");
+
+    // The cooker takes cook keys from the catalog when it has them (19B). Set
+    // before the first load below: every mesh/texture/audio load now goes through
+    // a cooked artifact, and without the catalog the cooker would re-hash each
+    // source file itself -- same answer, more I/O.
+    AssetCooker::setDatabase(&assetDatabase);
 
     const std::string cubeMeshPath = resolveAssetPath("assets/models/textured_cube.obj");
     const std::string checkerTexturePath = resolveAssetPath("assets/textures/checker.png");
@@ -942,7 +975,7 @@ void SuGarApp::initRenderer() {
     rebuildDrawList();
     renderer = std::make_unique<Renderer>(this);
     renderer->setWindow(window);
-    renderer->setAssetRegistry(&assetRegistry);
+    renderer->setAssetDatabase(&assetDatabase);
     renderer->setRegistry(&registry);
     renderer->setSystemSchedule(&systemSchedule);
     renderer->setUIIntentQueue(&uiIntents); // UI callbacks emit intents into this
@@ -974,24 +1007,53 @@ void SuGarApp::mainLoop() {
             continue;
         }
 
+        // The editor requests a reimport; the engine performs it — here, outside the
+        // render frame and with the device idle, because a reload destroys GPU
+        // resources. Same AssetReimport call the watcher makes, with force=true: a
+        // developer pressing Reimport means it even when the bytes did not change.
+        if (renderer != nullptr) {
+            const std::string requestedReimport = renderer->takeAssetReimportRequest();
+            if (!requestedReimport.empty()) {
+                vkDeviceWaitIdle(device);
+                const AssetReimport::Result reimported =
+                    AssetReimport::reimport(assetDatabase, requestedReimport, true);
+                if (!reimported.errorMessage.empty()) {
+                    std::cerr << "reimport failed for '" << requestedReimport << "': "
+                              << reimported.errorMessage << "\n";
+                } else if (reimported.reloaded) {
+                    reloadDescriptors = true;
+                }
+                assetDatabase.scan("assets");
+                AssetCooker::discoverDependencies(reimported.assetKey);
+            }
+        }
+
         const auto changedFiles = fileWatcher.pollChanges();
         if (!changedFiles.empty()) {
             vkDeviceWaitIdle(device);
 
             bool anyReloaded = false;
-            for (const auto& path : changedFiles) {
-                try {
-                    if (ResourceManager::reloadAsset(path)) {
-                        std::cout << "Hot reloaded asset: " << path << std::endl;
-                        anyReloaded = true;
-                    }
-                } catch (const std::exception& exception) {
-                    fileWatcher.markDirty(path);
-                    std::cerr << "failed to hot reload asset '" << path << "': " << exception.what() << "\n";
+            for (const auto& changedPath : changedFiles) {
+                // One implementation of importing, shared with the editor's Reimport
+                // button (19D). The watcher's job ends at "something changed"; what
+                // that means is AssetReimport's, and force=false is what makes a touch
+                // (mtime moved, bytes did not) cost nothing.
+                const AssetReimport::Result reimported =
+                    AssetReimport::reimport(assetDatabase, changedPath, false);
+
+                if (!reimported.errorMessage.empty()) {
+                    fileWatcher.markDirty(changedPath);
+                    std::cerr << "failed to hot reload asset '" << changedPath << "': "
+                              << reimported.errorMessage << "\n";
+                    continue;
+                }
+                if (reimported.reloaded) {
+                    std::cout << "Hot reloaded asset: " << reimported.assetKey << std::endl;
+                    anyReloaded = true;
                 }
             }
 
-            assetRegistry.scan("assets");
+            assetDatabase.scan("assets");
             if (anyReloaded) {
                 reloadDescriptors = true;
             }

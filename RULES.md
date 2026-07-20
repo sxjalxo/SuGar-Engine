@@ -22,17 +22,17 @@ Before implementing any feature, ask:
 
 Examples:
 
-✔ Hot Reload
+- Hot Reload
 
-✔ Time Travel
+- Time Travel
 
-✔ Better Editor
+- Better Editor
 
-✔ Better Debugging
+- Better Debugging
 
-✔ Better Profiling
+- Better Profiling
 
-✔ Better Error Messages
+- Better Error Messages
 
 If the answer is "no", reconsider whether the feature belongs now.
 
@@ -73,15 +73,15 @@ Use external libraries only for solved infrastructure problems.
 
 Examples:
 
-✔ Window creation
+- Window creation
 
-✔ Image decoding
+- Image decoding
 
-✔ Audio devices
+- Audio devices
 
-✔ glTF parsing
+- glTF parsing
 
-✔ Mathematics
+- Mathematics
 
 Do NOT use libraries that replace SuGar Engine's architecture.
 
@@ -161,17 +161,17 @@ Prefer testing invariants.
 
 Examples:
 
-✔ Scheduler
+- Scheduler
 
-✔ Physics
+- Physics
 
-✔ Serializer
+- Serializer
 
-✔ Registry
+- Registry
 
-✔ Snapshot Storage
+- Snapshot Storage
 
-✔ Command History
+- Command History
 
 ## Rule 9a — A test must be shown to fail
 
@@ -181,8 +181,8 @@ Before trusting a new test, break the thing it covers — temporarily — and co
 test fails, and fails *because of that*:
 
 ```
-neuter AnimationSystem::update  → Animation test FAIL   ✔ measures behavior
-delete a field from the writer  → Serializer test FAIL  ✔ measures behavior
+neuter AnimationSystem::update  → Animation test FAIL   [ok] measures behavior
+delete a field from the writer  → Serializer test FAIL  [ok] measures behavior
 ```
 
 A test that stays green through a deliberate break measures nothing; it merely
@@ -205,8 +205,8 @@ A round trip proves the writer and the reader **agree with each other**. It does
 prove either is *right* — both can drift together and stay mutually compatible:
 
 ```
-write → read → compare      ✔ writer and parser agree
-                            ✘ says nothing about the format itself
+write → read → compare      [ok] writer and parser agree
+                            [no] says nothing about the format itself
 ```
 
 Where an external contract exists — an on-disk format, a wire protocol, a file
@@ -217,8 +217,8 @@ Deriving the expectation by running the new code and capturing its output proves
 that the code equals itself:
 
 ```
-new impl → generate expected → compare against itself    ✘ circular
-old rules → hand-derive expected → compare              ✔ real evidence
+new impl → generate expected → compare against itself    [no] circular
+old rules → hand-derive expected → compare              [ok] real evidence
 ```
 
 Golden tests are deliberately brittle. That is the feature: the format then changes
@@ -267,13 +267,13 @@ Developer tools should preserve runtime state whenever possible.
 
 Examples:
 
-✔ Hot Reload
+- Hot Reload
 
-✔ Snapshot Restore
+- Snapshot Restore
 
-✔ Time Travel
+- Time Travel
 
-✔ Play/Edit
+- Play/Edit
 
 Avoid destroying and rebuilding state unless absolutely necessary.
 
@@ -444,9 +444,9 @@ Miss the second half and the failure is *silent*. Not a crash, not a dangling po
 the component round-trips perfectly, looks correct in the inspector, and does nothing.
 
 ```
-save   → "clip": "hero.gltf#Run"      ✔ serialized
-load   → "clip": "hero.gltf#Run"      ✔ deserialized
-play   → registry lookup misses       ✘ animation silently dead
+save   → "clip": "hero.gltf#Run"      [ok] serialized
+load   → "clip": "hero.gltf#Run"      [ok] deserialized
+play   → registry lookup misses       [no] animation silently dead
 ```
 
 This is exactly what happened in 17C.2: clips and skins were registered as a side
@@ -510,7 +510,7 @@ drift — the recomputation may be perfectly deterministic and its answer perfec
 correct. It is about the answer being *a different correct one*, because the input it
 was originally computed from is gone.
 
-This is why [docs/DESIGN_ANIMATION.md](docs/DESIGN_ANIMATION.md) makes an animation
+This is why `docs/DESIGN_ANIMATION.md` makes an animation
 transition authoritative while the identical-looking UI tween is derived, why animation
 events need explicit "already fired" state, and why a navigation agent's `status` must
 record that a plan was *attempted* — otherwise a stuck agent re-plans forever and a

@@ -40,8 +40,41 @@ std::string lowerExtension(const std::string& path) {
     return ext;
 }
 
+// tinygltf is built with image decoding disabled (tiny_gltf_impl.cpp) so it cannot
+// clash with the engine's own stb_image and stays parse-only. Without a loader
+// callback, though, tinygltf treats an image it cannot decode as a *parse failure* --
+// so a glTF that merely *references* an external texture failed to load at all, taking
+// its nodes, materials and animations with it. Found in 19C, by the first test to feed
+// the loader a model with a base-colour texture.
+//
+// This callback is the honest expression of the intent: URIs are recorded, pixels are
+// not decoded here. Texture bytes come from the cooker, through the texture key.
+bool skipImageDecode(
+    tinygltf::Image* image,
+    const int imageIndex,
+    std::string* error,
+    std::string* warning,
+    int requiredWidth,
+    int requiredHeight,
+    const unsigned char* bytes,
+    int size,
+    void* userData
+) {
+    (void)image;
+    (void)imageIndex;
+    (void)error;
+    (void)warning;
+    (void)requiredWidth;
+    (void)requiredHeight;
+    (void)bytes;
+    (void)size;
+    (void)userData;
+    return true;
+}
+
 void loadTinyModel(const std::string& path, tinygltf::Model& model) {
     tinygltf::TinyGLTF loader;
+    loader.SetImageLoader(skipImageDecode, nullptr);
     std::string error;
     std::string warning;
 

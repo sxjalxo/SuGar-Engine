@@ -5,7 +5,7 @@
 #include <string>
 #include <unordered_map>
 #include <vector>
-#include "assets/AssetRegistry.h"
+#include "assets/AssetDatabase.h"
 #include "assets/FileWatcher.h"
 #include "audio/AudioEngine.h"
 #include <optional>
@@ -110,7 +110,7 @@ private:
     VkCommandPool commandPool = VK_NULL_HANDLE;
     std::vector<VkCommandBuffer> commandBuffers;
     std::unique_ptr<Renderer> renderer;
-    AssetRegistry assetRegistry;
+    AssetDatabase assetDatabase;
     FileWatcher fileWatcher;
     Registry registry;
     std::vector<Light> sceneLights;

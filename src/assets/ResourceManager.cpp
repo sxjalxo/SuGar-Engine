@@ -1,117 +1,62 @@
 #include "assets/ResourceManager.h"
-#include "assets/GltfLoader.h"
-#include "assets/ModelLoader.h"
+#include "assets/AssetCooker.h"
+#include "assets/AssetPath.h"
+#include "assets/CookedAsset.h"
 #include "audio/AudioClip.h"
-#include "audio/AudioLoader.h"
 #include "rendering/Mesh.h"
 #include "rendering/Texture.h"
 #include <algorithm>
 #include <chrono>
 #include <cctype>
-#include <cstring>
 #include <filesystem>
 #include <stdexcept>
 #include <thread>
 #include <vector>
 
-#include "stb_image.h"
-
 namespace {
 constexpr int ReloadRetryCount = 10;
 constexpr auto ReloadRetryDelay = std::chrono::milliseconds(50);
 
-// Picks the geometry loader by file extension. glTF parsing is fully isolated in
-// GltfLoader; everything else falls back to the OBJ loader. A "<path>#<index>"
-// key selects a single glTF mesh by index (used by the model->ECS importer so
-// each node references its own sub-mesh and prefabs round-trip).
-void loadMeshGeometry(const std::string& key, Mesh& mesh) {
-    std::string filePath = key;
-    int meshIndex = -1;
-
-    const size_t hash = key.find('#');
-    if (hash != std::string::npos) {
-        filePath = key.substr(0, hash);
-        try {
-            meshIndex = std::stoi(key.substr(hash + 1));
-        } catch (...) {
-            meshIndex = -1;
-        }
-    }
-
-    std::string extension = std::filesystem::path(filePath).extension().string();
-    std::transform(extension.begin(), extension.end(), extension.begin(), [](unsigned char character) {
-        return static_cast<char>(std::tolower(character));
-    });
-
-    if (extension == ".gltf" || extension == ".glb") {
-        if (meshIndex >= 0) {
-            GltfLoader::loadGltfMesh(filePath, meshIndex, mesh);
-        } else {
-            GltfLoader::loadGltf(filePath, mesh);
-        }
-    } else {
-        ModelLoader::loadObj(filePath, mesh);
+// Runtime = f(cooked) (docs/DESIGN_ASSET_PIPELINE.md). Every load below goes through
+// the cooker and reads a cooked artifact; no source format is parsed here any more.
+// That is what 19B bought: this file used to know about glTF mesh indices, OBJ and
+// stb_image, so every new source format touched the runtime load path. Cooking happens
+// on demand, which keeps the editor's "drop a file in and it appears" behaviour and
+// means no developer has to know a cook step exists (Rule 1).
+void loadCookedMesh(const std::string& key, Mesh& mesh) {
+    std::string errorMessage;
+    const std::string cooked = AssetCooker::ensureCooked(key, errorMessage);
+    if (cooked.empty() || !CookedAsset::readMesh(cooked, mesh, errorMessage)) {
+        throw std::runtime_error(errorMessage);
     }
 }
 
-std::string sanitizeResourceKey(std::string key) {
-    std::replace(key.begin(), key.end(), '\\', '/');
-    while (key.rfind("./", 0) == 0) {
-        key.erase(0, 2);
-    }
-
-    const size_t assetsRoot = key.find("assets/");
-    if (assetsRoot != std::string::npos) {
-        key = key.substr(assetsRoot);
-    }
-
-    std::transform(
-        key.begin(),
-        key.end(),
-        key.begin(),
-        [](unsigned char character) {
-            return static_cast<char>(std::tolower(character));
-        }
-    );
-    return key;
-}
-
-// Decodes an image file to tightly-packed RGBA8 pixels via stb_image.
-// Cross-platform (replaces the previous Windows-only WIC path).
-bool decodeTextureFile(
-    const std::string& path,
+bool loadCookedTexture(
+    const std::string& key,
     std::vector<uint8_t>& pixels,
     uint32_t& width,
     uint32_t& height,
     std::string& errorMessage
 ) {
-    int decodedWidth = 0;
-    int decodedHeight = 0;
-    int sourceChannels = 0;
-
-    // Force 4 channels (RGBA8) so the upload path matches VK_FORMAT_R8G8B8A8_SRGB.
-    stbi_uc* data = stbi_load(path.c_str(), &decodedWidth, &decodedHeight, &sourceChannels, STBI_rgb_alpha);
-    if (data == nullptr) {
-        const char* reason = stbi_failure_reason();
-        errorMessage = "failed to load texture file: " + path +
-                       (reason != nullptr ? std::string(" (") + reason + ")" : std::string());
+    const std::string cooked = AssetCooker::ensureCooked(key, errorMessage);
+    if (cooked.empty()) {
         return false;
     }
 
-    if (decodedWidth <= 0 || decodedHeight <= 0) {
-        stbi_image_free(data);
-        errorMessage = "texture file has an invalid size: " + path;
+    CookedAsset::CookedTexture texture;
+    if (!CookedAsset::readTexture(cooked, texture, errorMessage)) {
         return false;
     }
 
-    const size_t pixelBytes = static_cast<size_t>(decodedWidth) * static_cast<size_t>(decodedHeight) * 4;
-    pixels.resize(pixelBytes);
-    std::memcpy(pixels.data(), data, pixelBytes);
-    stbi_image_free(data);
-
-    width = static_cast<uint32_t>(decodedWidth);
-    height = static_cast<uint32_t>(decodedHeight);
+    pixels = std::move(texture.pixels);
+    width = texture.width;
+    height = texture.height;
     return true;
+}
+
+bool loadCookedAudio(const std::string& key, AudioClip& clip, std::string& errorMessage) {
+    const std::string cooked = AssetCooker::ensureCooked(key, errorMessage);
+    return !cooked.empty() && CookedAsset::readAudio(cooked, clip, errorMessage);
 }
 
 template <typename Loader>
@@ -178,7 +123,7 @@ AssetHandle ResourceManager::loadMesh(const std::string& path) {
     }
 
     auto mesh = std::make_shared<Mesh>();
-    loadMeshGeometry(cacheKey, *mesh);
+    loadCookedMesh(cacheKey, *mesh);
     mesh->setResourceKey(cacheKey);
     mesh->upload(device, physicalDevice, commandPool, graphicsQueue);
 
@@ -209,7 +154,7 @@ AssetHandle ResourceManager::loadTexture(const std::string& path) {
         uint32_t height = 0;
         std::string errorMessage;
 
-        if (!decodeTextureFile(cacheKey, pixels, width, height, errorMessage)) {
+        if (!loadCookedTexture(cacheKey, pixels, width, height, errorMessage)) {
             throw std::runtime_error(errorMessage);
         }
 
@@ -241,8 +186,9 @@ AssetHandle ResourceManager::loadAudioClip(const std::string& path) {
     }
 
     auto clip = std::make_shared<AudioClip>();
-    if (!AudioLoader::loadClip(cacheKey, *clip)) {
-        throw std::runtime_error("failed to load audio clip: " + cacheKey);
+    std::string audioError;
+    if (!loadCookedAudio(cacheKey, *clip, audioError)) {
+        throw std::runtime_error(audioError);
     }
     clip->setResourceKey(cacheKey);
 
@@ -258,11 +204,16 @@ bool ResourceManager::reloadAsset(const std::string& path) {
     const std::string cacheKey = normalizeResourceKey(path);
     bool reloaded = false;
 
+    // The source changed, so every artifact cooked from it is stale. Dropping the
+    // cooker's memo is what makes the reload below cook the new bytes instead of
+    // handing back the artifact this process already verified.
+    AssetCooker::invalidate(cacheKey);
+
     const auto meshHandleIt = meshPathToHandle.find(cacheKey);
     if (meshHandleIt != meshPathToHandle.end()) {
         auto mesh = std::make_shared<Mesh>();
         retryTransientLoad([&]() {
-            loadMeshGeometry(path, *mesh);
+            loadCookedMesh(cacheKey, *mesh);
         });
         mesh->setResourceKey(cacheKey);
         mesh->upload(device, physicalDevice, commandPool, graphicsQueue);
@@ -295,7 +246,7 @@ bool ResourceManager::reloadAsset(const std::string& path) {
                 height = 0;
                 errorMessage.clear();
 
-                if (!decodeTextureFile(path, pixels, width, height, errorMessage)) {
+                if (!loadCookedTexture(cacheKey, pixels, width, height, errorMessage)) {
                     throw std::runtime_error(errorMessage);
                 }
             });
@@ -324,8 +275,9 @@ bool ResourceManager::reloadAsset(const std::string& path) {
     if (audioHandleIt != audioClipPathToHandle.end()) {
         auto clip = std::make_shared<AudioClip>();
         retryTransientLoad([&]() {
-            if (!AudioLoader::loadClip(cacheKey, *clip)) {
-                throw std::runtime_error("failed to reload audio clip: " + cacheKey);
+            std::string audioError;
+            if (!loadCookedAudio(cacheKey, *clip, audioError)) {
+                throw std::runtime_error(audioError);
             }
         });
         clip->setResourceKey(cacheKey);
@@ -460,19 +412,22 @@ void ResourceManager::shutdown() {
 }
 
 std::string ResourceManager::normalizeResourceKey(const std::string& path) {
+    // Built-ins are not files and have no path to normalize.
     if (path.rfind("builtin://", 0) == 0) {
-        return sanitizeResourceKey(path);
+        std::string key = path;
+        std::transform(key.begin(), key.end(), key.begin(), [](unsigned char character) {
+            return static_cast<char>(std::tolower(character));
+        });
+        return key;
     }
 
-    const std::filesystem::path resourcePath(path);
-    std::error_code errorCode;
-    const std::filesystem::path normalizedPath = std::filesystem::weakly_canonical(resourcePath, errorCode);
-
-    if (!errorCode && !normalizedPath.empty()) {
-        return sanitizeResourceKey(normalizedPath.string());
-    }
-
-    return sanitizeResourceKey(path);
+    // One identity function for the whole engine (19A). This used to run
+    // weakly_canonical, which resolved symlinks and so made a resource key depend on
+    // machine-local filesystem layout -- the same objection that rejected a GUID
+    // database. AssetPath anchors absolute paths at "assets/" without touching the
+    // filesystem, so nothing is lost.
+    const std::string key = AssetPath::normalize(path);
+    return key.empty() ? path : key;
 }
 
 void ResourceManager::ensureInitialized() {
