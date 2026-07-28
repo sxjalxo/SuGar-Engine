@@ -3701,6 +3701,95 @@ inline bool testComponentAccess() {
     return ok;
 }
 
+// Hostile / corrupt input must fail cleanly, never crash or read out of bounds. Pins the
+// three deserializers that take attacker-reachable bytes: the scene JSON parser, the glTF
+// importer, and the cooked (.sgc) container reader. A regression here is a security bug,
+// not a feature bug -- keep it in the gate.
+inline bool testMalformedInput() {
+    bool ok = true;
+
+    // (1) Deeply nested scene JSON must not overflow the stack. Before the depth guard
+    // this crashed uncatchably (EXCEPTION_STACK_OVERFLOW) on Windows.
+    {
+        std::string bomb(20000, '[');
+        Registry registry;
+        std::vector<Light> lights;
+        const bool loaded = SceneSerializer::loadFromString(registry, lights, bomb);
+        ok &= !loaded; // rejected, and -- the point -- we are still running to check it
+    }
+
+    // (2) A glTF whose accessor runs past its buffer must be refused, not read OOB.
+    // count=1,000,000 VEC3 floats (12 MB) backed by a 12-byte buffer.
+    {
+        const char* gltf =
+            "{\"asset\":{\"version\":\"2.0\"},"
+            "\"buffers\":[{\"byteLength\":12,"
+            "\"uri\":\"data:application/octet-stream;base64,AAAAAAAAAAAAAAAA\"}],"
+            "\"bufferViews\":[{\"buffer\":0,\"byteOffset\":0,\"byteLength\":12}],"
+            "\"accessors\":[{\"bufferView\":0,\"componentType\":5126,\"count\":1000000,\"type\":\"VEC3\"}],"
+            "\"meshes\":[{\"primitives\":[{\"attributes\":{\"POSITION\":0}}]}],"
+            "\"nodes\":[{\"mesh\":0}],\"scenes\":[{\"nodes\":[0]}]}";
+
+        const std::filesystem::path path =
+            std::filesystem::temp_directory_path() / "sugar_malformed_test.gltf";
+        {
+            std::ofstream out(path, std::ios::binary | std::ios::trunc);
+            out << gltf;
+        }
+
+        bool threwOrEmpty = false;
+        try {
+            Mesh mesh;
+            GltfLoader::loadGltf(path.string(), mesh);
+            threwOrEmpty = mesh.vertices.empty(); // no geometry produced from the bad accessor
+        } catch (const std::exception&) {
+            threwOrEmpty = true; // refused cleanly -- the win
+        }
+        ok &= threwOrEmpty;
+        std::error_code ec;
+        std::filesystem::remove(path, ec);
+    }
+
+    // (3) A cooked mesh whose header claims 0xFFFFFFFF vertices must be rejected without
+    // a 200 GB reserve(). Hand-build the container so the test owns the exact bytes.
+    {
+        auto putU32 = [](std::vector<uint8_t>& b, uint32_t v) {
+            for (int i = 0; i < 4; i++) b.push_back(static_cast<uint8_t>((v >> (i * 8)) & 0xFF));
+        };
+        auto putU64 = [](std::vector<uint8_t>& b, uint64_t v) {
+            for (int i = 0; i < 8; i++) b.push_back(static_cast<uint8_t>((v >> (i * 8)) & 0xFF));
+        };
+
+        std::vector<uint8_t> payload;
+        putU32(payload, 0xFFFFFFFFu); // vertexCount: absurd
+        putU32(payload, 0u);          // indexCount
+
+        std::vector<uint8_t> bytes = { 'S', 'G', 'C', 'A' };
+        putU32(bytes, CookedAsset::FormatVersion);
+        putU32(bytes, AssetHash::CookerVersion);
+        putU32(bytes, static_cast<uint32_t>(CookedAsset::CookedKind::Mesh));
+        putU64(bytes, static_cast<uint64_t>(payload.size()));
+        bytes.insert(bytes.end(), payload.begin(), payload.end());
+
+        const std::filesystem::path path =
+            std::filesystem::temp_directory_path() / "sugar_malformed_test.sgc";
+        {
+            std::ofstream out(path, std::ios::binary | std::ios::trunc);
+            out.write(reinterpret_cast<const char*>(bytes.data()),
+                      static_cast<std::streamsize>(bytes.size()));
+        }
+
+        Mesh mesh;
+        std::string errorMessage;
+        const bool read = CookedAsset::readMesh(path.string(), mesh, errorMessage);
+        ok &= !read; // rejected as truncated, no huge allocation, still running
+        std::error_code ec;
+        std::filesystem::remove(path, ec);
+    }
+
+    return ok;
+}
+
 // Returns {passed, total}. Prints the per-test table as a side effect.
 inline std::pair<int, int> run() {
     using TestFn = bool (*)();
@@ -3735,6 +3824,7 @@ inline std::pair<int, int> run() {
         { "SceneLoad",        testSceneLoad },
         { "BehaviorRegistry", testBehaviorRegistry },
         { "RegistryGraph",    testRegistryGraph },
+        { "MalformedInput",   testMalformedInput },
     };
 
     int passed = 0;

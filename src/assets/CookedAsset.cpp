@@ -1,5 +1,6 @@
 #include "assets/CookedAsset.h"
 
+#include <cstdint>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
@@ -12,6 +13,11 @@
 namespace {
 
 constexpr char Magic[4] = { 'S', 'G', 'C', 'A' };
+
+// On-disk size of one Vertex as writeMesh emits it (3+3+2 floats, 4 joint bytes,
+// 4 weight floats). The single source of truth for both the writer's reserve and the
+// reader's bounds check -- if the vertex layout changes, this must change with it.
+constexpr size_t VertexDiskSize = 52;
 
 // --- little-endian scalar writers -------------------------------------------
 // Explicit byte order, never a struct dump: the cooked bytes must be a function of the
@@ -171,7 +177,7 @@ bool readFile(
 
 bool CookedAsset::writeMesh(const std::string& path, const Mesh& mesh, std::string& errorMessage) {
     std::vector<uint8_t> payload;
-    payload.reserve(mesh.vertices.size() * 52 + mesh.indices.size() * 4 + 8);
+    payload.reserve(mesh.vertices.size() * VertexDiskSize + mesh.indices.size() * 4 + 8);
 
     putU32(payload, static_cast<uint32_t>(mesh.vertices.size()));
     putU32(payload, static_cast<uint32_t>(mesh.indices.size()));
@@ -201,6 +207,18 @@ bool CookedAsset::readMesh(const std::string& path, Mesh& out, std::string& erro
     Reader reader{ payload, 0 };
     const uint32_t vertexCount = reader.u32();
     const uint32_t indexCount = reader.u32();
+
+    // Validate the declared counts against what the payload can actually hold BEFORE
+    // reserving. Counts are attacker-reachable (a truncated or tampered .sgc), and a bare
+    // reserve() on a ~4-billion count throws std::length_error -> std::terminate. With a
+    // fixed vertex size and 4-byte indices, the exact payload length is known.
+    const uint64_t declared =
+        static_cast<uint64_t>(vertexCount) * VertexDiskSize +
+        static_cast<uint64_t>(indexCount) * 4u;
+    if (!reader.ok || declared != static_cast<uint64_t>(payload.size() - reader.position)) {
+        errorMessage = "cooked mesh payload is truncated: " + path;
+        return false;
+    }
 
     out.vertices.clear();
     out.indices.clear();
@@ -256,8 +274,15 @@ bool CookedAsset::readTexture(const std::string& path, CookedTexture& out, std::
     Reader reader{ payload, 0 };
     out.width = reader.u32();
     out.height = reader.u32();
-    const size_t expected = static_cast<size_t>(out.width) * out.height * 4;
-    if (!reader.ok || payload.size() - reader.position != expected) {
+    // Overflow-safe: width*height*4 as size_t can wrap on a hostile header and let a tiny
+    // payload masquerade as a huge texture, then overread at GPU upload. Compute in u64.
+    const uint64_t pixelCount = static_cast<uint64_t>(out.width) * static_cast<uint64_t>(out.height);
+    if (!reader.ok || pixelCount > UINT64_MAX / 4) {
+        errorMessage = "cooked texture payload is truncated: " + path;
+        return false;
+    }
+    const uint64_t expected = pixelCount * 4;
+    if (expected != static_cast<uint64_t>(payload.size() - reader.position)) {
         errorMessage = "cooked texture payload is truncated: " + path;
         return false;
     }
@@ -300,7 +325,17 @@ bool CookedAsset::readAudio(const std::string& path, AudioClip& out, std::string
         return false;
     }
 
-    const uint64_t sampleCount = frameCount * channels;
+    // Derive the sample count from the payload rather than trusting frameCount: a tampered
+    // frameCount*channels can overflow u64 and desync the buffer, and reserve() on a huge
+    // count throws. The remaining bytes are ground truth; frameCount must agree with them.
+    const uint64_t remainingBytes = static_cast<uint64_t>(payload.size() - reader.position);
+    const uint64_t sampleCount = remainingBytes / 4;
+    if (remainingBytes % 4 != 0 || channels == 0 ||
+        sampleCount % channels != 0 || sampleCount / channels != frameCount) {
+        errorMessage = "cooked audio payload is truncated: " + path;
+        return false;
+    }
+
     out.samples.clear();
     out.samples.reserve(static_cast<size_t>(sampleCount));
     for (uint64_t i = 0; i < sampleCount && reader.ok; i++) {

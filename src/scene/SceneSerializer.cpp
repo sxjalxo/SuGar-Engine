@@ -62,9 +62,16 @@ private:
 
         const char current = text[position];
         if (current == '{') {
+            // Depth-guard the mutual recursion (parseValue -> parseObject -> parseValue).
+            // A scene file with thousands of nested '{'/'[' would otherwise overflow the
+            // stack -- an uncatchable crash on Windows -- and scene.json is loaded at
+            // startup and on every hot reload, so a corrupt or hostile file must fail
+            // cleanly, not take the process down. Legit scenes nest only a handful deep.
+            const DepthGuard guard(*this);
             return parseObject();
         }
         if (current == '[') {
+            const DepthGuard guard(*this);
             return parseArray();
         }
         if (current == '"') {
@@ -247,8 +254,28 @@ private:
         position++;
     }
 
+    // Bounds the parser's stack use against nested containers. 256 is far beyond any
+    // hand-authored scene (root -> entities -> components -> a vec is ~5 deep) yet small
+    // enough that the recursion cannot exhaust the stack.
+    static constexpr int MaxDepth = 256;
+
+    // RAII: increments on descent into an object/array, decrements on the way out (also
+    // on the exception path, so a throw mid-parse leaves the counter consistent).
+    struct DepthGuard {
+        explicit DepthGuard(JsonParser& parser) : owner(parser) {
+            if (++owner.depth > MaxDepth) {
+                throw std::runtime_error("scene JSON is nested too deeply.");
+            }
+        }
+        ~DepthGuard() { --owner.depth; }
+        DepthGuard(const DepthGuard&) = delete;
+        DepthGuard& operator=(const DepthGuard&) = delete;
+        JsonParser& owner;
+    };
+
     const std::string& text;
     size_t position = 0;
+    int depth = 0;
 };
 
 const JsonValue& requireObjectField(

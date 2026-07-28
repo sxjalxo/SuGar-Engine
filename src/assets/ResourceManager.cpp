@@ -414,10 +414,16 @@ void ResourceManager::shutdown() {
 std::string ResourceManager::normalizeResourceKey(const std::string& path) {
     // Built-ins are not files and have no path to normalize.
     if (path.rfind("builtin://", 0) == 0) {
+        // ASCII-only fold, not std::tolower: the ambient locale must never decide a key's
+        // spelling (tr_TR folds 'I' to a dotless 'i'). Same rule AssetPath::normalize
+        // follows -- one lowering discipline across the whole engine.
         std::string key = path;
-        std::transform(key.begin(), key.end(), key.begin(), [](unsigned char character) {
-            return static_cast<char>(std::tolower(character));
-        });
+        for (char& character : key) {
+            const unsigned char value = static_cast<unsigned char>(character);
+            if (value >= 'A' && value <= 'Z') {
+                character = static_cast<char>(value - 'A' + 'a');
+            }
+        }
         return key;
     }
 

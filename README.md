@@ -351,7 +351,7 @@ and exits nonzero if any fail, so it drops straight into CI:
 
 ```powershell
 $env:SUGAR_VALIDATE = "1"; build\Release\SuGarEngine.exe; $env:SUGAR_VALIDATE = ""
-# ... [validate] === 26/26 checks passed, 0 failure(s) ===
+# ... [validate] === 37/37 checks passed, 0 failure(s) ===
 ```
 
 Benchmarks are intentionally excluded — they're measurements, not pass/fail gates

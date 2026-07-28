@@ -22,6 +22,7 @@
 #include <cstdint>
 #include <cstring>
 #include <filesystem>
+#include <limits>
 #include <stdexcept>
 #include <unordered_map>
 #include <vector>
@@ -89,6 +90,63 @@ void loadTinyModel(const std::string& path, tinygltf::Model& model) {
     }
 }
 
+// Resolves accessor -> bufferView -> buffer and verifies the full range every element
+// occupies lies inside the buffer. tinygltf parses the JSON structure but does NOT
+// cross-validate that an accessor's byteOffset/count actually fit its buffer, so a
+// malformed or hostile glTF can point an accessor past the end of its data. Every reader
+// below goes through this; on any failure the accessor is refused rather than read out of
+// bounds. `elementBytes` is how many bytes the caller reads from each element's start.
+bool validateAccessorSpan(
+    const tinygltf::Model& model,
+    const tinygltf::Accessor& accessor,
+    size_t elementBytes,
+    const unsigned char*& base,
+    size_t& stride
+) {
+    base = nullptr;
+    stride = 0;
+    if (accessor.bufferView < 0 || accessor.bufferView >= static_cast<int>(model.bufferViews.size())) {
+        return false;
+    }
+    const tinygltf::BufferView& view = model.bufferViews[accessor.bufferView];
+    if (view.buffer < 0 || view.buffer >= static_cast<int>(model.buffers.size())) {
+        return false;
+    }
+    const tinygltf::Buffer& buffer = model.buffers[view.buffer];
+    const int byteStride = accessor.ByteStride(view);
+    if (byteStride <= 0 || elementBytes == 0) {
+        return false;
+    }
+    stride = static_cast<size_t>(byteStride);
+
+    const size_t count = accessor.count;
+    if (count == 0) {
+        return true; // valid but empty; caller reads nothing
+    }
+
+    // byteOffset fields are size_t in tinygltf; their sum can overflow on a hostile file.
+    if (view.byteOffset > std::numeric_limits<size_t>::max() - accessor.byteOffset) {
+        return false;
+    }
+    const size_t start = view.byteOffset + accessor.byteOffset;
+    if (start > buffer.data.size()) {
+        return false;
+    }
+
+    // Every read stays within [start, buffer end). Written so no intermediate overflows:
+    // the last element begins at start + (count-1)*stride and reads elementBytes there.
+    const size_t available = buffer.data.size() - start;
+    if (elementBytes > available) {
+        return false;
+    }
+    if (count - 1 > (available - elementBytes) / stride) {
+        return false;
+    }
+
+    base = buffer.data.data() + start;
+    return true;
+}
+
 // Reads a float-typed accessor (e.g. VEC2/VEC3) into a flat float array.
 // Returns the number of components per element (2 or 3), or 0 if missing.
 int readFloatAccessor(const tinygltf::Model& model, int accessorIndex, std::vector<float>& out, size_t& count) {
@@ -103,19 +161,21 @@ int readFloatAccessor(const tinygltf::Model& model, int accessorIndex, std::vect
         return 0;
     }
 
-    const tinygltf::BufferView& view = model.bufferViews[accessor.bufferView];
-    const tinygltf::Buffer& buffer = model.buffers[view.buffer];
     const int components = tinygltf::GetNumComponentsInType(static_cast<uint32_t>(accessor.type));
-    const int stride = accessor.ByteStride(view);
-    if (components <= 0 || stride <= 0) {
+    if (components <= 0) {
         return 0;
     }
 
-    const unsigned char* base = buffer.data.data() + view.byteOffset + accessor.byteOffset;
+    const unsigned char* base = nullptr;
+    size_t stride = 0;
+    if (!validateAccessorSpan(model, accessor, static_cast<size_t>(components) * sizeof(float), base, stride)) {
+        return 0;
+    }
+
     count = accessor.count;
     out.resize(count * static_cast<size_t>(components));
     for (size_t i = 0; i < count; i++) {
-        const unsigned char* element = base + i * static_cast<size_t>(stride);
+        const unsigned char* element = base + i * stride;
         for (int c = 0; c < components; c++) {
             float value = 0.0f;
             std::memcpy(&value, element + c * sizeof(float), sizeof(float));
@@ -139,11 +199,8 @@ int readUIntAccessor(const tinygltf::Model& model, int accessorIndex, std::vecto
     if (accessor.bufferView < 0) {
         return 0;
     }
-    const tinygltf::BufferView& view = model.bufferViews[accessor.bufferView];
-    const tinygltf::Buffer& buffer = model.buffers[view.buffer];
     const int components = tinygltf::GetNumComponentsInType(static_cast<uint32_t>(accessor.type));
-    const int stride = accessor.ByteStride(view);
-    if (components <= 0 || stride <= 0) {
+    if (components <= 0) {
         return 0;
     }
 
@@ -155,11 +212,16 @@ int readUIntAccessor(const tinygltf::Model& model, int accessorIndex, std::vecto
         default: return 0; // signed/float joint indices are not a thing; refuse it
     }
 
-    const unsigned char* base = buffer.data.data() + view.byteOffset + accessor.byteOffset;
+    const unsigned char* base = nullptr;
+    size_t stride = 0;
+    if (!validateAccessorSpan(model, accessor, static_cast<size_t>(components) * componentSize, base, stride)) {
+        return 0;
+    }
+
     count = accessor.count;
     out.resize(count * static_cast<size_t>(components));
     for (size_t i = 0; i < count; i++) {
-        const unsigned char* element = base + i * static_cast<size_t>(stride);
+        const unsigned char* element = base + i * stride;
         for (int c = 0; c < components; c++) {
             uint32_t value = 0;
             std::memcpy(&value, element + c * componentSize, componentSize);
@@ -169,34 +231,52 @@ int readUIntAccessor(const tinygltf::Model& model, int accessorIndex, std::vecto
     return components;
 }
 
-void readIndices(const tinygltf::Model& model, int accessorIndex, uint32_t vertexOffset, std::vector<uint32_t>& out) {
+void readIndices(const tinygltf::Model& model, int accessorIndex, uint32_t vertexOffset, uint32_t vertexCount, std::vector<uint32_t>& out) {
+    if (accessorIndex < 0 || accessorIndex >= static_cast<int>(model.accessors.size())) {
+        throw std::runtime_error("glTF index accessor is out of range.");
+    }
     const tinygltf::Accessor& accessor = model.accessors[accessorIndex];
-    const tinygltf::BufferView& view = model.bufferViews[accessor.bufferView];
-    const tinygltf::Buffer& buffer = model.buffers[view.buffer];
-    const int stride = accessor.ByteStride(view);
-    const unsigned char* base = buffer.data.data() + view.byteOffset + accessor.byteOffset;
+
+    size_t componentSize = 0;
+    switch (accessor.componentType) {
+        case TINYGLTF_COMPONENT_TYPE_UNSIGNED_INT:   componentSize = 4; break;
+        case TINYGLTF_COMPONENT_TYPE_UNSIGNED_SHORT: componentSize = 2; break;
+        case TINYGLTF_COMPONENT_TYPE_UNSIGNED_BYTE:  componentSize = 1; break;
+        default:
+            throw std::runtime_error("unsupported glTF index component type.");
+    }
+
+    const unsigned char* base = nullptr;
+    size_t stride = 0;
+    if (!validateAccessorSpan(model, accessor, componentSize, base, stride)) {
+        throw std::runtime_error("glTF index accessor runs past its buffer.");
+    }
 
     for (size_t i = 0; i < accessor.count; i++) {
-        const unsigned char* element = base + i * static_cast<size_t>(stride);
+        const unsigned char* element = base + i * stride;
         uint32_t index = 0;
-        switch (accessor.componentType) {
-            case TINYGLTF_COMPONENT_TYPE_UNSIGNED_INT: {
+        switch (componentSize) {
+            case 4: {
                 uint32_t value = 0;
                 std::memcpy(&value, element, sizeof(uint32_t));
                 index = value;
                 break;
             }
-            case TINYGLTF_COMPONENT_TYPE_UNSIGNED_SHORT: {
+            case 2: {
                 uint16_t value = 0;
                 std::memcpy(&value, element, sizeof(uint16_t));
                 index = value;
                 break;
             }
-            case TINYGLTF_COMPONENT_TYPE_UNSIGNED_BYTE:
+            default:
                 index = *element;
                 break;
-            default:
-                throw std::runtime_error("unsupported glTF index component type.");
+        }
+        // An index that points past this primitive's own vertices would become an
+        // out-of-range vertex fetch on the GPU (device lost, or worse on drivers without
+        // robust access). Reject it here where the count is known.
+        if (index >= vertexCount) {
+            throw std::runtime_error("glTF index references a vertex outside the primitive.");
         }
         out.push_back(vertexOffset + index);
     }
@@ -296,7 +376,7 @@ void appendPrimitive(const tinygltf::Model& model, const tinygltf::Primitive& pr
     }
 
     if (primitive.indices >= 0) {
-        readIndices(model, primitive.indices, vertexOffset, mesh.indices);
+        readIndices(model, primitive.indices, vertexOffset, static_cast<uint32_t>(positionCount), mesh.indices);
     } else {
         for (uint32_t i = 0; i < positionCount; i++) {
             mesh.indices.push_back(vertexOffset + i);
