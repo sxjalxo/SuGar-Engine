@@ -56,3 +56,8 @@ Thumbs.db
 # concept, not a build-system one, and deleting /build/ should not look like the
 # only reason it is ignored.
 /build/assetcache/
+
+# Standalone export output (Phase 20). A package is fully reproducible from source via
+# SUGAR_PACKAGE=1 -- cooked artifacts + manifest + copied scenes -- so it is build
+# output, never committed. Under /build/ already; named for the same reason the cache is.
+/build/package/

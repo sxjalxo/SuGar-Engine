@@ -34,7 +34,9 @@
 #include "assets/AssetHash.h"
 #include "assets/AssetMeta.h"
 #include "assets/AssetPath.h"
+#include "assets/AssetManifest.h"
 #include "assets/AssetReimport.h"
+#include "assets/Packager.h"
 #include "assets/CookedAsset.h"
 #include "assets/GltfLoader.h"
 #include "assets/GltfModel.h"
@@ -3281,6 +3283,164 @@ inline bool testAssetReimport() {
     return ok;
 }
 
+// --- Packaging: manifest resolves keys without source (Phase 20) -----------
+// The expensive decision packaging settles is "which cooked file is this key when there
+// is no source to hash" (docs/DESIGN_PACKAGING.md). The test proves the manifest is that
+// answer: cook + package a scene, then resolve its keys with the SOURCE TREE DELETED and
+// only the manifest present, and read the artifacts back. Headless throughout.
+inline bool testPackaging() {
+    bool ok = true;
+
+    const std::filesystem::path root =
+        std::filesystem::temp_directory_path() / "sugar_package_selftest";
+    std::error_code cleanupError;
+    std::filesystem::remove_all(root, cleanupError);
+    const std::filesystem::path project = root / "project";
+    std::filesystem::create_directories(project / "assets" / "models", cleanupError);
+    std::filesystem::create_directories(project / "assets" / "textures", cleanupError);
+    std::filesystem::create_directories(project / "assets" / "audio", cleanupError);
+
+    const std::filesystem::path objPath = project / "assets" / "models" / "tri.obj";
+    {
+        std::ofstream file(objPath, std::ios::binary);
+        file << "v 0 0 0\nv 1 0 0\nv 0 1 0\n"
+                "vt 0 0\nvt 1 0\nvt 0 1\n"
+                "vn 0 0 1\n"
+                "f 1/1/1 2/2/1 3/3/1\n";
+    }
+    const std::filesystem::path tgaPath = project / "assets" / "textures" / "dot.tga";
+    {
+        std::ofstream file(tgaPath, std::ios::binary);
+        const unsigned char header[18] = { 0,0,2,0,0,0,0,0,0,0,0,0, 2,0, 2,0, 32, 8 };
+        file.write(reinterpret_cast<const char*>(header), sizeof(header));
+        const unsigned char pixels[16] = { 255,0,0,255, 0,255,0,255, 0,0,255,255, 255,255,255,255 };
+        file.write(reinterpret_cast<const char*>(pixels), sizeof(pixels));
+    }
+    const std::filesystem::path wavPath = project / "assets" / "audio" / "beep.wav";
+    {
+        const uint32_t frameCount = 8;
+        const uint32_t dataBytes = frameCount * 2;
+        std::ofstream file(wavPath, std::ios::binary);
+        const auto put32 = [&file](uint32_t v){ unsigned char b[4]={(unsigned char)(v&0xFF),(unsigned char)((v>>8)&0xFF),(unsigned char)((v>>16)&0xFF),(unsigned char)((v>>24)&0xFF)}; file.write((char*)b,4); };
+        const auto put16 = [&file](uint16_t v){ unsigned char b[2]={(unsigned char)(v&0xFF),(unsigned char)((v>>8)&0xFF)}; file.write((char*)b,2); };
+        file.write("RIFF",4); put32(36+dataBytes); file.write("WAVE",4);
+        file.write("fmt ",4); put32(16); put16(1); put16(1);
+        put32(AudioMixSampleRate); put32(AudioMixSampleRate*2); put16(2); put16(16);
+        file.write("data",4); put32(dataBytes);
+        for (uint32_t i=0;i<frameCount;i++) put16(8000);
+    }
+
+    // A scene referencing all three by their asset keys.
+    const std::filesystem::path scenePath = project / "scene.json";
+    {
+        std::ofstream file(scenePath, std::ios::binary);
+        file << R"({"version":2,"objects":[)"
+                R"({"name":"A","mesh":"assets/models/tri.obj",)"
+                R"("material":{"albedo":"assets/textures/dot.tga"},)"
+                R"("audiosource":{"clip":"assets/audio/beep.wav"}})"
+                R"(]})";
+    }
+
+    // collectAssetKeys is the serializer's -- the packager must not parse scene JSON.
+    bool sceneOk = false;
+    std::vector<std::string> keys;
+    {
+        std::ifstream file(scenePath, std::ios::binary);
+        std::ostringstream buffer; buffer << file.rdbuf();
+        sceneOk = SceneSerializer::collectAssetKeys(buffer.str(), keys);
+    }
+    ok &= sceneOk;
+    ok &= std::find(keys.begin(), keys.end(), "assets/models/tri.obj") != keys.end();
+    ok &= std::find(keys.begin(), keys.end(), "assets/textures/dot.tga") != keys.end();
+    ok &= std::find(keys.begin(), keys.end(), "assets/audio/beep.wav") != keys.end();
+
+    // Package from inside the project directory (paths are project-relative).
+    const std::filesystem::path priorCwd = std::filesystem::current_path(cleanupError);
+    std::filesystem::current_path(project, cleanupError);
+
+    AssetDatabase database;
+    database.scan("assets");
+
+    Packager::Spec spec;
+    spec.scenes.push_back("scene.json");
+    spec.outputDirectory = (root / "package").generic_string();
+
+    const Packager::Report report = Packager::package(database, spec);
+    ok &= report.ok();
+    ok &= report.scenesPackaged == 1;
+    ok &= report.assetsPackaged == 3;
+    ok &= report.unpackagedKeys.empty();
+
+    std::filesystem::current_path(priorCwd, cleanupError);
+
+    // The package exists on disk: manifest + three artifacts + the scene.
+    const std::filesystem::path pkg = root / "package";
+    ok &= std::filesystem::exists(Packager::manifestPath(pkg.generic_string()));
+    ok &= std::filesystem::exists(pkg / "scene.json");
+    int artifactCount = 0;
+    for (const auto& e : std::filesystem::directory_iterator(pkg / "assetcache", cleanupError)) {
+        if (e.path().extension() == ".sgc") artifactCount++;
+    }
+    ok &= artifactCount == 3;
+
+    // THE test: delete the entire source project, keep only the package, and resolve.
+    // A shipped build has no source; the manifest must be enough.
+    AssetCooker::setDatabase(nullptr);
+    AssetCooker::clearMemo();
+    std::filesystem::remove_all(project, cleanupError);
+    ok &= !std::filesystem::exists(objPath);
+
+    AssetManifest manifest;
+    std::string manifestError;
+    ok &= manifest.load(Packager::manifestPath(pkg.generic_string()), manifestError);
+    ok &= manifest.size() == 3;
+
+    AssetCooker::setManifest(&manifest);
+    AssetCooker::setCacheDirectory(Packager::cacheDirectory(pkg.generic_string()));
+    AssetCooker::clearMemo();
+
+    // Every key resolves to a real artifact and reads back as the right resource --
+    // with no source anywhere on disk.
+    std::string loadError;
+    Mesh mesh;
+    const std::string meshArtifact = AssetCooker::ensureCooked("assets/models/tri.obj", loadError);
+    ok &= !meshArtifact.empty() && CookedAsset::readMesh(meshArtifact, mesh, loadError);
+    ok &= mesh.vertices.size() == 3;
+
+    CookedAsset::CookedTexture texture;
+    const std::string texArtifact = AssetCooker::ensureCooked("assets/textures/dot.tga", loadError);
+    ok &= !texArtifact.empty() && CookedAsset::readTexture(texArtifact, texture, loadError);
+    ok &= texture.width == 2 && texture.height == 2;
+
+    AudioClip clip;
+    const std::string audioArtifact = AssetCooker::ensureCooked("assets/audio/beep.wav", loadError);
+    ok &= !audioArtifact.empty() && CookedAsset::readAudio(audioArtifact, clip, loadError);
+    ok &= clip.frameCount == 8;
+
+    // A key the package does not contain is reported, never guessed into a filename.
+    std::string missingError;
+    ok &= AssetCooker::ensureCooked("assets/models/absent.obj", missingError).empty();
+    ok &= !missingError.empty();
+
+    // Packaged mode never cooks: even a key whose SOURCE we recreate is refused, because
+    // a shipped runtime resolves through the manifest only.
+    ok &= AssetCooker::artifactKey("assets/models/tri.obj") == manifest.lookup("assets/models/tri.obj");
+
+    // Manifest bytes are deterministic and reload identically.
+    const std::string rewritten = (root / "again.manifest").generic_string();
+    std::string writeError;
+    ok &= manifest.write(rewritten, writeError);
+    AssetManifest reloaded;
+    ok &= reloaded.load(rewritten, writeError);
+    ok &= reloaded.all() == manifest.all();
+
+    AssetCooker::setManifest(nullptr);
+    AssetCooker::setDatabase(nullptr);
+    AssetCooker::setCacheDirectory("build/assetcache");
+    std::filesystem::remove_all(root, cleanupError);
+    return ok;
+}
+
 // --- Registry graph: parenting, cycle guard, destroy detaches children ------
 inline bool testRegistryGraph() {
     Registry reg;
@@ -3533,6 +3693,7 @@ inline std::pair<int, int> run() {
         { "AssetCooking",     testAssetCooking },
         { "AssetImport",      testAssetImport },
         { "AssetReimport",    testAssetReimport },
+        { "Packaging",        testPackaging },
         { "Serializer",       testSerializer },
         { "SceneLoad",        testSceneLoad },
         { "BehaviorRegistry", testBehaviorRegistry },

@@ -4,7 +4,9 @@
 #include "animation/AnimationSystem.h"
 #include "navigation/NavigationSystem.h"
 #include "assets/AssetCooker.h"
+#include "assets/AssetManifest.h"
 #include "assets/AssetReimport.h"
+#include "assets/Packager.h"
 #include "assets/ResourceManager.h"
 #include "audio/AudioSystem.h"
 #include "SelfTests.h"
@@ -208,6 +210,35 @@ void SuGarApp::run() {
         std::exit(errors.empty() ? 0 : 1);
     }
 
+    // Opt-in headless standalone export (Phase 20, docs/DESIGN_PACKAGING.md): cook the
+    // assets a scene reaches, write the manifest, copy the scene, and exit. No window,
+    // no Vulkan device -- the same reason the cooker is device-free. Runtime binaries
+    // are the build pipeline's job (the next M3 item), so this gate ships assets +
+    // scene + manifest; a real release adds the exe and DLLs to Spec::binaries.
+    if (std::getenv("SUGAR_PACKAGE") != nullptr) {
+        AssetDatabase database;
+        database.scan("assets");
+
+        Packager::Spec spec;
+        if (std::filesystem::exists("scene.json")) {
+            spec.scenes.push_back("scene.json");
+        }
+        spec.outputDirectory = "build/package";
+
+        const Packager::Report report = Packager::package(database, spec);
+        for (const std::string& key : report.unpackagedKeys) {
+            std::cerr << "[package] not cooked (source-backed): " << key << "\n";
+        }
+        for (const std::string& error : report.errors) {
+            std::cerr << "[package] " << error << "\n";
+        }
+        std::cout << "[package] " << report.scenesPackaged << " scene(s), "
+                  << report.assetsPackaged << " cooked asset(s), "
+                  << report.sourceModelsCopied << " source model(s), "
+                  << report.binariesCopied << " binaries -> " << spec.outputDirectory << "\n";
+        std::exit(report.ok() ? 0 : 1);
+    }
+
     // Single confidence entry point: run every correctness gate and exit nonzero
     // if any failed (for CI). Deliberately only aggregates real pass/fail gates —
     // self-tests + stress; benchmarks are measurements, not gates, so they stay
@@ -300,14 +331,33 @@ void SuGarApp::initScene() {
     drawList.items.clear();
     drawList.lights.clear();
     orbitParent = INVALID_ENTITY;
-    assetDatabase.scan("assets");
-    fileWatcher.watch("assets");
 
-    // The cooker takes cook keys from the catalog when it has them (19B). Set
-    // before the first load below: every mesh/texture/audio load now goes through
-    // a cooked artifact, and without the catalog the cooker would re-hash each
-    // source file itself -- same answer, more I/O.
-    AssetCooker::setDatabase(&assetDatabase);
+    // Packaged vs editor is decided by one fact: does a manifest sit next to the
+    // executable (docs/DESIGN_PACKAGING.md)? If so, this is a shipped build with no
+    // source tree -- resolve every asset key through the manifest and cook nothing.
+    // Otherwise it is the editor: scan the source assets and cook on demand.
+    const std::string manifestFile = Packager::manifestPath(".");
+    if (AssetManifest::existsAt(manifestFile)) {
+        std::string manifestError;
+        if (packageManifest.load(manifestFile, manifestError)) {
+            AssetCooker::setManifest(&packageManifest);
+            AssetCooker::setCacheDirectory(Packager::cacheDirectory("."));
+            std::cout << "[package] running from manifest: " << packageManifest.size()
+                      << " asset(s)\n";
+        } else {
+            std::cerr << "[package] " << manifestError << " -- falling back to source\n";
+        }
+    }
+
+    if (!AssetCooker::hasManifest()) {
+        assetDatabase.scan("assets");
+        fileWatcher.watch("assets");
+        // The cooker takes cook keys from the catalog when it has them (19B). Set
+        // before the first load below: every mesh/texture/audio load now goes through
+        // a cooked artifact, and without the catalog the cooker would re-hash each
+        // source file itself -- same answer, more I/O.
+        AssetCooker::setDatabase(&assetDatabase);
+    }
 
     const std::string cubeMeshPath = resolveAssetPath("assets/models/textured_cube.obj");
     const std::string checkerTexturePath = resolveAssetPath("assets/textures/checker.png");

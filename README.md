@@ -40,8 +40,10 @@ no longer parses a source format, and `SUGAR_COOK=1` cooks the whole tree headle
 (database owns the edges, cooker discovers them), and 19D adds the editor surface —
 import settings, Reimport, dependencies and catalog problems — where the editor
 *requests* an import through the same path the file watcher uses and never runs one
-itself. **Phase 19 is complete**; packaging and the build pipeline remain. Then packaging and the build pipeline — the last
-two items of the M3 floor.
+itself. **Phase 19 is complete.** **Packaging is under way** (Phase 20): a standalone
+export is the cooked artifacts a scene can reach plus a manifest that lets the shipped
+runtime resolve asset keys with no source tree (`SUGAR_PACKAGE=1`, headless). The build
+pipeline is the last item of the M3 floor.
 
 > Positioning: *"A Vulkan engine designed for instant iteration and debuggable
 > systems — not just rendering power."* Open-source, dev-led, aimed at indie devs.
@@ -474,7 +476,10 @@ Milestone summary:
   keys, `.meta` import sidecars, a deterministic cooker whose cache is content-hash
   keyed, a runtime that reads only cooked artifacts, a dependency graph the database
   owns, and an editor surface that *requests* imports through the same path the file
-  watcher uses. Packaging and the Build pipeline remain. Explicitly *not* required: AAA
+  watcher uses. **Packaging is under way** (Phase 20): a standalone export is the cooked artifacts a
+  scene can reach plus a manifest that lets the shipped runtime resolve asset keys with
+  no source tree (`SUGAR_PACKAGE=1`, headless). The Build pipeline remains. Explicitly
+  *not* required: AAA
   rendering, networking, console ports, world streaming, marketplace.
   * **The platform's missing half:** SuGar has a complete *developer* UI (Dear ImGui,
     permanently reserved for tooling) but intentionally **no *player* UI**. Runtime UI

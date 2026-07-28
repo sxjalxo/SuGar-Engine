@@ -120,7 +120,7 @@ yes/no answer. It is bounded on both sides:
 | **Animation** (skeletal, blend trees, state machines) | done (Phase 17) |
 | **Navigation** | done (Phase 18) |
 | **Asset Pipeline** (maturity: cooking, importers) | done (Phase 19) |
-| **Packaging / standalone export** | not started |
+| **Packaging / standalone export** | in progress (Phase 20) |
 | **Build Pipeline** | not started |
 
 **Explicitly *not* required for M3** (so the milestone can't expand forever):
@@ -910,10 +910,37 @@ this unblock building a game at all?*):
      determinism and staleness; shown to fail (Rule 9a) by dropping the case fold in
      `AssetPath` and by dropping the content hash from the cook key.
 
-6. **Next: packaging, then build pipeline.** The last two items in the M3 Required
-   floor — and both are now mostly *walks over things Phase 19 built*: packaging copies
-   the cooked artifacts the catalog says are reachable (cook keys + dependency edges),
-   and the build pipeline is `SUGAR_COOK=1` followed by a build.
+6. **Packaging — IN PROGRESS (Phase 20).** The fifth M3 item, and the first that
+   *consumes* the asset pipeline rather than extending it. Design record written before
+   code, as always: `docs/DESIGN_PACKAGING.md`.
+   - **The expensive decision: the manifest.** In the editor the runtime names a cooked
+     file by hashing the *source*; a shipped build has no source. So the packager records
+     `resourceKey -> artifact hash` at package time, and the runtime resolves through
+     that manifest and cooks nothing. `Runtime = f(cooked)` finally reaches a
+     double-clickable build. Not a new identity (Rule 21a/21b): same keys, same hashes,
+     reproducible from source, so `AssetCooker` gained a packaged mode, not a second
+     naming scheme. Dev-vs-packaged is decided by one fact — does a manifest sit next to
+     the executable — with no build flag.
+   - **A package is a graph walk, not a copy of `assets/`.** Roots are the shipped scenes;
+     `SceneSerializer::collectAssetKeys` (the serializer owns the format, so it lists the
+     asset fields) yields referenced keys; the 19C dependency edges close over them
+     (a model reaches its textures); each is cooked and copied, its `key -> hash` added
+     to the manifest. Derived navmesh keys are excluded (rebuilt on load); built-ins are
+     excluded (procedural).
+   - **Honest gap (Rule 18):** animation clips and skins are still reconstituted from
+     source, so a package using them ships the source model too, and the packager
+     *reports* every such key rather than dropping it (Rule 13). Cooked clip/skin
+     artifacts wait on a dogfooded game exercising them.
+   - `AssetManifest` is Core (a headless text map). `Packager` is Engine (drives the
+     cooker), headless under `SUGAR_PACKAGE=1`. `ResourceManager` is unchanged — it
+     never learns whether an artifact came from source or a manifest.
+   - Self-test `Packaging`: cook + package a scene, then **delete the whole source tree**
+     and resolve every key from the manifest alone, reading the artifacts back. Shown to
+     fail (Rule 9a) by making packaged mode ignore the manifest, and by dropping the
+     `albedo` texture field from `collectAssetKeys`.
+
+7. **Then the build pipeline.** The last M3 item: `cook -> package -> done`, headless and
+   device-free, now that both steps exist as gates.
 
 ---
 

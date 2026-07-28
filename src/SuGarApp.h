@@ -6,6 +6,7 @@
 #include <unordered_map>
 #include <vector>
 #include "assets/AssetDatabase.h"
+#include "assets/AssetManifest.h"
 #include "assets/FileWatcher.h"
 #include "audio/AudioEngine.h"
 #include <optional>
@@ -112,6 +113,11 @@ private:
     std::unique_ptr<Renderer> renderer;
     AssetDatabase assetDatabase;
     FileWatcher fileWatcher;
+
+    // Populated only in a packaged build (a manifest sits next to the executable). It
+    // outlives the AssetCooker pointer that references it, so it is a member, not a
+    // local (docs/DESIGN_PACKAGING.md).
+    AssetManifest packageManifest;
     Registry registry;
     std::vector<Light> sceneLights;
     DrawList drawList;

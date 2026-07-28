@@ -18,6 +18,14 @@ public:
     static std::string saveToString(const Registry& registry, const std::vector<Light>& lights);
     static bool loadFromString(Registry& registry, std::vector<Light>& lights, const std::string& text);
 
+    // Every asset key a scene references: mesh, material albedo texture, audio/animation
+    // clip, skinned-mesh skin, and prefab. Packaging (Phase 20, docs/DESIGN_PACKAGING.md)
+    // walks these to decide what a shipped build must contain. The serializer owns the
+    // scene format, so it is the one place that knows which fields are asset references
+    // -- the packager never parses scene JSON itself. Returns false on malformed input;
+    // keys are appended (not cleared) so a caller can accumulate across several scenes.
+    static bool collectAssetKeys(const std::string& sceneText, std::vector<std::string>& outKeys);
+
     // Restores a snapshot by *patching component data into the existing entities*
     // instead of destroying and recreating them (Phase 14A). Entities are matched
     // by serialization order (sorted entity id), so entity ids are preserved and

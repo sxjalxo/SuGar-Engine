@@ -130,6 +130,8 @@ add_library(SuGarCore SHARED
     src/assets/AssetMeta.cpp
     src/assets/AssetDatabase.h
     src/assets/AssetDatabase.cpp
+    src/assets/AssetManifest.h
+    src/assets/AssetManifest.cpp
     src/rendering/Material.h
 )
 
@@ -182,6 +184,8 @@ add_executable(SuGarEngine
     src/assets/AssetCooker.h
     src/assets/AssetReimport.cpp
     src/assets/AssetReimport.h
+    src/assets/Packager.cpp
+    src/assets/Packager.h
     src/assets/CookedAsset.cpp
     src/assets/CookedAsset.h
     src/assets/FileWatcher.cpp

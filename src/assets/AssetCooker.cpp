@@ -7,6 +7,7 @@
 
 #include "assets/AssetDatabase.h"
 #include "assets/AssetHash.h"
+#include "assets/AssetManifest.h"
 #include "assets/AssetMeta.h"
 #include "assets/AssetPath.h"
 #include "assets/CookedAsset.h"
@@ -22,6 +23,7 @@ namespace {
 
 std::string cacheDirectoryPath = "build/assetcache";
 AssetDatabase* catalog = nullptr;
+const AssetManifest* manifest = nullptr;
 
 // Keys whose artifact this process already produced or verified. Purely a speed memo:
 // deleting it costs a hash and a stat, never correctness, which is why invalidate() is
@@ -259,7 +261,23 @@ void AssetCooker::setDatabase(AssetDatabase* database) {
     ensuredArtifacts.clear();
 }
 
+void AssetCooker::setManifest(const AssetManifest* newManifest) {
+    manifest = newManifest;
+    ensuredArtifacts.clear();
+}
+
+bool AssetCooker::hasManifest() {
+    return manifest != nullptr;
+}
+
 uint64_t AssetCooker::artifactKey(const std::string& resourceKey) {
+    // Packaged mode: the source is gone, so the artifact name was recorded at package
+    // time (docs/DESIGN_PACKAGING.md). Look it up rather than hashing a file that is not
+    // there. A key the manifest does not list returns 0 -- reported, never guessed.
+    if (manifest != nullptr) {
+        return manifest->lookup(resourceKey);
+    }
+
     const std::string pathPart = AssetPath::pathOf(resourceKey);
     if (pathPart.empty()) {
         return 0;
@@ -294,7 +312,9 @@ std::string AssetCooker::ensureCooked(const std::string& resourceKey, std::strin
 
     const uint64_t key = artifactKey(resourceKey);
     if (key == 0) {
-        errorMessage = "no readable source for asset: " + resourceKey;
+        errorMessage = manifest != nullptr
+            ? "asset not in package manifest: " + resourceKey
+            : "no readable source for asset: " + resourceKey;
         return std::string();
     }
 
@@ -304,6 +324,14 @@ std::string AssetCooker::ensureCooked(const std::string& resourceKey, std::strin
         // current: source bytes, .meta and cooker version all fed the name.
         ensuredArtifacts[resourceKey] = key;
         return cooked;
+    }
+
+    // Packaged mode never cooks: a shipped build has no source and no parsing
+    // libraries' worth of reason to. A manifest key whose artifact is missing is a
+    // broken package, reported rather than papered over by re-deriving from source.
+    if (manifest != nullptr) {
+        errorMessage = "packaged artifact missing for asset: " + resourceKey;
+        return std::string();
     }
 
     const std::string sourcePath = sourcePathFor(pathPart);

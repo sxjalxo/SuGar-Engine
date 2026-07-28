@@ -5,6 +5,7 @@
 #include <vector>
 
 class AssetDatabase;
+class AssetManifest;
 
 // Source formats -> cooked artifacts (docs/DESIGN_ASSET_PIPELINE.md, Phase 19B).
 //
@@ -32,6 +33,14 @@ public:
     // asset's content hash and .meta). Without it the cooker still works -- it hashes
     // the file itself -- so a tool or a test can cook a tree it never scanned.
     static void setDatabase(AssetDatabase* database);
+
+    // Puts the cooker in packaged mode (docs/DESIGN_PACKAGING.md, Phase 20). A shipped
+    // build has no source to hash, so `artifactKey` resolves through this manifest and
+    // `ensureCooked` returns the artifact WITHOUT cooking -- it never parses a source
+    // format, because in a package there is none. Pass nullptr to return to editor mode
+    // (resolve by hashing source). Owns nothing: the manifest outlives the pointer.
+    static void setManifest(const AssetManifest* manifest);
+    static bool hasManifest();
 
     // The artifact identity for a resource key, sub-selector included:
     //   H(entry cook key, sub)

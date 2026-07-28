@@ -268,6 +268,12 @@ see `docs/DESIGN_ASSET_PIPELINE.md`.
 - `AssetReimport` — the one implementation of "this asset changed, bring everything back
   in line". The file watcher and the editor's Reimport button both call it; they differ
   only in the `force` flag. The editor must never import by another route.
+- `AssetManifest` — `resourceKey -> artifact hash`, written at package time, read by a
+  shipped runtime so it resolves keys with no source tree (docs/DESIGN_PACKAGING.md).
+  Core, headless, no format dependencies.
+- `Packager` — the standalone export: reachability walk over scenes + dependency edges,
+  cook, copy, write the manifest. Engine layer, headless (`SUGAR_PACKAGE=1`).
+  `ResourceManager` never learns a package exists.
 
 The first four are Core. `CookedAsset` and `AssetCooker` are Engine-layer, because
 cooking needs the parsing libraries Rule 15 keeps out of Core and produces

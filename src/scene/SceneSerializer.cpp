@@ -1807,6 +1807,50 @@ bool SceneSerializer::patchFromString(Registry& registry, std::vector<Light>& li
     return patchSceneFromText(registry, lights, text);
 }
 
+bool SceneSerializer::collectAssetKeys(const std::string& sceneText, std::vector<std::string>& outKeys) {
+    // Field names that hold an asset key. Kept next to the writers/readers on purpose:
+    // this list is part of the scene format, so it lives where the format lives. "albedo"
+    // is the material's base-colour texture; "clip" covers both audio and animation
+    // players; "skinnedmesh" is a skin key; "prefab" pulls in a nested scene fragment.
+    // Derived references (navmesh, animation-state graph) are excluded: they are not
+    // source-file-backed, so a package has nothing to ship for them.
+    static const char* const assetFields[] = { "mesh", "albedo", "clip", "skinnedmesh", "prefab" };
+
+    // A recursive walk of the parsed tree rather than a field-by-field reader: a scene
+    // and a prefab differ in shape but not in which field names name assets, so one walk
+    // handles both and stays right as new component blocks are added, as long as they
+    // reuse these field names for asset references.
+    std::function<void(const JsonValue&)> visit = [&](const JsonValue& value) {
+        if (value.type == JsonValue::Type::Array) {
+            for (const JsonValue& element : value.array) {
+                visit(element);
+            }
+            return;
+        }
+        if (value.type != JsonValue::Type::Object) {
+            return;
+        }
+        for (const auto& member : value.object) {
+            const bool isAssetField =
+                std::find_if(std::begin(assetFields), std::end(assetFields),
+                             [&](const char* field) { return member.first == field; }) !=
+                std::end(assetFields);
+            if (isAssetField && member.second.type == JsonValue::Type::String &&
+                !member.second.string.empty()) {
+                outKeys.push_back(member.second.string);
+            }
+            visit(member.second);
+        }
+    };
+
+    try {
+        visit(JsonParser(sceneText).parse());
+    } catch (...) {
+        return false;
+    }
+    return true;
+}
+
 std::string SceneSerializer::savePrefabToString(const Registry& registry, Entity root) {
     try {
         if (!registry.transforms.has(root)) {
