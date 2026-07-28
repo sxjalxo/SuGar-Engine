@@ -261,7 +261,11 @@ see `docs/DESIGN_ASSET_PIPELINE.md`.
   cooker can parse a source format, so the cooker reports edges here.
 
 - `CookedAsset` — the `.sgc` container and the cooked payload layouts (mesh, texture,
-  audio). Explicit little-endian scalars, never struct dumps.
+  audio). Explicit little-endian scalars, never struct dumps. The reader trusts the
+  payload length, not the header's claimed counts: element counts and `width·height` are
+  validated against — or derived from — the actual payload size before any allocation, so a
+  truncated or tampered container fails cleanly instead of driving a huge `reserve()`
+  (throws → terminates) or overflowing a size calc before GPU upload (2026-07-28 hardening).
 - `AssetCooker` — source formats to cooked artifacts, and the `build/assetcache`
   directory. The **only** place glTF/OBJ/image/audio decoding happens; `ResourceManager`
   reads cooked artifacts and nothing else. Run headless with `SUGAR_COOK=1`.
@@ -311,6 +315,15 @@ tinygltf objects never survive loading. Concretely (Phase 17B): animation channe
 and samplers become `AnimationClip` / `TransformTrack` inside `GltfLoader.cpp`, and
 glTF node *indices* are resolved to node *names* on the way out — no tinygltf type,
 and no glTF numbering, appears in any header or anywhere else in the engine.
+
+Bounds validation is SuGar's job, not tinygltf's (2026-07-28 hardening pass). tinygltf
+validates the *syntax* of the file; it does **not** cross-check that an accessor's
+`bufferView`/`buffer` indices are in range or that its `byteOffset + count·stride` fits
+the backing buffer. Every accessor read in `GltfLoader.cpp` therefore goes through
+`validateAccessorSpan` (overflow-safe) and refuses an out-of-range accessor rather than
+reading heap out of bounds; index values are also checked against the vertex count to keep
+malformed geometry off the GPU. Malformed models are a real surface — a developer imports
+third-party art at cook time. Pinned by the `MalformedInput` self-test.
 
 ---
 

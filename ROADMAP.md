@@ -964,6 +964,35 @@ this unblock building a game at all?*):
 without extending the engine.** Next: freeze the platform and dogfood (M4). On this
 completion, publish the Runtime UI design as a standalone article (see below).
 
+### Hardening pass — input trust boundary (2026-07-28)
+
+M3-complete, pre-dogfood: a QA/security sweep of the untrusted-input surface. Notable
+finding — the surviving defects were *all* at the boundary where external bytes enter
+(the deserializers), none in the deterministic engine logic, which needed no
+architectural change. Healthy distribution for software reaching a production baseline.
+
+- **scene.json — stack overflow.** The hand-rolled recursive JSON parser
+  (`SceneSerializer`) had no depth guard; a deeply nested file overflowed the stack — an
+  *uncatchable* `EXCEPTION_STACK_OVERFLOW` on Windows. scene.json sits on the runtime path
+  (startup + every hot reload), so this was the highest-priority item. Fixed with an RAII
+  `DepthGuard` (MaxDepth 256 — far above any real hierarchy, low enough to bound stack use).
+- **glTF — heap OOB reads.** The accessor readers trusted tinygltf to have validated
+  accessor → bufferView → buffer references and byte ranges; it validates *syntax*, not
+  semantic consistency between them. A malformed model read past its backing buffers.
+  Fixed with one overflow-safe `validateAccessorSpan`, routed through every accessor read,
+  plus an `index < vertexCount` check — that one protects the *renderer* from malformed
+  geometry, not the loader. glTF is a cook-time surface (a dev importing third-party art).
+- **cooked `.sgc` — reserve DoS + size overflow.** The container reader `reserve()`d on
+  attacker-controlled counts (`length_error` → `terminate`) and computed `width*height*4`
+  in a way that could overflow before GPU upload. Fixed by deriving every size from the
+  payload length — the authoritative fact — and validating before allocating.
+
+Made a **permanent regression, not a one-off fuzz**: the `MalformedInput` self-test is now
+part of the gate, so every `SUGAR_VALIDATE` run asserts a JSON bomb, an OOB-accessor glTF,
+and a bogus-count `.sgc` all fail cleanly. Count is now **37/37** (was 36). Robustness
+note in `docs/DESIGN_ASSET_PIPELINE.md`. Feature gap left open (not a security issue):
+sparse glTF accessors unsupported.
+
 ---
 
 ## Deferred / future

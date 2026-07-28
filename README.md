@@ -372,7 +372,7 @@ EntityIdRecycling, EntityQuery, SnapshotStorage, Physics, PhysicsBroadphase,
 SystemScheduler, ComponentAccess, SnapshotPatch, RuntimeUI, Animation,
 AnimationImport, Skinning, SkinImport, AnimationGraph, Navigation, NavMeshBake,
 NavAvoidance, ViewportOverlay, Serializer, SceneLoad, BehaviorRegistry,
-and RegistryGraph. A test that *throws* is reported as
+RegistryGraph, and MalformedInput. A test that *throws* is reported as
 `FAIL ... threw: <message>` and the run continues — one broken subsystem shouldn't
 hide the other fourteen results.
 
@@ -382,6 +382,14 @@ snapshots and time travel ride on, so it should only change on purpose. Round-tr
 tests can't cover this: they prove the writer and parser *agree*, and both can drift
 together. See [RULES.md](RULES.md) Rule 9a (a test must be shown to fail) and Rule 9b
 (round-trips are necessary, not sufficient).
+
+`MalformedInput` is the **input trust boundary** gate: it feeds hostile bytes to the
+three deserializers that take external input — a deeply nested JSON bomb (would overflow
+the parser stack), a glTF whose accessor runs past its buffer (would read out of bounds),
+and a cooked `.sgc` claiming an absurd element count (would abuse `reserve` / overflow a
+size calc). Each must be *rejected cleanly*, so malformed-input handling is a permanent
+regression, not an ad-hoc fuzz. Added in the 2026-07-28 hardening pass; see the robustness
+note in [docs/DESIGN_ASSET_PIPELINE.md](docs/DESIGN_ASSET_PIPELINE.md).
 
 RmlUi also has a separate headless integration smoke test for the engine-only view
 scaffold. It initialises RmlUi with FreeType, loads a bundled Lato font, creates a
