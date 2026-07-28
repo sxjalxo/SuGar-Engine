@@ -100,7 +100,7 @@ Time travel, snapshot system, query console, self-tests, native code hot reload,
 scheduler + architecture enforcement, in-place restore, stable entity recreation,
 uniform-grid physics broadphase, benchmark + stress harnesses. *(Detail in the appendix.)*
 
-### M3 — Engine Platform Complete  (IN PROGRESS)
+### M3 — Engine Platform Complete  (DONE)
 
 > **The platform is complete when a developer can build a typical indie game
 > without first extending the engine.**
@@ -120,8 +120,8 @@ yes/no answer. It is bounded on both sides:
 | **Animation** (skeletal, blend trees, state machines) | done (Phase 17) |
 | **Navigation** | done (Phase 18) |
 | **Asset Pipeline** (maturity: cooking, importers) | done (Phase 19) |
-| **Packaging / standalone export** | in progress (Phase 20) |
-| **Build Pipeline** | not started |
+| **Packaging / standalone export** | done (Phase 20) |
+| **Build Pipeline** | done (Phase 21) |
 
 **Explicitly *not* required for M3** (so the milestone can't expand forever):
 
@@ -939,8 +939,30 @@ this unblock building a game at all?*):
      fail (Rule 9a) by making packaged mode ignore the manifest, and by dropping the
      `albedo` texture field from `collectAssetKeys`.
 
-7. **Then the build pipeline.** The last M3 item: `cook -> package -> done`, headless and
-   device-free, now that both steps exist as gates.
+7. **Build pipeline — DONE (Phase 21). M3 COMPLETE.** The sixth and final floor item,
+   and the first that introduced *no new subsystem* — it orchestrates the headless gates
+   19 and 20 already built. `docs/DESIGN_BUILD_PIPELINE.md`.
+   - `scripts/build_release.ps1` (+ `.sh`): `cmake --build` (Release) then
+     `SUGAR_PACKAGE=1`. Device-free end to end, so it runs on a headless CI box.
+   - **Binaries close Phase 20's gap:** `Packager::collectRuntimeBinaries()` ships the
+     exe + its DLLs (enumerated, `*_live_*.dll` excluded), so a package is a runnable
+     standalone, not assets alone. The one bit of platform code (exe-path lookup) is
+     isolated in `Packager`.
+   - **Every build verifies:** packaging ends with `Packager::verify` — load the
+     manifest, put `AssetCooker` in packaged mode, resolve every key with no source or
+     database. `SUGAR_PACKAGE` exits nonzero if any key fails, so a broken package fails
+     the build loudly. Same invariant the Phase 20 self-test pins by deleting the source
+     tree, now enforced on every build, reusing the real runtime path (no second
+     "does it work?" implementation).
+   - Self-test `Packaging` extended: `verify()` passes on a good package and fails when
+     an artifact is deleted; shown to fail (Rule 9a) by making packaged `ensureCooked`
+     return a missing path instead of reporting. Also made `AnimationImport` /
+     `SkinImport` skip when their fixture is absent, so `SUGAR_VALIDATE` is
+     cwd-independent — the shipped exe passes it from the package directory.
+
+**M3 is complete: a developer can build a typical indie game and ship a standalone
+without extending the engine.** Next: freeze the platform and dogfood (M4). On this
+completion, publish the Runtime UI design as a standalone article (see below).
 
 ---
 

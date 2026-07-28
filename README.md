@@ -9,7 +9,7 @@ big engines. See [ROADMAP.md](ROADMAP.md) for the full vision and plan.
 
 ## Current Status
 
-**M1 + M2 done; M3 (Engine Platform Complete) in progress** ("the iteration engine")
+**M1 + M2 + M3 done — Engine Platform Complete** ("the iteration engine")
 
 The engine is a working runtime with a full editor on top: a clean **Edit → Play
 → Stop** cycle with snapshot/restore and a fixed-timestep loop; a behavior +
@@ -42,8 +42,11 @@ import settings, Reimport, dependencies and catalog problems — where the edito
 *requests* an import through the same path the file watcher uses and never runs one
 itself. **Phase 19 is complete.** **Packaging is under way** (Phase 20): a standalone
 export is the cooked artifacts a scene can reach plus a manifest that lets the shipped
-runtime resolve asset keys with no source tree (`SUGAR_PACKAGE=1`, headless). The build
-pipeline is the last item of the M3 floor.
+runtime resolve asset keys with no source tree (`SUGAR_PACKAGE=1`, headless). **The
+build pipeline is done** (Phase 21): `scripts/build_release.ps1` runs `cmake --build`
+then `SUGAR_PACKAGE`, producing a runnable, self-verified standalone with no GPU. **M3
+is complete** — build a typical indie game and ship it without extending the engine. Next
+is M4: dogfood real games.
 
 > Positioning: *"A Vulkan engine designed for instant iteration and debuggable
 > systems — not just rendering power."* Open-source, dev-led, aimed at indie devs.

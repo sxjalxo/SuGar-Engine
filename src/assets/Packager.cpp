@@ -13,6 +13,10 @@
 #include "assets/AssetPath.h"
 #include "scene/SceneSerializer.h"
 
+#ifdef _WIN32
+#include <windows.h>
+#endif
+
 namespace {
 
 std::string readFile(const std::string& path, bool& ok) {
@@ -63,6 +67,81 @@ bool copyInto(const std::string& sourcePath, const std::filesystem::path& destPa
 }
 
 } // namespace
+
+std::string Packager::executablePath() {
+#ifdef _WIN32
+    char buffer[MAX_PATH] = {};
+    const DWORD length = GetModuleFileNameA(nullptr, buffer, MAX_PATH);
+    if (length == 0 || length == MAX_PATH) {
+        return std::string();
+    }
+    return std::filesystem::path(buffer).generic_string();
+#else
+    // Non-Windows is not a shipping target yet (Rule 18). The build pipeline runs on
+    // the dev platform; a portable exe-path lookup lands when another OS does.
+    return std::string();
+#endif
+}
+
+std::vector<std::string> Packager::collectRuntimeBinaries() {
+    std::vector<std::string> binaries;
+    const std::string exe = executablePath();
+    if (exe.empty()) {
+        return binaries;
+    }
+    binaries.push_back(exe);
+
+    // Every DLL beside the executable, except the hot-reload live copies (the loader
+    // makes SuGarGame_live_*.dll each reload; those are transient, gitignored, and must
+    // never ship). Enumerated rather than hard-coded so a new engine DLL is picked up
+    // without editing packaging.
+    std::error_code error;
+    const std::filesystem::path exeDir = std::filesystem::path(exe).parent_path();
+    for (const auto& entry : std::filesystem::directory_iterator(exeDir, error)) {
+        if (error || !entry.is_regular_file()) {
+            continue;
+        }
+        const std::string name = entry.path().filename().string();
+        if (entry.path().extension() == ".dll" && name.find("_live_") == std::string::npos) {
+            binaries.push_back(entry.path().generic_string());
+        }
+    }
+    return binaries;
+}
+
+bool Packager::verify(const std::string& packageRoot, std::vector<std::string>& errors) {
+    AssetManifest manifest;
+    std::string manifestError;
+    if (!manifest.load(manifestPath(packageRoot), manifestError)) {
+        errors.push_back(manifestError);
+        return false;
+    }
+
+    // Resolve exactly as a shipped runtime does: packaged mode, no database, no source.
+    // Save and restore the cooker's globals -- verify may run in-process right after a
+    // package, and the editor must go back to source resolution afterward.
+    const std::string previousCache = AssetCooker::cacheDirectory();
+    AssetCooker::setManifest(&manifest);
+    AssetCooker::setCacheDirectory(cacheDirectory(packageRoot));
+    AssetCooker::clearMemo();
+
+    const size_t before = errors.size();
+    for (const auto& entry : manifest.all()) {
+        std::string resolveError;
+        // ensureCooked in packaged mode returns "" both for a key the manifest omits
+        // and for one whose artifact file is missing (a broken package), so a non-empty
+        // result already means "resolved to a real file on disk".
+        const std::string artifact = AssetCooker::ensureCooked(entry.first, resolveError);
+        if (artifact.empty()) {
+            errors.push_back("verify: " + resolveError);
+        }
+    }
+
+    AssetCooker::setManifest(nullptr);
+    AssetCooker::setCacheDirectory(previousCache);
+    AssetCooker::clearMemo();
+    return errors.size() == before;
+}
 
 std::string Packager::manifestPath(const std::string& packageRoot) {
     return packageRoot + "/assets.manifest";

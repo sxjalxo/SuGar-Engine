@@ -272,8 +272,10 @@ see `docs/DESIGN_ASSET_PIPELINE.md`.
   shipped runtime so it resolves keys with no source tree (docs/DESIGN_PACKAGING.md).
   Core, headless, no format dependencies.
 - `Packager` — the standalone export: reachability walk over scenes + dependency edges,
-  cook, copy, write the manifest. Engine layer, headless (`SUGAR_PACKAGE=1`).
-  `ResourceManager` never learns a package exists.
+  cook, copy, write the manifest, copy the exe + DLLs, and verify the result resolves
+  source-free. Engine layer, headless (`SUGAR_PACKAGE=1`). `ResourceManager` never learns
+  a package exists. `scripts/build_release.ps1` chains `cmake --build` + packaging into
+  the release pipeline (Phase 21, docs/DESIGN_BUILD_PIPELINE.md).
 
 The first four are Core. `CookedAsset` and `AssetCooker` are Engine-layer, because
 cooking needs the parsing libraries Rule 15 keeps out of Core and produces

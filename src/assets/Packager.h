@@ -63,6 +63,23 @@ public:
     // report; check `ok()`.
     static Report package(AssetDatabase& database, const Spec& spec);
 
+    // Verifies a package on disk the way a shipped runtime would: load its manifest, put
+    // the cooker in packaged mode, and resolve every key to a readable artifact -- with
+    // no source and no database (Phase 21, docs/DESIGN_BUILD_PIPELINE.md). This is the
+    // build pipeline's acceptance check: a package that verifies boots. Errors are
+    // appended; empty means the package is self-contained. Saves and restores the
+    // cooker's global state, so it is safe to call in-process.
+    static bool verify(const std::string& packageRoot, std::vector<std::string>& errors);
+
+    // The running executable and the DLLs beside it (excluding the hot-reload
+    // *_live_*.dll copies), for Spec::binaries. This is the piece Phase 20 deferred:
+    // with it, a package is a runnable standalone, not just assets. Platform code lives
+    // here so the rest of packaging stays headless and portable.
+    static std::vector<std::string> collectRuntimeBinaries();
+
+    // Full path to the running executable, or "" if it cannot be determined.
+    static std::string executablePath();
+
     // Where a shipped runtime looks for its manifest and cache, relative to the working
     // directory (which for a package is the executable's own directory). Shared by the
     // packager (where it writes) and the runtime (where it reads), so the two never

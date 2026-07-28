@@ -223,6 +223,9 @@ void SuGarApp::run() {
         if (std::filesystem::exists("scene.json")) {
             spec.scenes.push_back("scene.json");
         }
+        // Phase 21: ship the runtime too, so the package is a runnable standalone rather
+        // than assets alone. This is what Phase 20 deferred to the build pipeline.
+        spec.binaries = Packager::collectRuntimeBinaries();
         spec.outputDirectory = "build/package";
 
         const Packager::Report report = Packager::package(database, spec);
@@ -236,7 +239,21 @@ void SuGarApp::run() {
                   << report.assetsPackaged << " cooked asset(s), "
                   << report.sourceModelsCopied << " source model(s), "
                   << report.binariesCopied << " binaries -> " << spec.outputDirectory << "\n";
-        std::exit(report.ok() ? 0 : 1);
+
+        // Acceptance check: resolve the package the way the shipped exe will -- manifest
+        // only, no source. A package that does not verify is not shippable, so this
+        // gates the pipeline's exit code (docs/DESIGN_BUILD_PIPELINE.md).
+        bool verified = report.ok();
+        if (report.ok()) {
+            std::vector<std::string> verifyErrors;
+            verified = Packager::verify(spec.outputDirectory, verifyErrors);
+            for (const std::string& error : verifyErrors) {
+                std::cerr << "[package] " << error << "\n";
+            }
+            std::cout << "[package] verify: " << (verified ? "OK" : "FAILED")
+                      << " (resolved every manifest key with no source)\n";
+        }
+        std::exit(verified ? 0 : 1);
     }
 
     // Single confidence entry point: run every correctness gate and exit nonzero

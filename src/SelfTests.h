@@ -742,6 +742,14 @@ inline bool testAnimation() {
 // root, same as the editor.
 inline bool testAnimationImport() {
     const std::string path = "assets/models/AnimatedSpinner.gltf";
+    // Fixture-backed: needs the repo asset, which exists at the project root but not in
+    // a packaged build's directory. Absent fixture = skip, not fail -- the same honesty
+    // as ResourceManager being SKIPPED without a device. Real coverage still runs in dev
+    // and CI, which launch from the project root.
+    if (!std::filesystem::exists(path)) {
+        std::cerr << "[selftest] AnimationImport fixture absent, skipped: " << path << "\n";
+        return true;
+    }
     GltfModelData model;
     GltfLoader::loadModel(path, model); // throws on a missing/broken fixture -> FAIL
 
@@ -973,8 +981,15 @@ inline bool testSkinning() {
 // Parse-only (GltfLoader::loadModel touches no ResourceManager), so this stays
 // headless even though the fixture carries a mesh.
 inline bool testSkinImport() {
+    const std::string path = "assets/models/SkinnedBar.gltf";
+    // Fixture-backed; absent outside the project root (e.g. a packaged build). Skip
+    // rather than fail -- see testAnimationImport.
+    if (!std::filesystem::exists(path)) {
+        std::cerr << "[selftest] SkinImport fixture absent, skipped: " << path << "\n";
+        return true;
+    }
     GltfModelData model;
-    GltfLoader::loadModel("assets/models/SkinnedBar.gltf", model);
+    GltfLoader::loadModel(path, model);
 
     bool ok = model.skins.size() == 1 && model.nodes.size() == 3;
     if (!ok) {
@@ -3382,6 +3397,28 @@ inline bool testPackaging() {
         if (e.path().extension() == ".sgc") artifactCount++;
     }
     ok &= artifactCount == 3;
+
+    // The build pipeline's acceptance check (Phase 21): verify() loads the manifest and
+    // resolves every key the way the shipped exe will -- source-free -- and passes.
+    std::vector<std::string> verifyErrors;
+    ok &= Packager::verify(pkg.generic_string(), verifyErrors);
+    ok &= verifyErrors.empty();
+
+    // A package missing an artifact must NOT verify: delete one and confirm verify fails.
+    // (Restored afterwards so the resolution test below still has all three.)
+    std::string victimArtifact;
+    for (const auto& e : std::filesystem::directory_iterator(pkg / "assetcache", cleanupError)) {
+        if (e.path().extension() == ".sgc") { victimArtifact = e.path().generic_string(); break; }
+    }
+    const std::filesystem::path victimBackup = root / "victim.bak";
+    std::filesystem::copy_file(victimArtifact, victimBackup,
+                               std::filesystem::copy_options::overwrite_existing, cleanupError);
+    std::filesystem::remove(victimArtifact, cleanupError);
+    std::vector<std::string> brokenErrors;
+    ok &= !Packager::verify(pkg.generic_string(), brokenErrors);
+    ok &= !brokenErrors.empty();
+    std::filesystem::copy_file(victimBackup, victimArtifact,
+                               std::filesystem::copy_options::overwrite_existing, cleanupError);
 
     // THE test: delete the entire source project, keep only the package, and resolve.
     // A shipped build has no source; the manifest must be enough.
