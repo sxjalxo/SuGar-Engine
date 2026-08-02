@@ -286,6 +286,49 @@ cooking needs the parsing libraries Rule 15 keeps out of Core and produces
 `Mesh`/`Texture`/`AudioClip`. **All six are device-free**: cooking, CI and packaging must
 never need a Vulkan device.
 
+## CrashHandler (platform, executable-only)
+
+### Responsibility
+
+Capture a crash report on an unhandled exception. Explicitly *not* an engine subsystem —
+infrastructure, added pre-freeze (2026-07-28) because its payoff is in M4 dogfooding.
+
+### Scope
+
+Allowed:
+
+- Install `SetUnhandledExceptionFilter`; write a minidump (`.dmp`) + text report to
+  `./crashes/` with version/commit, OS/CPU/GPU, loaded scene/package, and a stack walk.
+- Depend on Windows platform APIs (`dbghelp`) — which is exactly why it lives in the
+  executable and **never** in `SuGarCore` (Rule 15 keeps Core free of platform code).
+
+Not allowed:
+
+- Any role in normal engine control flow. It is passive until a fault occurs.
+- Heap allocation inside the handler (the process may already be corrupt): context is held
+  in fixed buffers, the report is written with Win32 file APIs.
+- Cross-platform ownership: it is a no-op stub off Windows, not a portability layer.
+
+## M4 game-runtime additions (dogfood-forced)
+
+Landed during M4 Level 1 because a real game needed them; each is a small boundary feature,
+not a subsystem. See `ROADMAP.md` friction log and the games' `Level 1\Report.md`.
+
+- **`SaveData` (Core).** A `key=value` persistence store for game state that outlives a run
+  (high scores, progress). In Core so game behaviours, which link only `SuGarCore`, can call
+  it. Not the engine's real persistence (scene serialization) — deliberately minimal.
+- **`UILabelComponent` (ECS / runtime UI).** A read-only "text bound to a document element by
+  id" component, distinct from the editable `TextInputComponent`; the general HUD hook a game
+  writes score/lives into. Synced into the RmlUi document by `RuntimeUIView`.
+- **Game boot + shipped-game view.** `SUGAR_GAME=<dir>` boots an external game (scene +
+  assets + `Game.dll`) without a chdir — engine resources stay exe/repo-anchored, only game
+  content moves. A packaged standalone (`SUGAR_PACKAGE` + `SUGAR_GAME`) ships every runtime
+  file (shaders, font, UI docs, the game DLL) and runs viewport-only via `Renderer::
+  setGameView` (no editor chrome). The game's C++ never enters the engine repo.
+- **Editor theme (`src/editor/EditorTheme.h`).** One flat dark ImGui theme + a default
+  DockBuilder layout, replacing `StyleColorsDark` and the floating-panel default. Editor
+  chrome only; never linked into Core or shipped to a game.
+
 ## tinygltf
 
 ### Responsibility

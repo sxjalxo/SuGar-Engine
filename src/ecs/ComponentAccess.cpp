@@ -16,6 +16,7 @@ const char* componentTypeName(ComponentType type) {
         case ComponentType::UIScreen:       return "UIScreen";
         case ComponentType::Focus:          return "Focus";
         case ComponentType::TextInput:      return "TextInput";
+        case ComponentType::UILabel:        return "UILabel";
         case ComponentType::Animation:      return "Animation";
         case ComponentType::SkinnedMesh:    return "SkinnedMesh";
         case ComponentType::AnimationState: return "AnimationState";

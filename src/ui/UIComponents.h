@@ -47,3 +47,13 @@ struct TextInputComponent {
     std::string buffer;
     int caret = 0; // insertion index into `buffer`
 };
+
+// A read-only text label bound to a document element by id. Unlike TextInputComponent
+// (editable, focusable, caret-bearing), this is pure *output*: gameplay writes `text`, the
+// UI view copies it verbatim into the element's inner text. The HUD primitive a game needs
+// for a score / timer / health readout, and the general "push text to a UI element" hook
+// that supersedes the demo HUD's hardcoded name/tag rendering.
+struct UILabelComponent {
+    ElementId element;
+    std::string text;
+};

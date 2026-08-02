@@ -39,6 +39,7 @@ SUGAR_TRACK_COMPONENT(AudioListenerComponent, AudioListener);
 SUGAR_TRACK_COMPONENT(UIScreenComponent, UIScreen);
 SUGAR_TRACK_COMPONENT(FocusComponent, Focus);
 SUGAR_TRACK_COMPONENT(TextInputComponent, TextInput);
+SUGAR_TRACK_COMPONENT(UILabelComponent, UILabel);
 SUGAR_TRACK_COMPONENT(AnimationPlayerComponent, Animation);
 SUGAR_TRACK_COMPONENT(SkinnedMeshComponent, SkinnedMesh);
 SUGAR_TRACK_COMPONENT(AnimationStateComponent, AnimationState);
@@ -89,6 +90,7 @@ public:
         uiScreens.remove(entity);
         focus.remove(entity);
         textInputs.remove(entity);
+        uiLabels.remove(entity);
         animations.remove(entity);
         skinnedMeshes.remove(entity);
         animationStates.remove(entity);
@@ -150,6 +152,7 @@ public:
         uiScreens.clear();
         focus.clear();
         textInputs.clear();
+        uiLabels.clear();
         animations.clear();
         skinnedMeshes.clear();
         animationStates.clear();
@@ -174,6 +177,7 @@ public:
     ComponentStorage<UIScreenComponent> uiScreens;
     ComponentStorage<FocusComponent> focus;
     ComponentStorage<TextInputComponent> textInputs;
+    ComponentStorage<UILabelComponent> uiLabels;
     ComponentStorage<AnimationPlayerComponent> animations;
     ComponentStorage<SkinnedMeshComponent> skinnedMeshes;
     ComponentStorage<AnimationStateComponent> animationStates;

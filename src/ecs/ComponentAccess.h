@@ -34,6 +34,7 @@ enum class ComponentType : uint32_t {
     UIScreen,
     Focus,
     TextInput,
+    UILabel,
     Animation,
     SkinnedMesh,
     AnimationState,

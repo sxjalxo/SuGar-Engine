@@ -4,6 +4,31 @@ project(SuGarEngine LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+# --- Build info (crash reports / logs) --------------------------------------
+# Version + short git commit, captured at configure time and baked into a generated
+# header. Cheap provenance for a crash report; the commit reflects the last configure,
+# which is accurate enough and avoids a build-time git dependency.
+set(SUGAR_VERSION "0.3.0-m3")
+find_package(Git QUIET)
+set(SUGAR_GIT_COMMIT "unknown")
+if(Git_FOUND)
+    execute_process(
+        COMMAND ${GIT_EXECUTABLE} rev-parse --short=12 HEAD
+        WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+        OUTPUT_VARIABLE SUGAR_GIT_COMMIT
+        OUTPUT_STRIP_TRAILING_WHITESPACE
+        ERROR_QUIET
+    )
+    if(SUGAR_GIT_COMMIT STREQUAL "")
+        set(SUGAR_GIT_COMMIT "unknown")
+    endif()
+endif()
+configure_file(
+    ${CMAKE_SOURCE_DIR}/src/BuildInfo.h.in
+    ${CMAKE_BINARY_DIR}/generated/BuildInfo.h
+    @ONLY
+)
+
 find_package(Vulkan REQUIRED)
 
 # Colocate the exe and all DLLs (SuGarCore, SuGarGame) in one dir so the Windows
@@ -76,6 +101,7 @@ add_library(SuGarCore SHARED
     src/ecs/Registry.h
     src/ecs/SystemSchedule.h
     src/core/Input.cpp
+    src/core/SaveData.cpp
     src/core/Input.h
     src/core/InputActions.cpp
     src/core/InputActions.h
@@ -169,6 +195,8 @@ add_executable(SuGarEngine
     src/GameModuleLoader.h
     src/GameModuleLoader.cpp
     src/game/GameModule.h
+    src/CrashHandler.h
+    src/CrashHandler.cpp
     src/SuGarApp.cpp
     src/Renderer.cpp
     src/BasicTrianglePass.cpp
@@ -242,11 +270,17 @@ target_link_libraries(SuGarEngine
     Vulkan::Vulkan
 )
 
+# Crash-report minidumps + symbolized stack walks (CrashHandler.cpp), Windows only.
+if(WIN32)
+    target_link_libraries(SuGarEngine dbghelp)
+endif()
+
 # The engine loads SuGarGame.dll at runtime (not linked), so ensure it's built.
 add_dependencies(SuGarEngine SuGarGame)
 
 target_include_directories(SuGarEngine PRIVATE
     src
+    ${CMAKE_BINARY_DIR}/generated
     external/glfw/include
     external/glm
     external/imgui

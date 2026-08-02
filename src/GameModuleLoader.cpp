@@ -28,8 +28,12 @@ fs::path GameModuleLoader::exeDirectory() const {
     return fs::path(buffer).parent_path();
 }
 
+fs::path GameModuleLoader::moduleDirectory() const {
+    return moduleDir.empty() ? exeDirectory() : moduleDir;
+}
+
 fs::path GameModuleLoader::sourcePath() const {
-    return exeDirectory() / (moduleName + ".dll");
+    return moduleDirectory() / (moduleName + ".dll");
 }
 
 // Removes leftover <moduleName>_live_*.dll from prior loads/runs (best-effort;
@@ -40,7 +44,7 @@ void GameModuleLoader::removeStaleLiveCopies() const {
     }
     const std::string prefix = moduleName + "_live_";
     std::error_code ec;
-    for (const auto& entry : fs::directory_iterator(exeDirectory(), ec)) {
+    for (const auto& entry : fs::directory_iterator(moduleDirectory(), ec)) {
         const std::string name = entry.path().filename().string();
         if (name.rfind(prefix, 0) == 0 && entry.path() != currentLive) {
             std::error_code removeEc;
@@ -49,9 +53,10 @@ void GameModuleLoader::removeStaleLiveCopies() const {
     }
 }
 
-bool GameModuleLoader::load(std::string name) {
+bool GameModuleLoader::load(std::string name, const fs::path& directory) {
     unload();
     moduleName = std::move(name);
+    moduleDir = directory;
     removeStaleLiveCopies();
 
     const fs::path source = sourcePath();
@@ -66,7 +71,7 @@ bool GameModuleLoader::load(std::string name) {
     // we never copy onto a file the OS is still releasing after FreeLibrary. Retry
     // the copy a few times to ride out the brief window where the just-finished
     // build still holds the source (mirrors the asset hot-reload retry policy).
-    const fs::path live = exeDirectory() / (moduleName + "_live_" + std::to_string(liveCounter++) + ".dll");
+    const fs::path live = moduleDirectory() / (moduleName + "_live_" + std::to_string(liveCounter++) + ".dll");
     bool copied = false;
     for (int attempt = 0; attempt < 10; ++attempt) {
         ec.clear();
@@ -111,7 +116,7 @@ bool GameModuleLoader::reload() {
         return false;
     }
     std::cout << "[GameModule] reloading " << moduleName << "...\n";
-    return load(moduleName);
+    return load(moduleName, moduleDir);
 }
 
 bool GameModuleLoader::sourceChanged() const {

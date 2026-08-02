@@ -64,7 +64,15 @@ public:
     void moveCameraLeft(float deltaTime);
     void moveCameraRight(float deltaTime);
     void rotateCamera(float xOffset, float yOffset);
+    // Shipped-game mode: hide all editor chrome (panels, dockspace, gizmo) and show only
+    // the viewport fullscreen with the runtime HUD over it. Set for a packaged standalone.
+    void setGameView(bool enabled) { gameView = enabled; }
+
     void setCameraMode(CameraMode mode);
+    // Places the FREE camera directly (position + look angles). A game boots with no
+    // orbit target, so it needs to frame its own scene; the built-in default faces -Z,
+    // which is the XY play plane 2D games use. Scene-authored cameras supersede this later.
+    void setCameraPose(const glm::vec3& position, float yaw, float pitch);
     void setOrbitTarget(const glm::vec3& target);
     void setFollowTargetPosition(const glm::vec3& position);
     void renderImGui(VkCommandBuffer cmd);
@@ -201,6 +209,7 @@ private:
     Entity selectedEntity = INVALID_ENTITY;   // primary/active selection (inspector + gizmo)
     std::vector<Entity> selectedEntities;     // full multi-selection (includes the primary)
     bool viewportHovered = false;
+    bool gameView = false; // shipped standalone: viewport-only, no editor chrome
     bool descriptorRefreshRequested = false;
 
     // Caches the Euler angles shown in the inspector so editing a quaternion

@@ -193,9 +193,13 @@ Packager::Report Packager::package(AssetDatabase& database, const Spec& spec) {
             continue;
         }
 
-        // Ship the scene/prefab file itself, at the same relative path the runtime will
-        // load it from.
-        if (copyInto(filePath, outRoot / filePath, report.errors)) {
+        // Ship the scene/prefab file itself, at the path the runtime will load it from.
+        // An absolute source (an external game's scene) lands flat at the package root by
+        // filename; a project-relative one keeps its relative path.
+        const std::filesystem::path sceneSource(filePath);
+        const std::filesystem::path sceneDest =
+            sceneSource.is_absolute() ? (outRoot / sceneSource.filename()) : (outRoot / sceneSource);
+        if (copyInto(filePath, sceneDest, report.errors)) {
             report.scenesPackaged++;
         }
 
@@ -295,6 +299,14 @@ Packager::Report Packager::package(AssetDatabase& database, const Spec& spec) {
         const std::filesystem::path dest = outRoot / std::filesystem::path(binary).filename();
         if (copyInto(binary, dest, report.errors)) {
             report.binariesCopied++;
+        }
+    }
+
+    // Loose runtime files keep their intended relative layout (e.g. build/shaders/x.spv,
+    // assets/fonts/x.ttf), because the runtime looks for them by those exact paths.
+    for (const auto& [source, destRelative] : spec.extraFiles) {
+        if (copyInto(source, outRoot / destRelative, report.errors)) {
+            report.extraFilesCopied++;
         }
     }
 

@@ -35,6 +35,9 @@ imgui.ini
 # anywhere in case the executable is run from elsewhere.
 *_live_*.dll
 
+# Crash reports (CrashHandler writes ./crashes/crash_*.dmp + .txt at runtime)
+/crashes/
+
 # OS files
 Thumbs.db
 .DS_Store

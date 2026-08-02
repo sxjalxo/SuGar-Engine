@@ -125,6 +125,14 @@ private:
     bool cleanedUp = false;
     EngineState engineState = EngineState::Edit;
     std::string sceneSnapshot;
+    // Set from SUGAR_GAME: an external game directory the engine boots (scene.json +
+    // assets/) instead of the built-in demo. Empty = editor / demo. Engine resources
+    // (shaders, fonts, the game-behaviours DLL) stay anchored to the repo/exe, so only
+    // game *content* comes from here.
+    std::string gameDirectory;
+    // True once a scene FILE was booted (external game or packaged standalone) rather than
+    // the built-in demo -- gates the 2D game camera and auto-play.
+    bool runningGame = false;
     float fixedAccumulator = 0.0f;
     PhysicsWorld physicsWorld;
     AudioEngine audioEngine;

@@ -30,6 +30,8 @@ private:
 #include <RmlUi/Core/RenderInterface.h>
 
 #include <algorithm>
+#include <cstdlib>
+#include <filesystem>
 #include <iostream>
 
 namespace {
@@ -146,11 +148,20 @@ void RuntimeUIView::init(VkDevice device, VkPhysicalDevice physicalDevice, VkCom
         return;
     }
 
-    // Engine-owned UI asset. Falls back to the in-source demo only if the file is
-    // missing, so a broken asset path is visible rather than silent.
-    document = context->LoadDocument("assets/ui/hud.rml");
+    // A booted game supplies its own HUD (SUGAR_GAME/assets/ui/hud.rml); the editor uses
+    // the engine's. Falls back to the in-source demo only if neither file exists, so a
+    // broken asset path is visible rather than silent.
+    std::string documentPath = "assets/ui/hud.rml";
+    if (const char* gameEnv = std::getenv("SUGAR_GAME")) {
+        const std::string gamePath = std::string(gameEnv) + "/assets/ui/hud.rml";
+        std::error_code ec;
+        if (std::filesystem::exists(gamePath, ec)) {
+            documentPath = gamePath;
+        }
+    }
+    document = context->LoadDocument(documentPath);
     if (document == nullptr) {
-        std::cerr << "[RuntimeUI] assets/ui/hud.rml not found; using built-in fallback\n";
+        std::cerr << "[RuntimeUI] " << documentPath << " not found; using built-in fallback\n";
         document = context->LoadDocumentFromMemory(kDemoDocument);
     }
     if (document == nullptr) {
@@ -313,12 +324,37 @@ void RuntimeUIView::syncTextFromEcs(const Registry* registry) {
     }
 }
 
+void RuntimeUIView::syncLabelsFromEcs(const Registry* registry) {
+    if (registry == nullptr || document == nullptr) {
+        return;
+    }
+
+    // Signature of every label so any change re-renders; RmlUi rebuilds layout on set.
+    std::string signature;
+    for (const auto& [entity, label] : registry->uiLabels.getAll()) {
+        (void)entity;
+        signature += label.element + "\x01" + label.text + "\x02";
+    }
+    if (signature == lastLabels) {
+        return;
+    }
+    lastLabels = signature;
+
+    for (const auto& [entity, label] : registry->uiLabels.getAll()) {
+        (void)entity;
+        if (Rml::Element* element = document->GetElementById(label.element)) {
+            element->SetInnerRML(label.text);
+        }
+    }
+}
+
 void RuntimeUIView::render(VkCommandBuffer cmd, VkExtent2D extent, const Registry* registry) {
     if (context == nullptr || !renderer || !renderer->isReady()) {
         return;
     }
     syncFromEcs(registry); // ECS is the model; the document is a projection of it
     syncTextFromEcs(registry);
+    syncLabelsFromEcs(registry);
     context->SetDimensions(Rml::Vector2i(static_cast<int>(extent.width), static_cast<int>(extent.height)));
     renderer->beginFrame(cmd, extent);
     context->Update();

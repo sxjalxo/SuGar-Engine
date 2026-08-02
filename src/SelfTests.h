@@ -42,6 +42,7 @@
 #include "assets/GltfModel.h"
 #include "assets/ModelImporter.h"
 #include "core/InputActions.h"
+#include "core/SaveData.h"
 #include "core/SnapshotStorage.h"
 #include "ecs/Registry.h"
 #include "ecs/SystemSchedule.h"
@@ -3701,6 +3702,40 @@ inline bool testComponentAccess() {
     return ok;
 }
 
+// Save data round-trips through disk and survives a reload. The persistence a game needs
+// for high scores / progress, kept minimal (Core, key=value). Pins: write -> save ->
+// clear -> load -> read, plus that a missing file is empty (not an error) and int parsing.
+inline bool testSaveData() {
+    bool ok = true;
+
+    const std::filesystem::path file =
+        std::filesystem::temp_directory_path() / "sugar_savedata_test.dat";
+    std::error_code ec;
+    std::filesystem::remove(file, ec);
+
+    SaveData::setPath(file.string());
+    ok &= SaveData::load();               // missing file loads as empty, no error
+    ok &= !SaveData::has("highScore");
+
+    SaveData::setInt("highScore", 4200);
+    ok &= SaveData::setString("player", "AB");
+    ok &= SaveData::save();
+
+    // A fresh setPath drops the in-memory store; load must bring the values back.
+    SaveData::setPath(file.string());
+    ok &= SaveData::load();
+    ok &= SaveData::getInt("highScore", -1) == 4200;
+    ok &= SaveData::getString("player", "") == "AB";
+    ok &= SaveData::getInt("missing", 7) == 7; // fallback for absent key
+
+    // Newlines can't be represented in the line format; the setter must refuse them.
+    ok &= !SaveData::setString("bad", "a\nb");
+
+    SaveData::clear();
+    std::filesystem::remove(file, ec);
+    return ok;
+}
+
 // Hostile / corrupt input must fail cleanly, never crash or read out of bounds. Pins the
 // three deserializers that take attacker-reachable bytes: the scene JSON parser, the glTF
 // importer, and the cooked (.sgc) container reader. A regression here is a security bug,
@@ -3825,6 +3860,7 @@ inline std::pair<int, int> run() {
         { "BehaviorRegistry", testBehaviorRegistry },
         { "RegistryGraph",    testRegistryGraph },
         { "MalformedInput",   testMalformedInput },
+        { "SaveData",         testSaveData },
     };
 
     int passed = 0;

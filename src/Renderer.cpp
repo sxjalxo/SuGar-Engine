@@ -12,6 +12,7 @@
 #include "rendering/Mesh.h"
 #include "rendering/Camera.h"
 #include "editor/EditorCommands.h"
+#include "editor/EditorTheme.h"
 #include "editor/EntityQuery.h"
 #include "editor/ViewportOverlay.h"
 #include "ecs/SystemSchedule.h"
@@ -30,6 +31,7 @@
 #include "rendering/Texture.h"
 #include "rendering/UniformBufferObject.h"
 #include "imgui.h"
+#include "imgui_internal.h" // DockBuilder API for the default editor layout
 #include "imgui_impl_glfw.h"
 #include "imgui_impl_vulkan.h"
 #include "ImGuizmo.h" // must follow imgui.h (relies on its types)
@@ -403,6 +405,15 @@ void Renderer::rotateCamera(float xOffset, float yOffset) {
 void Renderer::setCameraMode(CameraMode mode) {
     if (activePass != nullptr) {
         activePass->setCameraMode(mode);
+    }
+}
+
+void Renderer::setCameraPose(const glm::vec3& position, float yaw, float pitch) {
+    if (activePass != nullptr) {
+        Camera& camera = activePass->getCamera();
+        camera.position = position;
+        camera.yaw = yaw;
+        camera.pitch = pitch;
     }
 }
 
@@ -1332,13 +1343,35 @@ void Renderer::initImGui() {
 
     ImGuiIO& io = ImGui::GetIO();
     io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
+
+    // A crisp TTF replaces ImGui's default bitmap ProggyClean -- the single biggest
+    // visual upgrade. Lato (already shipped for the runtime UI) is a clean sans that
+    // matches the reference editor look. Extra oversampling keeps small text sharp.
+    // Tried in the same locations the runtime UI font uses, so a packaged build (font
+    // beside the exe) and a dev build both find it; falls back to the bitmap font.
+    {
+        const char* fontCandidates[] = {
+            "assets/fonts/LatoLatin-Regular.ttf",
+            "../assets/fonts/LatoLatin-Regular.ttf",
+            "external/RmlUi/Samples/assets/LatoLatin-Regular.ttf",
+        };
+        ImFontConfig fontConfig;
+        fontConfig.OversampleH = 3;
+        fontConfig.OversampleV = 1;
+        fontConfig.PixelSnapH = false;
+        for (const char* fontPath : fontCandidates) {
+            if (io.Fonts->AddFontFromFileTTF(fontPath, 16.0f, &fontConfig) != nullptr) {
+                break;
+            }
+        }
+    }
     // NavEnableKeyboard is deliberately OFF. It made ImGui claim the keyboard
     // whenever any editor window had focus, which (a) kept io.WantCaptureKeyboard
     // permanently true — silently disabling every F-key shortcut that was gated on
     // it — and (b) let ImGui swallow Tab, fighting the runtime UI's focus
     // navigation. The editor is mouse-driven; widget tab-nav isn't worth those costs.
 
-    ImGui::StyleColorsDark();
+    SugarEditorTheme::apply();
 
     if (!ImGui_ImplGlfw_InitForVulkan(window, true)) {
         throw std::runtime_error("failed to initialize ImGui GLFW backend");
@@ -1394,7 +1427,51 @@ void Renderer::beginImGuiFrame() {
 }
 
 void Renderer::buildEditorUi() {
-    ImGui::DockSpaceOverViewport(0, ImGui::GetMainViewport());
+    // A shipped standalone shows only the game: skip the dockspace + every editor panel;
+    // the viewport is drawn fullscreen below. The editor keeps its full chrome.
+    if (!gameView) {
+    // A fresh, explicit dockspace id (not the auto 0): this ignores any stale layout an
+    // older imgui.ini saved under a different id, so the editor opens organised instead of
+    // a pile of floating windows. The default arrangement is built once, only when no
+    // layout exists yet -- after that the user's own docking is remembered by imgui.ini.
+    const ImGuiID dockspaceId = ImGui::GetID("SugarDockSpace");
+    if (ImGui::DockBuilderGetNode(dockspaceId) == nullptr) {
+        ImGuiViewport* viewport = ImGui::GetMainViewport();
+        ImGui::DockBuilderRemoveNode(dockspaceId);
+        ImGui::DockBuilderAddNode(dockspaceId, ImGuiDockNodeFlags_DockSpace);
+        ImGui::DockBuilderSetNodeSize(dockspaceId, viewport->WorkSize);
+
+        // Every panel is placed, so the default is deterministic (no window left to float):
+        //  left column, top->bottom:  Hierarchy, Editor, Timeline, Inspector
+        //  right column:              Systems  over  Query + Navigation (tabbed)
+        //  bottom strip:              Play Controls + Assets (tabbed)
+        //  centre:                    Viewport
+        ImGuiID center = dockspaceId;
+        ImGuiID left = ImGui::DockBuilderSplitNode(center, ImGuiDir_Left, 0.20f, nullptr, &center);
+        ImGuiID right = ImGui::DockBuilderSplitNode(center, ImGuiDir_Right, 0.24f, nullptr, &center);
+        ImGuiID bottom = ImGui::DockBuilderSplitNode(center, ImGuiDir_Down, 0.22f, nullptr, &center);
+
+        // Left column: Hierarchy keeps the top ~45%; Editor / Timeline / Inspector stack below.
+        ImGuiID leftB = ImGui::DockBuilderSplitNode(left, ImGuiDir_Down, 0.55f, nullptr, &left);
+        ImGuiID leftC = ImGui::DockBuilderSplitNode(leftB, ImGuiDir_Down, 0.66f, nullptr, &leftB);
+        ImGuiID leftD = ImGui::DockBuilderSplitNode(leftC, ImGuiDir_Down, 0.50f, nullptr, &leftC);
+
+        // Right column: Systems on top, Query + Navigation tabbed beneath.
+        ImGuiID rightB = ImGui::DockBuilderSplitNode(right, ImGuiDir_Down, 0.42f, nullptr, &right);
+
+        ImGui::DockBuilderDockWindow("Hierarchy", left);
+        ImGui::DockBuilderDockWindow("Editor", leftB);
+        ImGui::DockBuilderDockWindow("Timeline", leftC);
+        ImGui::DockBuilderDockWindow("Inspector", leftD);
+        ImGui::DockBuilderDockWindow("Systems", right);
+        ImGui::DockBuilderDockWindow("Query", rightB);
+        ImGui::DockBuilderDockWindow("Navigation", rightB);
+        ImGui::DockBuilderDockWindow("Play Controls", bottom);
+        ImGui::DockBuilderDockWindow("Assets", bottom);
+        ImGui::DockBuilderDockWindow("Viewport", center);
+        ImGui::DockBuilderFinish(dockspaceId);
+    }
+    ImGui::DockSpaceOverViewport(dockspaceId, ImGui::GetMainViewport());
 
     // Drop selection entries whose entities no longer exist (after undo/delete).
     if (registry != nullptr) {
@@ -1442,11 +1519,25 @@ void Renderer::buildEditorUi() {
     drawQueryConsolePanel();
     drawSystemsPanel();
     drawNavigationPanel();
+    } // if (!gameView): editor chrome
 
-    ImGui::Begin("Viewport");
+    // Viewport: fullscreen borderless for a shipped game, a docked panel in the editor.
+    if (gameView) {
+        const ImGuiViewport* mainViewport = ImGui::GetMainViewport();
+        ImGui::SetNextWindowPos(mainViewport->Pos);
+        ImGui::SetNextWindowSize(mainViewport->Size);
+        ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0f, 0.0f));
+        ImGui::Begin("Viewport", nullptr,
+                     ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove |
+                     ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoBringToFrontOnFocus |
+                     ImGuiWindowFlags_NoNavFocus | ImGuiWindowFlags_NoSavedSettings);
+        ImGui::PopStyleVar();
+    } else {
+        ImGui::Begin("Viewport");
+    }
 
-    // Gizmo + edit toolbar.
-    {
+    // Gizmo + edit toolbar (editor only).
+    if (!gameView) {
         auto opButton = [&](const char* label, GizmoOp op) {
             const bool active = gizmoOp == op;
             if (active) {
@@ -1543,32 +1634,38 @@ void Renderer::buildEditorUi() {
         runtimeUI.processMouse(mouse.x - imageMin.x, mouse.y - imageMin.y,
                                imageHovered && leftDown);
 
-        // Manipulator over the image (updates ImGuizmo::IsOver/IsUsing for picking).
-        drawGizmo(imageMin.x, imageMin.y, size.x, size.y);
+        // Gizmo, selection overlay and click-to-select are editor-only; a shipped game
+        // just displays the image (its own UI runs through the runtime HUD above).
+        if (!gameView) {
+            // Manipulator over the image (updates ImGuizmo::IsOver/IsUsing for picking).
+            drawGizmo(imageMin.x, imageMin.y, size.x, size.y);
 
-        // Navigation overlay sits above the gizmo call so the gizmo's own hit-testing
-        // is unaffected: this draws only, and consumes no input.
-        drawNavigationOverlay(imageMin.x, imageMin.y, size.x, size.y);
+            // Navigation overlay sits above the gizmo call so the gizmo's own hit-testing
+            // is unaffected: this draws only, and consumes no input.
+            drawNavigationOverlay(imageMin.x, imageMin.y, size.x, size.y);
 
-        // Click-to-select: ray through the clicked pixel, unless the click landed
-        // on the gizmo.
-        if (registry != nullptr && imageHovered &&
-            ImGui::IsMouseClicked(ImGuiMouseButton_Left) &&
-            !ImGuizmo::IsOver() && !ImGuizmo::IsUsingAny()) {
-            const ImVec2 mouse = ImGui::GetIO().MousePos;
-            const Entity picked = pickEntityAt(mouse.x - imageMin.x, mouse.y - imageMin.y, size.x, size.y);
-            // Ctrl-click extends the selection; a plain click replaces it.
-            if (ImGui::GetIO().KeyCtrl) {
-                toggleSelect(picked);
-            } else {
-                selectSingle(picked);
+            // Click-to-select: ray through the clicked pixel, unless the click landed
+            // on the gizmo.
+            if (registry != nullptr && imageHovered &&
+                ImGui::IsMouseClicked(ImGuiMouseButton_Left) &&
+                !ImGuizmo::IsOver() && !ImGuizmo::IsUsingAny()) {
+                const ImVec2 mouse = ImGui::GetIO().MousePos;
+                const Entity picked = pickEntityAt(mouse.x - imageMin.x, mouse.y - imageMin.y, size.x, size.y);
+                // Ctrl-click extends the selection; a plain click replaces it.
+                if (ImGui::GetIO().KeyCtrl) {
+                    toggleSelect(picked);
+                } else {
+                    selectSingle(picked);
+                }
             }
         }
     } else {
         ImGui::Text("Viewport texture unavailable.");
     }
 
-    ImGui::Text("Render target: %u x %u", viewportExtent.width, viewportExtent.height);
+    if (!gameView) {
+        ImGui::Text("Render target: %u x %u", viewportExtent.width, viewportExtent.height);
+    }
     ImGui::End();
 }
 

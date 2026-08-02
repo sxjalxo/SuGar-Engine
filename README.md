@@ -45,8 +45,17 @@ export is the cooked artifacts a scene can reach plus a manifest that lets the s
 runtime resolve asset keys with no source tree (`SUGAR_PACKAGE=1`, headless). **The
 build pipeline is done** (Phase 21): `scripts/build_release.ps1` runs `cmake --build`
 then `SUGAR_PACKAGE`, producing a runnable, self-verified standalone with no GPU. **M3
-is complete** — build a typical indie game and ship it without extending the engine. Next
-is M4: dogfood real games.
+is complete** — build a typical indie game and ship it without extending the engine.
+
+**M4 (dogfood) is under way.** A game lives *outside* the engine repo — a `scene.json`,
+its `assets/`, and a `Game.dll` of behaviours built against `SuGarCore` — and the engine
+boots it by directory: `SUGAR_GAME=<dir>` loads that scene + assets, loads the game's
+`Game.dll`, enters Play, and frames a 2D camera; `SUGAR_PACKAGE=1 SUGAR_GAME=<dir>` emits a
+standalone under `<dir>/dist` (a shipped build hides all editor chrome and shows only the
+game + its runtime HUD). **Level 1 is complete** — Pong, Breakout, Flappy Bird and Asteroids,
+built and shipped, forcing ten engine boundary features (game boot, 2D camera, game-DLL
+loading, `SaveData`, auto-play, `UILabelComponent`, runtime-file packaging, shipped-game view)
+and **zero architecture rewrites**. Next: Level 2.
 
 > Positioning: *"A Vulkan engine designed for instant iteration and debuggable
 > systems — not just rendering power."* Open-source, dev-led, aimed at indie devs.
@@ -372,7 +381,7 @@ EntityIdRecycling, EntityQuery, SnapshotStorage, Physics, PhysicsBroadphase,
 SystemScheduler, ComponentAccess, SnapshotPatch, RuntimeUI, Animation,
 AnimationImport, Skinning, SkinImport, AnimationGraph, Navigation, NavMeshBake,
 NavAvoidance, ViewportOverlay, Serializer, SceneLoad, BehaviorRegistry,
-RegistryGraph, and MalformedInput. A test that *throws* is reported as
+RegistryGraph, MalformedInput, and SaveData. A test that *throws* is reported as
 `FAIL ... threw: <message>` and the run continues — one broken subsystem shouldn't
 hide the other fourteen results.
 
@@ -426,6 +435,16 @@ $env:SUGAR_STRICT = "1"; build\Debug\SuGarEngine.exe; $env:SUGAR_STRICT = ""
 ```
 
 Release builds compile the tracking out entirely, so this costs nothing to ship.
+
+### Crash reports
+
+An unhandled exception (Windows) writes a timestamped pair to `./crashes/`: a **minidump**
+(`.dmp` — open in Visual Studio / WinDbg with the matching `.pdb`) and a **human-readable
+`.txt`** with the engine version + git commit, OS / CPU / GPU, the loaded scene and package,
+the exception code, and a symbolized stack trace. It's installed automatically at startup;
+nothing to enable. Deliberately not an engine subsystem — just enough to make a crash after
+hours of play *actionable* instead of a lost afternoon (`src/CrashHandler.cpp`, exe-only,
+no-op on other platforms). `crashes/` is gitignored.
 
 ### Profiling
 
@@ -495,8 +514,12 @@ Milestone summary:
   * **The platform's missing half:** SuGar has a complete *developer* UI (Dear ImGui,
     permanently reserved for tooling) but intentionally **no *player* UI**. Runtime UI
     begins with RmlUi — it completes half the engine, so it led M3.
-* **M4 — Dogfood** — build real games (sandbox → platformer → shooter) as validation;
-  after this, engine work is driven by real projects, not speculation.
+* **M4 — Dogfood (under way)** — build real games (outside the repo) as validation; engine
+  work is now driven by real projects, not speculation, and every change a game forces is
+  recorded in the `ROADMAP.md` friction log. **Level 1 is complete** — Pong, Breakout, Flappy
+  Bird and Asteroids, each playable and shipped as a standalone, forcing ten engine boundary
+  features and zero architecture rewrites (write-up in the games' `Level 1\Report.md`). Two
+  pre-freeze additions also landed here: input hardening and crash reporting. Next: Level 2.
 
 ---
 

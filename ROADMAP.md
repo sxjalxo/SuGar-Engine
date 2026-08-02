@@ -1,42 +1,12 @@
 # SuGar Engine — Roadmap
 
-> **Vision**
->
-> SuGar Engine is a modern, hand-rolled C++ game engine built around one principle:
->
-> **Make game developers iterate faster without sacrificing engine architecture.**
->
-> Every major feature should satisfy at least one of:
->
-> - Reduce iteration time.
-> - Improve engine correctness.
-> - Remove architectural complexity.
-> - Increase production readiness.
->
-> If a feature does none of these, it belongs later.
+The **what** and **when** — milestones and their phases. Vision and positioning live in
+**[README.md](README.md)**; the architectural law in **[RULES.md](RULES.md)**; per-dependency
+scope in **[REQUIREMENTS_AND_SCOPE.md](REQUIREMENTS_AND_SCOPE.md)**.
 
-Companion documents: **[RULES.md](RULES.md)** (the architectural constraints — the
-law), **[REQUIREMENTS_AND_SCOPE.md](REQUIREMENTS_AND_SCOPE.md)** (per-dependency
-boundaries + non-goals). This roadmap is the *what* and *when*; those are the *how*
-and *what's allowed*.
-
----
-
-## North Star: win the inner loop, not the feature list
-
-We will **not** beat Unity/Unreal on graphics, asset ecosystems, or marketplaces —
-those are resource wars we lose. The wedge is the thing both engines neglect once a
-project grows:
-
-> **The inner loop: change → run → see result → repeat.**
-> Ideal is 1–2s. Unity drifts to 10–30s at mid-scale; Unreal to minutes.
-> Whoever keeps that loop *instant and debuggable* wins the hearts of indie devs.
-
-**Positioning:** *"A Vulkan engine designed for instant iteration and debuggable
-systems — not just rendering power."* Open-source, community-driven, dev-led.
-
-**The decision lens (every feature):** *"Does this make developers faster?"*
-Iteration speed / debuggability is the identity and the tie-breaker.
+**Decision lens for every item:** *does it make developers faster?* A feature earns its place
+if it reduces iteration time, improves correctness, removes complexity, or increases
+production readiness — otherwise it belongs later.
 
 ---
 
@@ -131,50 +101,155 @@ yes/no answer. It is bounded on both sides:
 - Massive-world streaming
 - Plugin marketplace
 
-**On M3 completion — publish the Runtime UI design as a standalone article.**
-Expand `docs/DESIGN_RUNTIME_UI.md` +
-`docs/RUNTIME_UI_LESSONS.md` into a technical write-up:
-*integrating a retained-mode UI library (RmlUi) with an immediate/ECS gameplay model
-while preserving determinism, replay, hot reload, and ECS authority.* Very little
-exists publicly on this specific problem — the reasoning (authoritative vs derived,
-intents-only callbacks, polling over subscriptions, why not `<input>`) is the
-contribution, not the engine. Worth doing as part of the open-source launch (M3 → M4
-hand-off), not before: the design should be validated by a real game first.
+**Deliverable at the M3 → M4 hand-off:** publish the Runtime UI design
+(`docs/DESIGN_RUNTIME_UI.md` + `docs/RUNTIME_UI_LESSONS.md`) as a standalone article —
+integrating a retained-mode UI library (RmlUi) with an ECS/deterministic gameplay model.
+Validate against a real game first.
 
-### M4 — Dogfood: build real games
-Physics sandbox → platformer → top-down shooter. Not products — **validation**.
-After M4 begins, engine work becomes *primarily driven by real projects*.
+### M4 — Dogfood: build real games (ACTIVE)
+
+Games are probes, not products — engine work is driven by what a game forces, never
+speculation. Every forced change is recorded in the **M4 friction log** below.
+
+**Rules**
+- Add an engine feature only when **a game forces it** (can't proceed, or is genuinely
+  miserable, without it) — never because another engine has it.
+- Forbidden until forced (rabbit holes): scripting language, networking, ECS rewrite,
+  asset-db redesign, renderer rewrite, plugin architecture, reflection, prefab overhaul,
+  job-system rewrite. If forced, log which game forced it and why first.
+- A game = `scene.json` + `assets/` + a `Game.dll` of behaviours (built against
+  `SuGarCore`), booted by `SUGAR_GAME=<dir>`, shipped by `SUGAR_PACKAGE`.
+- Games live **outside** the repo, in `E:\Sugar Engine - Games\Level {1,2,3}\`; only
+  *engine* changes a game forces land in this repo.
+- Acceptance per game: plays; ships as a standalone that runs with no source tree
+  (`Packager::verify` green); `SUGAR_VALIDATE` stays green; friction log captures every
+  forced change.
+
+**Level 1 — Tiny (ergonomics baseline). COMPLETE.**
+- Games: Pong, Breakout, Flappy Bird, Asteroids — all playable + shipped as standalones.
+- Result: 10 engine boundary features (all forced by Pong), zero architecture rewrites,
+  gate held 38/38. Write-up: `E:\Sugar Engine - Games\Level 1\Report.md`; forced changes in
+  the friction log below.
+- Open: #11 no flat-colour `Material` tint (bricks all checkerboard); no
+  camera-visible-bounds query (2D games hand-fit their field — caused the fixed Breakout
+  side-escape bug).
+
+**Level 2 — Small (scale + content). Next.**
+- Games: 2D platformer, Vampire-Survivors-like, top-down shooter.
+- Exercises: ECS at scale (hundreds of entities), audio, animation on a real character, the
+  asset pipeline under many assets, hot reload + editor workflow under sustained use. Expect
+  *tooling* gaps (inspector, selection, prefab, profiler) more than engine gaps.
+
+**Level 3 — The real game: voxel / Minecraft-like.**
+- Exercises: lighting, particles, AI, navigation, world/chunk serialization, packaging — all
+  at once. The honest test of "ship a real game without extending the architecture."
+- Most likely to force genuine *engine* additions (chunk streaming, voxel meshing) — which is
+  the point: by here we know exactly what is missing because a real game proved it.
 
 ---
 
-## Why "Engine Platform Complete", and why stop there
+## M4 friction log
 
-An engine is never "finished." Unreal still ships Nanite, Lumen, Verse, PCG, Motion
-Matching; Unity ships DOTS, UI Toolkit; Godot keeps reworking rendering, physics,
-animation. Chasing "complete" is chasing a horizon.
+Append-only. One entry per forced change. Format:
 
-So the discipline is **knowing where to stop adding platform features and start
-building games**:
+> **[game] — [what was blocked]**
+> *Forced:* what the game could not do. *Change:* smallest engine edit that unblocked it.
+> *Verdict:* fix now / defer / workaround. *Ref:* files / self-test pinning it.
 
-- **Stage 1 — Complete the platform.** Everything *every* game is guaranteed to need
-  (M3's Required list). If making a simple game requires implementing another engine
-  subsystem first, the platform isn't done.
-- **Stage 2 — Freeze the platform, then dogfood.** Build real games (M4). *Only* add
-  engine features the game genuinely exposes as missing.
+**Pong (L1) — #1 can't boot an external game scene.** *Forced:* games live outside the repo
+(`E:\Sugar Engine - Games\...`); the engine hardcoded a demo scene in `initScene()` and only
+loaded `scene.json` via the F9 hotkey, so there was no way to *run a game*. *Change:*
+`SUGAR_GAME=<dir>` → boot `<dir>/scene.json` and scan `<dir>/assets` instead of the demo; no
+chdir, so engine resources (shaders, fonts, DLL) stay exe/repo-anchored while only game
+*content* moves. Worked cleanly because `AssetPath` anchors every key at the `assets/`
+segment, so an absolute game-asset path spells the same key a scene references. *Verdict:*
+fixed. *Ref:* `SuGarApp::run/initScene`, `SuGarApp.h` `gameDirectory`.
 
-Why not wait for "complete"? Because no roadmap can predict the real friction points.
-Before dogfooding, roadmap items look like *"I need runtime UI."* After, they look
-like *"the UI workflow is awkward,"* *"animation transitions are clunky,"* *"the
-importer should support X,"* *"the prefab workflow needs work"* — far higher-quality
-items that only real use surfaces. The best roadmap past M3 comes from development
-experience, not speculation.
+**Pong (L1) — #2 no camera for a game.** *Forced:* the demo uses an ORBIT camera around a
+scene entity; a booted game has no such target and Pong is 2D. *Change:* `Renderer::
+setCameraPose`; on game boot, a FREE camera at `(0,0,12)` looking down −Z frames the XY play
+plane (the default yaw −90° already faces −Z). *Verdict:* fixed for now; **scene-authored
+cameras** are the real answer and are deferred until a game needs a non-default framing.
+*Ref:* `Renderer::setCameraPose`, `SuGarApp::initRenderer`.
+
+**Pong (L1) — #3 game behaviours can't live outside the repo.** *Forced:* Pong's
+`PaddlePlayer`/`PaddleAI`/`BallController` are game code; the repo's `SuGarGame` is the wrong
+home (games stay external). *Change:* `GameModuleLoader::load(name, directory)` — a booted
+game loads its own `Game.dll` from `<gameDir>` instead of `SuGarGame`; the DLL is built
+against `SuGarCore` by the game's own CMake, and `SuGarCore.dll` still resolves from the exe
+dir (always on the Windows loader path). *Verdict:* fixed — the real test of the
+Editor→Engine→Core layering, and it held. *Ref:* `GameModuleLoader`, `SuGarApp::initScene`,
+`E:\...\Pong\CMakeLists.txt`.
+
+**Pong (L1) — #4 no save data.** *Forced:* high score must survive a run; scene serialize
+is the wrong tool. *Change:* `SaveData` (Core, `key=value` file, `SaveData` self-test in the
+gate); engine points it at `<gameDir>/save.dat` on boot. *Verdict:* fixed. *Ref:*
+`src/core/SaveData.{h,cpp}`, `testSaveData`.
+
+**Pong (L1) — #6 game booted paused in the editor.** *Forced:* behaviours only run in Play;
+a launched game should just run. *Change:* auto-enter Play on the first frame when
+`SUGAR_GAME` is set (also what makes headless verification possible). *Verdict:* fixed.
+*Ref:* `SuGarApp::mainLoop` / `play()`.
+
+**Pong (L1) — #7 no game-authored UI / no way to push text to it.** *Forced:* an on-screen
+score needs the game's own RmlUi document and a way for a behaviour (Core-only) to write
+text into it; the runtime UI hardcoded the engine's demo HUD (doc path, font, name/tag
+sync). *Change:* (a) `RuntimeUIView` loads `<SUGAR_GAME>/assets/ui/hud.rml` when a game is
+booted; (b) a new `UILabelComponent{element,text}` — a read-only ECS→element-text primitive
+(distinct from editable `TextInputComponent`), synced by `RuntimeUIView`. Pong's
+`BallController` creates label entities and writes the score; the game's `hud.rml` displays
+them. *Verdict:* fixed — the general HUD hook, not a Pong special-case. *Ref:*
+`UIComponents.h`, `Registry`/`ComponentAccess` (+UILabel), `RuntimeUIView::syncLabelsFromEcs`.
+
+**Pong (L1) — #8 a "standalone" wasn't runnable.** *Forced:* packaging shipped cooked
+assets + scene + binaries but NOT the shaders, runtime-UI font, or the game's UI docs, and
+skipped the game's own `Game.dll`. *Change:* `Packager::Spec::extraFiles` (loose files copied
+to an explicit relative path) + the `SUGAR_PACKAGE` step (now `SUGAR_GAME`-aware) ships
+`build/shaders/*.spv`, the font, `assets/ui/*.rml`, and `<gameDir>/Game.dll`; scenes from an
+absolute path land flat at the package root. *Verdict:* fixed. *Ref:* `Packager`,
+`SuGarApp` package branch.
+
+**Pong (L1) — #9 packaged mode ran the demo, not the game.** *Forced:* a shipped build has
+no `SUGAR_GAME`; boot only loaded a scene file / applied the 2D camera + auto-play when
+`SUGAR_GAME` was set, so a standalone showed the built-in demo. *Change:* unified boot on a
+`runningGame` flag — load `scene.json` (and load `Game.dll` from beside the exe, apply the
+game camera + auto-play) whenever a game scene is present, whether external (editor) or
+packaged (manifest + `scene.json` beside the exe). *Verdict:* fixed. *Ref:*
+`SuGarApp::initScene/initRenderer/mainLoop`.
+
+**Editor UI (dogfood, workflow) — restyle + default layout.** *Found:* dogfooding made the
+editor's look/ergonomics obvious problems — default `StyleColorsDark` + bitmap font, and
+panels opened as a floating, overlapping pile (no default dock layout; stale `imgui.ini`).
+Exactly the *tooling* polish M4 was expected to surface, not an engine gap. *Change:*
+`src/editor/EditorTheme.h` — one flat near-black neutral dark theme (inspired by an ImGui
+reference + the Claude dark UI): `WindowBg ~#0A0A0B`, subtle borders, soft rounding, a single
+blue accent for selection; Lato TTF (16px) replaces the bitmap font; a one-time DockBuilder
+default layout under a fresh dockspace id (left: Hierarchy/Editor/Timeline/Inspector; centre:
+Viewport; right: Systems / Query+Navigation; bottom: Play Controls+Assets), so the editor
+opens organised. *Ref:* `EditorTheme.h`, `Renderer::initImGui/buildEditorUi`.
+
+**Pong (L1) — #10 a packaged standalone showed the editor chrome.** *Forced:* a shipped game
+(packaged, no `SUGAR_GAME`) rendered the Hierarchy/Inspector/Systems panels over the game; a
+shipped game must be viewport-only + HUD. *Change:* `Renderer::setGameView(bool)` — set true
+for a packaged standalone (`AssetCooker::hasManifest()`); when on, `buildEditorUi` skips the
+dockspace + every panel + the gizmo/pick, and draws the Viewport fullscreen-borderless (the
+runtime HUD still overlays). An editor-run game (`SUGAR_GAME`, no manifest) keeps full chrome
+for debugging. *Verdict:* fixed. *Ref:* `Renderer::buildEditorUi`, `SuGarApp::initRenderer`.
+
+**Pong: DONE.** Playable (Up/Down player, ball-tracking AI, wall/paddle reflection with
+english + speed ramp), on-screen score + persisted high score, and a **verified runnable
+standalone** (`<gameDir>/dist`, runs with no source tree / no repo). Engine gate held at
+**38/38** throughout. Friction #5 (a real quad/sprite mesh) never bit — a flattened box
+sufficed. First L1 game complete; the engine grew nine boundary features, zero architecture
+rewrites — the pattern M4 was meant to produce.
 
 ---
 
-## Current priorities
+## Phase detail — M3 (Phases 16–21)
 
-Ordered by the decision lens (*does this make developers faster?* — and here, *does
-this unblock building a game at all?*):
+The per-phase engineering record for M3, each with its architecture decided first (the
+`docs/DESIGN_*.md` records) and gated by `SUGAR_VALIDATE`. Summary bullets are in the
+Milestones appendix; the detail below is the reference.
 
 1. **Runtime UI (RmlUi) — DONE (Phase 16).** It led M3, and not merely because it's a
    bounded library integration. Without it you *cannot* build a proper game (menus, pause, settings,
@@ -993,6 +1068,28 @@ and a bogus-count `.sgc` all fail cleanly. Count is now **37/37** (was 36). Robu
 note in `docs/DESIGN_ASSET_PIPELINE.md`. Feature gap left open (not a security issue):
 sparse glTF accessors unsupported.
 
+### Pre-freeze: crash reporting (2026-07-28)
+
+The one piece of infrastructure worth adding *before* freezing the platform and starting
+M4 — because the payoff is entirely in M4. When a game under test dies after hours of play,
+a crash left with no context is a lost afternoon. **Deliberately not an engine subsystem** —
+`src/CrashHandler.cpp`, exe-only (platform code stays out of Core, Rule 15), allocation-free
+in the handler.
+
+- Installs a `SetUnhandledExceptionFilter` first thing in `run()`. On a fault it writes a
+  timestamped pair to `./crashes/`: a **minidump** (`.dmp`, opens in Visual Studio / WinDbg
+  with the matching `.pdb` — the authoritative artifact) and a **human-readable `.txt`**:
+  engine version + git commit (baked in at configure time via a generated `BuildInfo.h`),
+  OS / CPU / GPU, the loaded scene and package, the exception code, and a symbolized stack
+  walk (DbgHelp).
+- `SetThreadStackGuarantee(64 KiB)` so the filter still runs after a *stack overflow* — the
+  one case where the remaining stack would otherwise be too small to act (defence in depth
+  alongside the scene-JSON depth guard).
+- No-op on non-Windows. Verified end to end (null-deref → dump written with correct metadata
+  and a `SuGarApp.cpp:line` stack). `crashes/` is gitignored.
+
+That closes the pre-freeze list. **The platform is frozen; M4 (dogfood) begins.**
+
 ---
 
 ## Deferred / future
@@ -1052,11 +1149,12 @@ SuGar is not trying to be the largest engine — it's trying to be one of the
 
 ---
 
-## Appendix — Completed milestones (M1 · M2)
+## Appendix — Completed milestones
 
-Collapsed for reference; full phase-by-phase history is in git.
+Collapsed for reference; full M3 phase detail is in **Phase detail — M3** above, and the
+full phase-by-phase history is in git.
 
-### M1 — Engine Foundation (done, Track A)
+### M1 — Engine Foundation (done)
 - **Rendering** — Vulkan forward renderer, offscreen viewport → ImGui dockspace,
   shadow mapping (PCF); cross-platform texture loading via stb_image.
 - **ECS** — authoritative, data-oriented registry; handle-based `ResourceManager` +
@@ -1074,7 +1172,7 @@ Collapsed for reference; full phase-by-phase history is in git.
   multi-select, hierarchy reparenting, component add/remove, prefab revert/apply,
   asset thumbnails.
 
-### M2 — Developer Iteration (done, Track B — the wedge)
+### M2 — Developer Iteration (done)
 - **Editor command system** — transactional history, command compression, persistent
   command IDs; later made id-remap unnecessary (see below).
 - **Time travel** — snapshot ring-buffer (~10 s), timeline scrubbing + frame stepping,
@@ -1094,3 +1192,26 @@ Collapsed for reference; full phase-by-phase history is in git.
 - **Tooling** — `SUGAR_SELFTEST` (subsystem sanity), `SUGAR_STRESS` (scale/edge
   invariants incl. grid-vs-brute-force), `SUGAR_BENCH` (profiling, csv/json), unified
   under `SUGAR_VALIDATE` (one command, CI exit code).
+
+### M3 — Engine Platform Complete (done)
+- **Phase 16 — Runtime UI (RmlUi)** — player HTML/CSS UI; `UI = f(ECS, input)`, RmlUi a
+  view, UI state authoritative in ECS, intents-only callbacks, poll not subscribe.
+- **Phase 17 — Animation** — skeletal playback, glTF clip/skin import, GPU skinning, blend
+  trees, state machines; all state in ECS, poses derived.
+- **Phase 18 — Navigation** — navmesh assets, deterministic A* + funnel, authoritative agent
+  plans, scene-geometry bake, agent-radius erosion, local avoidance.
+- **Phase 19 — Asset Pipeline** — one path→key identity fn, `.meta` sidecars, content-hash
+  cooker (cache = `f(source, settings, cooker version)`), runtime reads only cooked
+  artifacts, dependency graph, editor import surface.
+- **Phase 20 — Packaging** — standalone export: cooked artifacts a scene reaches + a manifest
+  the shipped runtime resolves keys through, no source tree.
+- **Phase 21 — Build Pipeline** — `scripts/build_release.ps1` = `cmake --build` +
+  `SUGAR_PACKAGE`; self-verified standalone, no GPU.
+- **Pre-freeze** — input-hardening pass (deserializer bounds checks; `MalformedInput` gate) +
+  crash reporting (`CrashHandler`: minidump + text report).
+
+### M4 — Dogfood (active)
+- **Level 1 (done)** — Pong, Breakout, Flappy Bird, Asteroids. 10 engine boundary features
+  forced (all by Pong), zero architecture rewrites, gate held 38/38. Detail:
+  `E:\Sugar Engine - Games\Level 1\Report.md`; forced changes in the **M4 friction log** above.
+- **Level 2** — next (2D platformer / survivors-like / top-down shooter).

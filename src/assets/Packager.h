@@ -1,6 +1,7 @@
 #pragma once
 
 #include <string>
+#include <utility>
 #include <vector>
 
 class AssetDatabase;
@@ -34,6 +35,13 @@ public:
         // OS loader needs. The build pipeline (next phase) fills these in.
         std::vector<std::string> binaries;
 
+        // Loose runtime files copied verbatim to an explicit destination *relative to the
+        // package root* — the engine files a game needs that aren't cooked assets: compiled
+        // shaders, the runtime-UI font, the game's UI documents. {source, destRelative}.
+        // Kept separate from cooked assets (which go through the manifest) and from
+        // binaries (which the OS loader finds), so each category stays testable on its own.
+        std::vector<std::pair<std::string, std::string>> extraFiles;
+
         // Output directory. Overwritten in place; not cleaned first, so a stale artifact
         // from a previous package can linger -- harmless (the manifest names only current
         // ones) but a fresh directory is cleaner for a release.
@@ -45,6 +53,7 @@ public:
         int assetsPackaged = 0;      // cooked artifacts copied
         int sourceModelsCopied = 0;  // interim: models shipped as source for clips/skins
         int binariesCopied = 0;
+        int extraFilesCopied = 0; // loose runtime files (shaders, font, UI docs)
 
         // Referenced keys that could not be packaged as a cooked artifact. Reported, not
         // dropped (Rule 13): today these are #clip / #skin sub-keys with no cooker, and

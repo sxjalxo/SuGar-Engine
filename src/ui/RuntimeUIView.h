@@ -73,6 +73,8 @@ private:
     void syncFromEcs(const Registry* registry);
     // Pushes the authoritative text buffer into the document (view of ECS state).
     void syncTextFromEcs(const Registry* registry);
+    // Pushes read-only UILabelComponent text into its bound element (score/HUD readouts).
+    void syncLabelsFromEcs(const Registry* registry);
 
     std::unique_ptr<RmlVulkanRenderer> renderer;
     std::unique_ptr<IntentEmitter> openListener;
@@ -84,6 +86,7 @@ private:
     std::string lastScreen = "\xff"; // impossible value: forces the first sync
     std::string lastFocus = "\xff";  // mirrors FocusComponent, applied to the document
     std::string lastText = "\xff";   // mirrors TextInputComponent.buffer
+    std::string lastLabels = "\xff"; // mirrors UILabelComponent.text
     // Focusable element ids in document order (the tab ring). A view concern: the
     // *order* comes from the DOM, but the focused *value* lives in ECS.
     std::vector<std::string> focusables;

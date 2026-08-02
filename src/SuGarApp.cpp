@@ -1,4 +1,5 @@
 #include "SuGarApp.h"
+#include "CrashHandler.h"
 #include "Renderer.h"
 #include "animation/AnimationStateSystem.h"
 #include "animation/AnimationSystem.h"
@@ -16,6 +17,7 @@
 #include "ui/RuntimeUISystem.h"
 #include "core/Input.h"
 #include "core/InputActions.h"
+#include "core/SaveData.h"
 #include "rendering/Camera.h"
 #include "rendering/Material.h"
 #include "scene/Behavior.h"
@@ -154,6 +156,19 @@ SuGarApp::~SuGarApp() {
 }
 
 void SuGarApp::run() {
+    // Install the crash reporter first, before anything can fault. Writes a minidump +
+    // text report to ./crashes on an unhandled exception; a no-op on non-Windows. Cheap
+    // provenance for when a game under test dies deep into a session (see CrashHandler.h).
+    CrashHandler::install("crashes");
+
+    // SUGAR_GAME=<dir> boots an external game (scene + assets) instead of the built-in
+    // demo (M4 dogfood: games live outside the engine repo). Recorded here, consumed by
+    // initScene. No chdir -- engine resources stay repo/exe-relative; only content moves.
+    if (const char* gameEnv = std::getenv("SUGAR_GAME")) {
+        gameDirectory = gameEnv;
+        std::cout << "[game] SUGAR_GAME = " << gameDirectory << "\n";
+    }
+
     // Opt-in editor-command self-test (Phase 11A). Runs and exits early so it can
     // be checked in CI / by hand without spinning up Vulkan.
     if (std::getenv("SUGAR_SELFTEST") != nullptr) {
@@ -216,17 +231,54 @@ void SuGarApp::run() {
     // are the build pipeline's job (the next M3 item), so this gate ships assets +
     // scene + manifest; a real release adds the exe and DLLs to Spec::binaries.
     if (std::getenv("SUGAR_PACKAGE") != nullptr) {
+        // SUGAR_GAME packages an external game (assets/scene/DLL from the game folder, out
+        // to <gameDir>/dist); without it, the repo's demo scene packages to build/package.
+        const char* gameEnv = std::getenv("SUGAR_GAME");
+        const std::string root = gameEnv != nullptr ? std::string(gameEnv) : std::string(".");
+        const std::string assetsDir = gameEnv != nullptr ? (root + "/assets") : "assets";
+        const std::string scenePath = gameEnv != nullptr ? (root + "/scene.json") : "scene.json";
+
         AssetDatabase database;
-        database.scan("assets");
+        database.scan(assetsDir);
 
         Packager::Spec spec;
-        if (std::filesystem::exists("scene.json")) {
-            spec.scenes.push_back("scene.json");
+        if (std::filesystem::exists(scenePath)) {
+            spec.scenes.push_back(scenePath);
         }
         // Phase 21: ship the runtime too, so the package is a runnable standalone rather
         // than assets alone. This is what Phase 20 deferred to the build pipeline.
         spec.binaries = Packager::collectRuntimeBinaries();
-        spec.outputDirectory = "build/package";
+        if (gameEnv != nullptr) {
+            const std::string gameDll = root + "/Game.dll"; // the game's behaviours
+            if (std::filesystem::exists(gameDll)) {
+                spec.binaries.push_back(gameDll);
+            }
+        }
+
+        // Loose runtime files the standalone needs but that aren't cooked assets: the
+        // compiled shaders, the runtime-UI font, and the game's UI documents. Each keeps
+        // the exact path the runtime looks for it under.
+        {
+            std::error_code ec;
+            for (const auto& entry : std::filesystem::directory_iterator("build/shaders", ec)) {
+                if (entry.path().extension() == ".spv") {
+                    spec.extraFiles.push_back({ entry.path().generic_string(),
+                                                "build/shaders/" + entry.path().filename().string() });
+                }
+            }
+            const std::string font = "assets/fonts/LatoLatin-Regular.ttf";
+            if (std::filesystem::exists(font)) {
+                spec.extraFiles.push_back({ font, font });
+            }
+            const std::string uiDir = gameEnv != nullptr ? (root + "/assets/ui") : "assets/ui";
+            for (const auto& entry : std::filesystem::directory_iterator(uiDir, ec)) {
+                if (entry.is_regular_file()) {
+                    spec.extraFiles.push_back({ entry.path().generic_string(),
+                                                "assets/ui/" + entry.path().filename().string() });
+                }
+            }
+        }
+        spec.outputDirectory = gameEnv != nullptr ? (root + "/dist") : "build/package";
 
         const Packager::Report report = Packager::package(database, spec);
         for (const std::string& key : report.unpackagedKeys) {
@@ -238,7 +290,8 @@ void SuGarApp::run() {
         std::cout << "[package] " << report.scenesPackaged << " scene(s), "
                   << report.assetsPackaged << " cooked asset(s), "
                   << report.sourceModelsCopied << " source model(s), "
-                  << report.binariesCopied << " binaries -> " << spec.outputDirectory << "\n";
+                  << report.binariesCopied << " binaries, "
+                  << report.extraFilesCopied << " runtime file(s) -> " << spec.outputDirectory << "\n";
 
         // Acceptance check: resolve the package the way the shipped exe will -- manifest
         // only, no source. A package that does not verify is not shippable, so this
@@ -341,7 +394,19 @@ void SuGarApp::initScene() {
     // Behaviors now live in the hot-swappable game module DLL; load it and let it
     // register them into Core's BehaviorRegistry. The engine still runs (behaviors
     // just inert) if the module is missing.
-    gameModule.load("SuGarGame");
+    // Behaviours DLL: an external game (editor) loads its own Game.dll from the game
+    // folder; a packaged standalone loads Game.dll from beside the exe (packaging copies
+    // it there); the bare editor/demo loads the built-in SuGarGame. The game's C++ never
+    // enters the engine repo either way.
+    const bool packagedStandalone =
+        AssetManifest::existsAt(Packager::manifestPath(".")) && std::filesystem::exists("scene.json");
+    if (!gameDirectory.empty()) {
+        gameModule.load("Game", gameDirectory);
+    } else if (packagedStandalone) {
+        gameModule.load("Game");
+    } else {
+        gameModule.load("SuGarGame");
+    }
     InputActions::registerDefaults();
     registry.reset();
     sceneLights.clear();
@@ -359,6 +424,7 @@ void SuGarApp::initScene() {
         if (packageManifest.load(manifestFile, manifestError)) {
             AssetCooker::setManifest(&packageManifest);
             AssetCooker::setCacheDirectory(Packager::cacheDirectory("."));
+            CrashHandler::setPackage(manifestFile);
             std::cout << "[package] running from manifest: " << packageManifest.size()
                       << " asset(s)\n";
         } else {
@@ -366,14 +432,55 @@ void SuGarApp::initScene() {
         }
     }
 
+    // Game content root: an external game's assets live under <gameDirectory>/assets;
+    // the editor/demo uses the repo's "assets". AssetPath anchors every key at the
+    // "assets/" segment, so a game asset at an absolute path still spells the same key a
+    // scene references -- which is exactly what lets the catalog resolve it.
+    const std::string assetRoot =
+        gameDirectory.empty() ? std::string("assets") : (gameDirectory + "/assets");
+
     if (!AssetCooker::hasManifest()) {
-        assetDatabase.scan("assets");
-        fileWatcher.watch("assets");
+        assetDatabase.scan(assetRoot);
+        fileWatcher.watch(assetRoot);
         // The cooker takes cook keys from the catalog when it has them (19B). Set
         // before the first load below: every mesh/texture/audio load now goes through
         // a cooked artifact, and without the catalog the cooker would re-hash each
         // source file itself -- same answer, more I/O.
         AssetCooker::setDatabase(&assetDatabase);
+    }
+
+    // Boot a scene FILE instead of the built-in demo when one is available: an external
+    // game (SUGAR_GAME) in the editor, or a packaged standalone (a scene.json ships beside
+    // the manifest next to the exe). The demo is only for the bare editor with no game.
+    std::string sceneFile;
+    std::string saveDir;
+    if (!gameDirectory.empty()) {
+        sceneFile = gameDirectory + "/scene.json";
+        saveDir = gameDirectory;
+    } else if (AssetCooker::hasManifest() && std::filesystem::exists("scene.json")) {
+        sceneFile = "scene.json";
+        saveDir = ".";
+    }
+
+    if (!sceneFile.empty()) {
+        // Persistent store (high scores, progress) lives beside the scene.
+        SaveData::setPath(saveDir + "/save.dat");
+        SaveData::load();
+
+        if (SceneSerializer::load(registry, sceneLights, sceneFile)) {
+            runningGame = true; // drives the 2D camera + auto-play below
+            // A sane default camera target so the game is visible without further setup.
+            for (const auto& [entity, transformComponent] : registry.transforms.getAll()) {
+                (void)transformComponent;
+                orbitParent = entity;
+                break;
+            }
+            CrashHandler::setScene(sceneFile);
+            std::cout << "[game] booted " << sceneFile << "\n";
+        } else {
+            std::cerr << "[game] FAILED to load " << sceneFile << " -- no scene.\n";
+        }
+        return;
     }
 
     const std::string cubeMeshPath = resolveAssetPath("assets/models/textured_cube.obj");
@@ -590,6 +697,8 @@ void SuGarApp::initScene() {
     registry.hierarchy.add(tagField, {});
     registry.textInputs.add(tagField, { "tag", "", 0 });
     registry.setParent(tagField, uiRoot);
+
+    CrashHandler::setScene("(built-in demo scene)");
 }
 
 void SuGarApp::rebuildDrawList() {
@@ -1048,6 +1157,19 @@ void SuGarApp::initRenderer() {
     renderer->setUIIntentQueue(&uiIntents); // UI callbacks emit intents into this
     renderer->setDrawList(&drawList);
     renderer->init();
+
+    // A game frames its own scene: a FREE camera on +Z looking down -Z at the XY play
+    // plane, which is how the Level-1 2D games are laid out. The demo keeps its orbit
+    // camera. (Scene-authored cameras are the eventual replacement -- friction log.)
+    if (runningGame) {
+        renderer->setCameraMode(CameraMode::FREE);
+        renderer->setCameraPose(glm::vec3(0.0f, 0.0f, 12.0f), -90.0f, 0.0f);
+    }
+
+    // A packaged standalone hides all editor chrome and shows only the game viewport +
+    // HUD. An editor-run game (SUGAR_GAME, no manifest) keeps the editor for debugging.
+    renderer->setGameView(AssetCooker::hasManifest());
+
     updateCameraTargets();
 }
 
@@ -1056,6 +1178,13 @@ void SuGarApp::mainLoop() {
     double fpsTimer = lastTime;
     int framesThisSecond = 0;
     bool reloadDescriptors = false;
+
+    // A booted game starts playing immediately: behaviours only run in Play, and someone
+    // launching a game expects it running, not paused in the editor. The editor (no
+    // SUGAR_GAME) still opens in Edit. (Auto-play, M4 friction #6.)
+    if (runningGame) {
+        play();
+    }
 
     while (!glfwWindowShouldClose(window)) {
         double currentTime = glfwGetTime();
@@ -1199,6 +1328,7 @@ void SuGarApp::processInput(float deltaTime) {
         }
 
         if (SceneSerializer::load(registry, sceneLights, "scene.json")) {
+            CrashHandler::setScene("scene.json");
             onSceneReplaced();
         } else {
             std::cerr << "failed to load scene.json\n";
@@ -1481,6 +1611,7 @@ void SuGarApp::pickPhysicalDevice() {
 
     VkPhysicalDeviceProperties properties;
     vkGetPhysicalDeviceProperties(physicalDevice, &properties);
+    CrashHandler::setGpu(properties.deviceName);
     std::cout << "Selected GPU: " << properties.deviceName << " (Score: " << bestScore << ")\n";
     std::cout << "GPU Type: ";
     switch (properties.deviceType) {
