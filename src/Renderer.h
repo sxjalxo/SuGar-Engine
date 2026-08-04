@@ -49,6 +49,9 @@ public:
         return request;
     }
     void setRegistry(Registry* registry) { this->registry = registry; }
+    // Camera world position of the active scene pass, for back-to-front sorting of
+    // translucent draws. (0,0,0) before a pass exists — harmless for an empty list.
+    glm::vec3 getCameraWorldPosition();
     // Runtime UI callbacks emit into this queue; set before init().
     void setUIIntentQueue(UIIntentQueue* queue) { this->uiIntentQueue = queue; }
     // Records the player UI into the scene/viewport pass. Called by the scene pass

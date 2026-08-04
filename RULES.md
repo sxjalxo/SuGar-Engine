@@ -524,6 +524,52 @@ provide, silently withdrawn.
 
 ---
 
+# Rule 22 — Fix the Seam, Not the Symptom
+
+When implementing a feature or fixing an issue, solve for the **general shape of the
+problem**, not only the case in front of you. The immediate fix and the future-proof fix
+often cost nearly the same to write but differ enormously to *change later*: the wrong
+seam forces a rewrite the day a second case arrives.
+
+**Before writing the fix, look at how mature engines (Unity, Unreal, Godot) model the
+same problem.** Not to copy their scope — Rule 8 still forbids building unforced features
+— but to learn *where they put the seam*, because they have already paid for getting it
+wrong. Reference their docs; cite what you took.
+
+The discipline is two decisions, kept separate:
+
+1. **The seam** (the interface / data model / dispatch point) — design it for the whole
+   category, now. This is the expensive-to-change decision.
+2. **The implementations behind it** — build only what a game forces (Rule 8). Reserving
+   an enum case or leaving a `default:` branch is free; the seam makes adding the next
+   one an *extension*, not a *rewrite*.
+
+> Get the seam right and future work is addition. Get it wrong and future work is
+> demolition.
+
+**Worked example — transparency (#13).** Alpha *cutout* alone solves Asteroids' sprites.
+But smoke, glass, ghosts, particles and UI fades will all force alpha *blending*, and a
+hardcoded `discard` in the fragment shader is a symptom-fix: the day blending is needed,
+the single opaque pipeline and the unsorted draw list both have to be torn up. The seam
+both Unreal (`EBlendMode`: Opaque / Masked / Translucent / Additive) and Unity URP
+(Surface Type + Alpha Clip + blend mode, with the render queue forcing opaque-before-
+transparent and transparent sorted back-to-front) converge on is a **per-material blend
+mode** that the renderer buckets and sorts on. So the fix is that enum on `Material`, a
+draw list that draws opaque/masked first and translucent/additive last (back-to-front),
+and one pipeline per blend state — cutout becomes just `Masked`. Blending then *drops
+in*; nothing gets rewritten.
+
+**How to apply.** When a fix hardcodes a choice (a mode, a format, a policy, a single
+pipeline/branch), ask: *what is the category this is one case of, and where would the
+second case force a change?* Put a seam there. If the category is genuinely unknown,
+say so and take the local fix deliberately — but the default is to find the seam first.
+
+The counterweight is Rule 8: do **not** implement speculative cases behind the seam.
+Rule 22 future-proofs the *interface*; Rule 8 keeps the *implementation* minimal. Design
+the seam wide; build through it narrow.
+
+---
+
 # Decision Checklist
 
 Before merging any major feature, ask:

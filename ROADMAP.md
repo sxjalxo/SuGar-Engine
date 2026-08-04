@@ -136,7 +136,10 @@ speculation. Every forced change is recorded in the **M4 friction log** below.
 
 **Level 2 — Small (scale + content). In progress.**
 - Top-down shooter: DONE (forced #11 flat-colour material + #12 mouse input; else reused the
-  L1 surface). Gate now 39/39 (+`MouseInput`).
+  L1 surface).
+- Content pass: Asteroids (L1) retrofitted with a sprite pack → forced #13, the transparency
+  **blend-mode seam** (Opaque/Masked/Translucent/Additive; Rule 22). Gate now **40/40**
+  (+`MouseInput`, +`BlendMode`).
 - Games: 2D platformer, Vampire-Survivors-like, top-down shooter.
 - Exercises: ECS at scale (hundreds of entities), audio, animation on a real character, the
   asset pipeline under many assets, hot reload + editor workflow under sustained use. Expect
@@ -293,6 +296,48 @@ cursor), autoplay loop (deterministic, monotonic score, difficulty ramp), packag
 (`Packager::verify` OK). **Two engine changes forced (#11 flat colour, #12 mouse input);
 everything else reused the L1 surface.** *Open (not yet forced):* camera-visible-bounds query
 (2D games still hand-fit their field).
+
+### Content pass — Asteroids (L1) gets a real sprite pack
+
+**Asteroids (L1) — #13 no transparent sprites → the transparency seam (Rule 22).** *Forced:*
+a free 2D art pack (Pixel SHMUP, RGBA PNGs) replaced the checkerboard boxes with real
+ship/rock/enemy sprites. Two things had to hold: (a) a mesh with real UVs — the pooled
+entities used `block.obj`, whose UVs are unused, so a sprite mapped to one texel; (b) the
+transparent PNG background must not render as an opaque block.
+
+(a) is **no engine change** — the OBJ loader already parses `vt`, so a hand-authored
+`quad.obj` (XY plane, +Z normal, correct UVs) textures 1:1; a game asset, not an engine one.
+
+(b) began as a one-line alpha cutout (`discard` in `basic.frag`), but that is exactly the
+symptom-fix **Rule 22** warns against: smoke, glass, ghosts, particles and UI fades all force
+alpha *blending*, and a hardcoded discard would make the single opaque pipeline and the
+unsorted draw list a rewrite the day blending arrives. So the fix is the seam both Unreal
+(`EBlendMode`) and Unity URP (Surface Type + Alpha Clip + blend mode, render queue forcing
+opaque→transparent, transparent sorted back-to-front) converge on: a per-material
+**`BlendMode { Opaque, Masked, Translucent, Additive }`** the renderer buckets and sorts on.
+- `rendering/Material.h` — the enum + `Material::blendMode` (default Opaque, so every existing
+  material is unchanged); `isBlended()` helper.
+- `shaders/basic.frag` — reads the mode via the push constant (`blendMode` packed into the
+  old padding slot, push constant still 96 B): Masked discards `< 0.5`; Translucent outputs
+  texel alpha; Additive premultiplies. `basic.vert`/`skinned.vert` match the layout.
+- `BasicTrianglePass` — one pipeline per blend bucket (Opaque/Masked share bucket 0; Translucent
+  and Additive get blend state + no depth write), built from one parameterised loop for both
+  static and skinned. `scenePipelines[skinned][bucket]`; the draw loop selects by material.
+  Blended pipelines keep **destination** alpha (`srcAlpha 0, dstAlpha 1`) because the scene
+  renders to an offscreen image ImGui composites by that alpha — writing a cutout's own alpha
+  there punched holes the panel showed through (caught in testing, fixed).
+- `scene/DrawList.cpp` — the render-queue order: opaque/masked first, then the translucent/
+  additive tail sorted **back-to-front** by camera distance (`Renderer::getCameraWorldPosition`
+  feeds it). Cutout becomes just `Masked`.
+- `SceneSerializer` (optional `"blendMode"` string, absent ⇒ Opaque, back-compat), editor
+  Inspector combo, and a headless `BlendMode` self-test (reader accepts every mode + garbage →
+  Opaque + a pre-field scene). Default-Opaque write is pinned by the serializer golden.
+*Verdict:* fixed — all four modes render (verified live: masked sprites, plus a temporary
+additive+translucent asteroid to prove blending composites, then reverted to masked). *Ref:*
+files above; game-side `quad.obj` + `assets/textures/*.png` + `scene.json`. **Gate 39 → 40/40**
+(+`BlendMode`), Debug + Release. Packaged standalone: 11 cooked assets, `verify` OK, boots
+from `dist`. *Deferred (Rule 8, not yet forced):* premultiplied-alpha and per-particle soft
+blending, and blended shadow-casting — the seam takes them without a rewrite.
 
 ---
 

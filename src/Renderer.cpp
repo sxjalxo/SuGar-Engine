@@ -1735,6 +1735,10 @@ bool rayIntersectsAabb(const glm::vec3& origin, const glm::vec3& dir,
 }
 } // namespace
 
+glm::vec3 Renderer::getCameraWorldPosition() {
+    return activePass != nullptr ? activePass->getCamera().position : glm::vec3(0.0f);
+}
+
 Entity Renderer::pickEntityAt(float pixelX, float pixelY, float viewportWidth, float viewportHeight) const {
     if (registry == nullptr || activePass == nullptr || viewportWidth <= 0.0f || viewportHeight <= 0.0f) {
         return INVALID_ENTITY;
@@ -2587,6 +2591,11 @@ void Renderer::drawInspectorPanel() {
         ImGui::SliderFloat("Roughness", &material.roughness, 0.0f, 1.0f);
         ImGui::SliderFloat("AO", &material.ao, 0.0f, 1.0f);
         ImGui::ColorEdit3("Base Color", &material.baseColor.x);
+        const char* blendModes[] = { "Opaque", "Masked", "Translucent", "Additive" };
+        int blend = static_cast<int>(material.blendMode);
+        if (ImGui::Combo("Blend Mode", &blend, blendModes, IM_ARRAYSIZE(blendModes))) {
+            material.blendMode = static_cast<BlendMode>(blend);
+        }
     }
 
     if (registry->scripts.has(selectedEntity)) {

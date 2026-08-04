@@ -710,7 +710,8 @@ void SuGarApp::initScene() {
 }
 
 void SuGarApp::rebuildDrawList() {
-    buildDrawListFromECS(registry, sceneLights, drawList);
+    const glm::vec3 cameraPosition = renderer ? renderer->getCameraWorldPosition() : glm::vec3(0.0f);
+    buildDrawListFromECS(registry, sceneLights, cameraPosition, drawList);
 }
 
 void SuGarApp::updateCameraTargets() {

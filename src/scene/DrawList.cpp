@@ -7,8 +7,10 @@
 #include <algorithm>
 #include <tuple>
 #include <vector>
+#include <glm/geometric.hpp>
 
-void buildDrawListFromECS(const Registry& registry, const std::vector<Light>& lights, DrawList& out) {
+void buildDrawListFromECS(const Registry& registry, const std::vector<Light>& lights,
+                          const glm::vec3& cameraPosition, DrawList& out) {
     out.items.clear();
     out.items.reserve(registry.transforms.getAll().size());
 
@@ -55,10 +57,33 @@ void buildDrawListFromECS(const Registry& registry, const std::vector<Light>& li
         out.items.push_back(std::move(item));
     }
 
+    // Draw order (the render-queue seam, Rule 22; mirrors Unity/Unreal):
+    //   1. all opaque/masked before any translucent/additive — depth writes must land
+    //      before anything blends against them;
+    //   2. the blended tail sorted back-to-front (farthest first), the painter's order
+    //      alpha blending needs to look right without reading depth;
+    //   3. within each group, batch by material/mesh to minimise pipeline/descriptor
+    //      churn (blended items keep the distance key primary; batching only breaks ties).
+    auto distanceToCamera = [&](const RenderItem& item) {
+        const glm::vec3 worldPos = glm::vec3(item.model[3]);
+        return glm::dot(worldPos - cameraPosition, worldPos - cameraPosition);
+    };
     std::sort(
         out.items.begin(),
         out.items.end(),
-        [](const RenderItem& a, const RenderItem& b) {
+        [&](const RenderItem& a, const RenderItem& b) {
+            const bool aBlended = isBlended(a.material.blendMode);
+            const bool bBlended = isBlended(b.material.blendMode);
+            if (aBlended != bBlended) {
+                return !aBlended; // opaque/masked first
+            }
+            if (aBlended) {
+                const float da = distanceToCamera(a);
+                const float db = distanceToCamera(b);
+                if (da != db) {
+                    return da > db; // farther first (back-to-front)
+                }
+            }
             return std::tie(a.material.albedo, a.material.metallic, a.material.roughness, a.material.ao, a.meshHandle) <
                    std::tie(b.material.albedo, b.material.metallic, b.material.roughness, b.material.ao, b.meshHandle);
         }

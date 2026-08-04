@@ -2,6 +2,7 @@
 
 #include "RenderPass.h"
 #include "rendering/Camera.h"
+#include "rendering/Material.h"
 #include "scene/DrawList.h"
 
 class SuGarApp;
@@ -45,15 +46,27 @@ private:
     VkRenderPass renderPass = VK_NULL_HANDLE;
     VkRenderPass shadowRenderPass = VK_NULL_HANDLE;
     VkPipelineLayout pipelineLayout = VK_NULL_HANDLE;
-    VkPipeline graphicsPipeline = VK_NULL_HANDLE;
     VkPipeline shadowPipeline = VK_NULL_HANDLE;
-    // Skinned variants (Phase 17C.2). Same layout, same fragment stage, same push
-    // constants — they differ only in the vertex shader and in declaring the two
-    // extra vertex attributes, so a skinned mesh is lit and shadowed by identical
-    // code. The shadow variant exists because otherwise an animated character casts
-    // its bind-pose shadow.
-    VkPipeline skinnedPipeline = VK_NULL_HANDLE;
+    // Skinned shadow variant (Phase 17C.2): otherwise an animated character casts its
+    // bind-pose shadow.
     VkPipeline skinnedShadowPipeline = VK_NULL_HANDLE;
+
+    // Scene pipelines indexed [skinned][blend bucket]. Blend buckets (BlendMode →
+    // GPU state, Rule 22 seam): 0 = Opaque/Masked (no blend, depth write), 1 =
+    // Translucent (alpha blend, no depth write), 2 = Additive. Opaque and Masked share
+    // bucket 0 — Masked differs only by a shader `discard`. Skinned shares the fragment
+    // stage, so it gets the identical set of blend states.
+    static constexpr int SceneBucketCount = 3;
+    VkPipeline scenePipelines[2][SceneBucketCount] = {};
+
+    // BlendMode → scene pipeline bucket. Opaque and Masked both use bucket 0.
+    static int blendBucket(BlendMode mode) {
+        switch (mode) {
+            case BlendMode::Translucent: return 1;
+            case BlendMode::Additive:    return 2;
+            default:                     return 0; // Opaque, Masked
+        }
+    }
 
     // Scene uniform buffer: one slice per frame in flight, written at the current
     // frame's offset and bound with a dynamic offset. A single buffer rewritten each

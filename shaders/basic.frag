@@ -22,6 +22,7 @@ layout(push_constant) uniform PushConstants
     float metallic;
     float roughness;
     float ao;
+    float blendMode; // BlendMode enum as float: 0 Opaque, 1 Masked, 2 Translucent, 3 Additive
     vec4 baseColor;
 } pushConstants;
 
@@ -58,7 +59,17 @@ float ShadowCalculation(vec4 fragPosLightSpace, vec3 normal, vec3 lightDir) {
 }
 
 void main() {
-    vec3 albedo = texture(texSampler, fragUV).rgb * pushConstants.baseColor.rgb;
+    int mode = int(pushConstants.blendMode + 0.5);
+    vec4 sampled = texture(texSampler, fragUV);
+
+    // Masked (1): cutout — discard mostly-transparent texels so a sprite shows only its
+    // shape. Order-independent, depth-writing. Opaque (0) never discards (its alpha is
+    // 1.0 anyway). Translucent/Additive keep every texel and resolve via blend below.
+    if (mode == 1 && sampled.a < 0.5) {
+        discard;
+    }
+
+    vec3 albedo = sampled.rgb * pushConstants.baseColor.rgb;
     vec3 normal = normalize(fragNormal);
     vec3 viewDir = normalize(ubo.viewPos.xyz - fragPos);
     float metallic = clamp(pushConstants.metallic, 0.0, 1.0);
@@ -86,5 +97,15 @@ void main() {
     vec3 color = ambient + lighting;
     color = pow(max(color, vec3(0.0)), vec3(1.0 / 2.2));
 
-    outColor = vec4(color, 1.0);
+    // Blend resolve. Opaque/Masked write a solid pixel (alpha 1). Translucent carries
+    // the texel alpha into the framebuffer blend (src.a, 1-src.a). Additive premultiplies
+    // by alpha so transparent texels add nothing under the (one, one) blend; its output
+    // alpha is unused by that blend. See BasicTrianglePass pipeline variants.
+    if (mode == 2) {
+        outColor = vec4(color, sampled.a);
+    } else if (mode == 3) {
+        outColor = vec4(color * sampled.a, sampled.a);
+    } else {
+        outColor = vec4(color, 1.0);
+    }
 }

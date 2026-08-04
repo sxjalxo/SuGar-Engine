@@ -18,7 +18,9 @@ struct ObjectPushConstants {
     float metallic = 0.0f;
     float roughness = 0.5f;
     float ao = 1.0f;
-    float padding = 0.0f;
+    // BlendMode as a float (occupies the old padding slot at offset 76, so the push
+    // constant stays 96 B): the frag reads it to decide cutout vs blend output.
+    float blendMode = 0.0f;
     // vec4 keeps the 16-byte std430 alignment the shader's push_constant block uses;
     // .w is unused. Flat-colour tint (see Material::baseColor).
     glm::vec4 baseColor{1.0f};
@@ -99,19 +101,18 @@ BasicTrianglePass::~BasicTrianglePass() {
         uniformBufferMemory = VK_NULL_HANDLE;
     }
 
-    if (graphicsPipeline != VK_NULL_HANDLE) {
-        vkDestroyPipeline(device, graphicsPipeline, nullptr);
-        graphicsPipeline = VK_NULL_HANDLE;
+    for (auto& row : scenePipelines) {
+        for (VkPipeline& pipeline : row) {
+            if (pipeline != VK_NULL_HANDLE) {
+                vkDestroyPipeline(device, pipeline, nullptr);
+                pipeline = VK_NULL_HANDLE;
+            }
+        }
     }
 
     if (shadowPipeline != VK_NULL_HANDLE) {
         vkDestroyPipeline(device, shadowPipeline, nullptr);
         shadowPipeline = VK_NULL_HANDLE;
-    }
-
-    if (skinnedPipeline != VK_NULL_HANDLE) {
-        vkDestroyPipeline(device, skinnedPipeline, nullptr);
-        skinnedPipeline = VK_NULL_HANDLE;
     }
 
     if (skinnedShadowPipeline != VK_NULL_HANDLE) {
@@ -341,8 +342,11 @@ void BasicTrianglePass::renderScenePass(VkCommandBuffer cmd, uint32_t imageIndex
         const uint32_t jointOffset = i < jointOffsets.size() ? jointOffsets[i] : NO_JOINT_OFFSET;
         const bool skinned = jointOffset != NO_JOINT_OFFSET;
 
-        // Shared pipeline layout: switching keeps set 0 and the push constants.
-        const VkPipeline wantedPipeline = skinned ? skinnedPipeline : graphicsPipeline;
+        // Shared pipeline layout: switching keeps set 0 and the push constants. The
+        // blend bucket comes from the material; the draw list is already ordered so all
+        // opaque/masked precede all translucent/additive (and the blended tail is sorted
+        // back-to-front), so this bind pattern stays coherent.
+        const VkPipeline wantedPipeline = scenePipelines[skinned ? 1 : 0][blendBucket(item.material.blendMode)];
         if (wantedPipeline != lastPipeline) {
             vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, wantedPipeline);
             lastPipeline = wantedPipeline;
@@ -390,6 +394,7 @@ void BasicTrianglePass::renderScenePass(VkCommandBuffer cmd, uint32_t imageIndex
         pushConstants.metallic = item.material.metallic;
         pushConstants.roughness = item.material.roughness;
         pushConstants.ao = item.material.ao;
+        pushConstants.blendMode = static_cast<float>(item.material.blendMode);
         pushConstants.baseColor = glm::vec4(item.material.baseColor, 1.0f);
 
         vkCmdPushConstants(
@@ -660,38 +665,75 @@ void BasicTrianglePass::createGraphicsPipeline() {
     
     VkPipelineColorBlendAttachmentState colorBlendAttachment{};
     colorBlendAttachment.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
-    colorBlendAttachment.blendEnable = VK_FALSE;
-    
+
     VkPipelineColorBlendStateCreateInfo colorBlending{};
     colorBlending.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
     colorBlending.logicOpEnable = VK_FALSE;
     colorBlending.attachmentCount = 1;
     colorBlending.pAttachments = &colorBlendAttachment;
     pipelineInfo.pColorBlendState = &colorBlending;
-    
+
     pipelineInfo.layout = pipelineLayout;
     pipelineInfo.renderPass = renderPass;
     pipelineInfo.subpass = 0;
 
-    if (vkCreateGraphicsPipelines(app->getDevice(), VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &graphicsPipeline) != VK_SUCCESS) {
-        throw std::runtime_error("failed to create graphics pipeline!");
-    }
+    // One pipeline per blend bucket (BlendMode collapses to three GPU states; Opaque and
+    // Masked share a state because Masked's only difference is a shader `discard`). This
+    // is the seam (Rule 22): a new blend mode is a new row here + a case in the frag, not
+    // a rewrite of the draw path. Buckets: 0 = Opaque/Masked, 1 = Translucent, 2 = Additive.
+    struct BlendBucket {
+        VkBool32 blendEnable;
+        VkBlendFactor srcColor;
+        VkBlendFactor dstColor;
+        VkBool32 depthWrite; // blended geometry tests depth but must not occlude what's behind it
+    };
+    const BlendBucket buckets[SceneBucketCount] = {
+        { VK_FALSE, VK_BLEND_FACTOR_ONE,       VK_BLEND_FACTOR_ZERO,                VK_TRUE  }, // Opaque/Masked
+        { VK_TRUE,  VK_BLEND_FACTOR_SRC_ALPHA, VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA, VK_FALSE }, // Translucent
+        { VK_TRUE,  VK_BLEND_FACTOR_ONE,       VK_BLEND_FACTOR_ONE,                 VK_FALSE }, // Additive
+    };
 
-    // Skinned variant: identical in every respect except the vertex shader and the
-    // two extra vertex attributes it declares. Same binding stride, same fragment
-    // stage — so skinned geometry is lit and shadowed by exactly the same code.
-    auto skinnedAttributeDescriptions = Vertex::getSkinnedAttributeDescriptions();
-    vertexInputInfo.vertexAttributeDescriptionCount =
-        static_cast<uint32_t>(skinnedAttributeDescriptions.size());
-    vertexInputInfo.pVertexAttributeDescriptions = skinnedAttributeDescriptions.data();
-
+    const auto staticAttributes = Vertex::getAttributeDescriptions();
+    const auto skinnedAttributes = Vertex::getSkinnedAttributeDescriptions();
     VkPipelineShaderStageCreateInfo skinnedVertStageInfo = vertShaderStageInfo;
     skinnedVertStageInfo.module = skinnedVertShaderModule;
-    VkPipelineShaderStageCreateInfo skinnedStages[] = {skinnedVertStageInfo, fragShaderStageInfo};
-    pipelineInfo.pStages = skinnedStages;
+    const VkPipelineShaderStageCreateInfo skinnedStages[] = {skinnedVertStageInfo, fragShaderStageInfo};
 
-    if (vkCreateGraphicsPipelines(app->getDevice(), VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &skinnedPipeline) != VK_SUCCESS) {
-        throw std::runtime_error("failed to create skinned graphics pipeline!");
+    for (int bucket = 0; bucket < SceneBucketCount; ++bucket) {
+        colorBlendAttachment.blendEnable = buckets[bucket].blendEnable;
+        colorBlendAttachment.srcColorBlendFactor = buckets[bucket].srcColor;
+        colorBlendAttachment.dstColorBlendFactor = buckets[bucket].dstColor;
+        colorBlendAttachment.colorBlendOp = VK_BLEND_OP_ADD;
+        // Only the RGB result is blended. The framebuffer *alpha* must stay whatever the
+        // opaque pass left (1.0 from the clear), because the scene renders to an offscreen
+        // image ImGui later composites by that alpha — writing a sprite's cutout alpha (0
+        // in transparent texels) here would punch holes the panel shows through. So keep
+        // the destination alpha: srcAlpha*0 + dstAlpha*1. (Opaque bucket has blend off and
+        // writes alpha 1 directly.)
+        colorBlendAttachment.srcAlphaBlendFactor = VK_BLEND_FACTOR_ZERO;
+        colorBlendAttachment.dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+        colorBlendAttachment.alphaBlendOp = VK_BLEND_OP_ADD;
+        depthStencil.depthWriteEnable = buckets[bucket].depthWrite;
+
+        // Static (index 0): base attributes, basic vertex shader.
+        vertexInputInfo.vertexAttributeDescriptionCount = static_cast<uint32_t>(staticAttributes.size());
+        vertexInputInfo.pVertexAttributeDescriptions = staticAttributes.data();
+        pipelineInfo.pStages = shaderStages;
+        if (vkCreateGraphicsPipelines(app->getDevice(), VK_NULL_HANDLE, 1, &pipelineInfo, nullptr,
+                                      &scenePipelines[0][bucket]) != VK_SUCCESS) {
+            throw std::runtime_error("failed to create scene graphics pipeline!");
+        }
+
+        // Skinned (index 1): same in every respect except the vertex shader and the two
+        // extra vertex attributes — so a skinned mesh (e.g. a translucent ghost) is lit,
+        // shadowed and blended by identical code.
+        vertexInputInfo.vertexAttributeDescriptionCount = static_cast<uint32_t>(skinnedAttributes.size());
+        vertexInputInfo.pVertexAttributeDescriptions = skinnedAttributes.data();
+        pipelineInfo.pStages = skinnedStages;
+        if (vkCreateGraphicsPipelines(app->getDevice(), VK_NULL_HANDLE, 1, &pipelineInfo, nullptr,
+                                      &scenePipelines[1][bucket]) != VK_SUCCESS) {
+            throw std::runtime_error("failed to create skinned scene graphics pipeline!");
+        }
     }
 
     vkDestroyShaderModule(app->getDevice(), vertShaderModule, nullptr);

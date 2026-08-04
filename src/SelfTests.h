@@ -2347,7 +2347,8 @@ inline bool testSerializer() {
         "        \"metallic\": 0,\n"
         "        \"roughness\": 0.5,\n"
         "        \"ao\": 1,\n"
-        "        \"baseColor\": [1, 1, 1]\n"
+        "        \"baseColor\": [1, 1, 1],\n"
+        "        \"blendMode\": \"opaque\"\n"
         "      },\n"
         "      \"script\": \"Spin\",\n"
         "      \"rigidbody\": {\n"
@@ -2413,6 +2414,47 @@ inline bool testSerializer() {
     const std::string withoutAgent = SceneSerializer::saveToString(reg, lights);
     return withoutAgent.find("\"navagent\"") == std::string::npos &&
            withoutAgent.find("\"skinnedmesh\": \"hero.gltf#Armature\"\n    }\n  ],\n") != std::string::npos;
+}
+
+// --- BlendMode: the material blend mode survives the scene format ------------
+// The seam for transparency (Rule 22). The default-Opaque *write* is pinned by the
+// golden testSerializer above (its material block now ends with `"blendMode": "opaque"`).
+// A non-default write can't be checked headless — emitting a material calls
+// ResourceManager::getTexture, which needs a device (the same limitation testSerializer
+// documents). So this test pins the *reader*: every mode string parses, an unknown value
+// degrades to Opaque instead of throwing, and a pre-blend-mode scene still loads.
+inline bool testBlendMode() {
+    bool ok = true;
+
+    // Read: a scene carrying a blend mode parses cleanly; a garbage value falls back to
+    // Opaque (never throws), which is what keeps a forward-written scene loadable.
+    auto sceneWith = [](const char* mode) {
+        return std::string(
+            "{ \"version\": 2, \"objects\": [ { \"name\": \"Q\", \"parent\": -1,"
+            " \"transform\": { \"pos\": [0,0,0], \"rot\": [0,0,0], \"scale\": [1,1,1] },"
+            " \"mesh\": \"\", \"material\": { \"albedo\": \"\", \"metallic\": 0,"
+            " \"roughness\": 0.5, \"ao\": 1, \"baseColor\": [1,1,1], \"blendMode\": \"") +
+            mode + "\" } } ], \"lights\": [] }";
+    };
+    for (const char* mode : { "opaque", "masked", "translucent", "additive", "nonsense" }) {
+        Registry loaded;
+        std::vector<Light> loadedLights;
+        ok &= SceneSerializer::loadFromString(loaded, loadedLights, sceneWith(mode));
+    }
+
+    // A pre-blend-mode scene (no field at all) must still load — back-compat.
+    {
+        Registry loaded;
+        std::vector<Light> loadedLights;
+        const std::string legacy =
+            "{ \"version\": 2, \"objects\": [ { \"name\": \"Q\", \"parent\": -1,"
+            " \"transform\": { \"pos\": [0,0,0], \"rot\": [0,0,0], \"scale\": [1,1,1] },"
+            " \"mesh\": \"\", \"material\": { \"albedo\": \"\", \"metallic\": 0,"
+            " \"roughness\": 0.5, \"ao\": 1 } } ], \"lights\": [] }";
+        ok &= SceneSerializer::loadFromString(loaded, loadedLights, legacy);
+    }
+
+    return ok;
 }
 
 // --- SceneLoad: every optional component survives a real load ---------------
@@ -3931,6 +3973,7 @@ inline std::pair<int, int> run() {
         { "AssetReimport",    testAssetReimport },
         { "Packaging",        testPackaging },
         { "Serializer",       testSerializer },
+        { "BlendMode",        testBlendMode },
         { "SceneLoad",        testSceneLoad },
         { "BehaviorRegistry", testBehaviorRegistry },
         { "RegistryGraph",    testRegistryGraph },

@@ -396,6 +396,24 @@ void writeVec3(std::ostream& output, const glm::vec3& value) {
     output << "[" << value.x << ", " << value.y << ", " << value.z << "]";
 }
 
+// BlendMode <-> string, so the scene stays readable and stable across enum reordering.
+const char* blendModeToString(BlendMode mode) {
+    switch (mode) {
+        case BlendMode::Masked:      return "masked";
+        case BlendMode::Translucent: return "translucent";
+        case BlendMode::Additive:    return "additive";
+        case BlendMode::Opaque:      return "opaque";
+    }
+    return "opaque";
+}
+
+BlendMode blendModeFromString(const std::string& value) {
+    if (value == "masked") return BlendMode::Masked;
+    if (value == "translucent") return BlendMode::Translucent;
+    if (value == "additive") return BlendMode::Additive;
+    return BlendMode::Opaque;
+}
+
 // Quaternion as [x, y, z, w] to match glTF's component order.
 void writeQuat(std::ostream& output, const glm::quat& value) {
     output << "[" << value.x << ", " << value.y << ", " << value.z << ", " << value.w << "]";
@@ -521,7 +539,13 @@ void writeEntityObject(std::ostream& output, const Registry& registry, Entity en
     writeVec3(output, registry.materials.has(entity)
                           ? registry.materials.get(entity).material.baseColor
                           : glm::vec3(1.0f));
-    output << "\n";
+    output << ",\n";
+    writeIndent(output, 4);
+    output << "\"blendMode\": \""
+           << blendModeToString(registry.materials.has(entity)
+                                    ? registry.materials.get(entity).material.blendMode
+                                    : BlendMode::Opaque)
+           << "\"\n";
 
     // Optional components. Each present one contributes an emitter that writes its
     // field *without* a trailing comma or newline; the loop at the bottom owns the
@@ -951,6 +975,7 @@ struct PendingEntityData {
     float roughness = 0.5f;
     float ao = 1.0f;
     glm::vec3 baseColor{1.0f};
+    BlendMode blendMode = BlendMode::Opaque;
     std::string script;
     bool hasBody = false;
     RigidBodyComponent body{};
@@ -1026,6 +1051,10 @@ PendingEntityData parseEntityObject(const JsonValue& objectValue, int sceneVersi
         // pre-tint scene still loads unchanged.
         if (const JsonValue* colorValue = findObjectField(materialData, "baseColor")) {
             pendingEntity.baseColor = parseVec3(*colorValue, "material.baseColor");
+        }
+        // Optional: absent means Opaque, so every pre-blend-mode scene still loads.
+        if (const JsonValue* blendValue = findObjectField(materialData, "blendMode")) {
+            pendingEntity.blendMode = blendModeFromString(getStringValue(*blendValue, "material.blendMode"));
         }
     } else {
         float legacyShininess = 32.0f;
@@ -1301,6 +1330,7 @@ std::vector<Entity> createEntitiesFromObjects(Registry& registry, const std::vec
         material.roughness = pendingEntity.roughness;
         material.ao = pendingEntity.ao;
         material.baseColor = pendingEntity.baseColor;
+        material.blendMode = pendingEntity.blendMode;
         if (material.albedo != INVALID_HANDLE) {
             registry.materials.add(entity, { material });
         }
@@ -1455,6 +1485,7 @@ void patchEntity(Registry& registry, Entity entity, const PendingEntityData& dat
         material.roughness = data.roughness;
         material.ao = data.ao;
         material.baseColor = data.baseColor;
+        material.blendMode = data.blendMode;
         if (registry.materials.has(entity)) {
             registry.materials.get(entity).material = material;
         } else {

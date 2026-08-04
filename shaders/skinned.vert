@@ -50,6 +50,7 @@ layout(push_constant) uniform PushConstants
     float metallic;
     float roughness;
     float ao;
+    float blendMode;
     vec4 baseColor;
 } pushConstants;
 

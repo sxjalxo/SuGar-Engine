@@ -1,6 +1,7 @@
 #pragma once
 
 #include <glm/mat4x4.hpp>
+#include <glm/vec3.hpp>
 #include <memory>
 #include <vector>
 #include "assets/AssetHandle.h"
@@ -31,4 +32,7 @@ struct DrawList {
     std::vector<Light> lights;
 };
 
-void buildDrawListFromECS(const Registry& registry, const std::vector<Light>& lights, DrawList& out);
+// cameraPosition orders the translucent/additive tail back-to-front (painter's order);
+// opaque/masked draws are depth-sorted by the GPU and only batched by material here.
+void buildDrawListFromECS(const Registry& registry, const std::vector<Light>& lights,
+                          const glm::vec3& cameraPosition, DrawList& out);
