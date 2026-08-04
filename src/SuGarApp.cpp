@@ -369,6 +369,14 @@ void SuGarApp::initWindow() {
         Input::setMousePosition(x, y);
     });
 
+    glfwSetMouseButtonCallback(window, [](GLFWwindow*, int button, int action, int) {
+        if (action == GLFW_PRESS) {
+            Input::setMouseButton(button, true);
+        } else if (action == GLFW_RELEASE) {
+            Input::setMouseButton(button, false);
+        }
+    });
+
     // Typed characters for runtime UI text entry. Installed before ImGui's backend,
     // which chains to it, so both the editor and the game see text.
     glfwSetCharCallback(window, [](GLFWwindow*, unsigned int codepoint) {

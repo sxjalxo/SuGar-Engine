@@ -4,6 +4,22 @@
 #include <algorithm>
 #include <GLFW/glfw3.h>
 
+namespace {
+// One flat code space: a mouse code (>= MouseButtonBase) routes to the mouse-button
+// state, anything else to the keyboard. Callers (isActionDown/Pressed, getAxis) never
+// branch on the source.
+bool codeDown(int code) {
+    return code >= InputActions::MouseButtonBase
+               ? Input::isMouseButtonDown(code - InputActions::MouseButtonBase)
+               : Input::isKeyDown(code);
+}
+bool codePressed(int code) {
+    return code >= InputActions::MouseButtonBase
+               ? Input::isMouseButtonPressed(code - InputActions::MouseButtonBase)
+               : Input::isKeyPressed(code);
+}
+} // namespace
+
 std::unordered_map<std::string, std::vector<int>>& InputActions::actionTable() {
     static std::unordered_map<std::string, std::vector<int>> instance;
     return instance;
@@ -37,7 +53,7 @@ bool InputActions::isActionDown(const std::string& action) {
         return false;
     }
     for (int key : it->second) {
-        if (Input::isKeyDown(key)) {
+        if (codeDown(key)) {
             return true;
         }
     }
@@ -50,7 +66,7 @@ bool InputActions::isActionPressed(const std::string& action) {
         return false;
     }
     for (int key : it->second) {
-        if (Input::isKeyPressed(key)) {
+        if (codePressed(key)) {
             return true;
         }
     }
@@ -65,13 +81,13 @@ float InputActions::getAxis(const std::string& axis) {
 
     float value = 0.0f;
     for (int key : it->second.positiveKeys) {
-        if (Input::isKeyDown(key)) {
+        if (codeDown(key)) {
             value += 1.0f;
             break;
         }
     }
     for (int key : it->second.negativeKeys) {
-        if (Input::isKeyDown(key)) {
+        if (codeDown(key)) {
             value -= 1.0f;
             break;
         }

@@ -148,6 +148,11 @@ AssetHandle ResourceManager::loadTexture(const std::string& path) {
 
     if (cacheKey == CheckerboardTextureId) {
         texture->createCheckerboard(device, physicalDevice, commandPool, graphicsQueue);
+    } else if (cacheKey == WhiteTextureId) {
+        texture->createFromPixels(
+            device, physicalDevice, commandPool, graphicsQueue,
+            {255, 255, 255, 255}, 1, 1
+        );
     } else {
         std::vector<uint8_t> pixels;
         uint32_t width = 0;
@@ -234,6 +239,11 @@ bool ResourceManager::reloadAsset(const std::string& path) {
 
         if (cacheKey == CheckerboardTextureId) {
             texture->createCheckerboard(device, physicalDevice, commandPool, graphicsQueue);
+        } else if (cacheKey == WhiteTextureId) {
+            texture->createFromPixels(
+                device, physicalDevice, commandPool, graphicsQueue,
+                {255, 255, 255, 255}, 1, 1
+            );
         } else {
             std::vector<uint8_t> pixels;
             uint32_t width = 0;

@@ -10,7 +10,17 @@
 // no per-frame bookkeeping of its own.
 class InputActions {
 public:
-    // Bind an additional key to a digital action (held / pressed-this-frame).
+    // Input codes are one flat space so an action never cares where it came from:
+    // keyboard keys occupy the GLFW range (< MouseButtonBase); mouse buttons are
+    // offset above it. bindAction("Fire", MouseLeft) and bindAction("Fire", Space)
+    // then compose with no special-casing. GLFW_KEY_LAST is 348, so 512 leaves room.
+    static constexpr int MouseButtonBase = 512;
+    static constexpr int MouseLeft = MouseButtonBase + 0;   // GLFW_MOUSE_BUTTON_LEFT
+    static constexpr int MouseRight = MouseButtonBase + 1;  // GLFW_MOUSE_BUTTON_RIGHT
+    static constexpr int MouseMiddle = MouseButtonBase + 2; // GLFW_MOUSE_BUTTON_MIDDLE
+
+    // Bind an additional key (or mouse button, via the codes above) to a digital
+    // action (held / pressed-this-frame).
     static void bindAction(const std::string& action, int key);
 
     // Bind an analog axis: positiveKey contributes +1, negativeKey contributes -1.

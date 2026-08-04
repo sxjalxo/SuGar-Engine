@@ -22,6 +22,7 @@ layout(push_constant) uniform PushConstants
     float metallic;
     float roughness;
     float ao;
+    vec4 baseColor;
 } pushConstants;
 
 layout(location = 0) in vec3 fragPos;
@@ -57,7 +58,7 @@ float ShadowCalculation(vec4 fragPosLightSpace, vec3 normal, vec3 lightDir) {
 }
 
 void main() {
-    vec3 albedo = texture(texSampler, fragUV).rgb;
+    vec3 albedo = texture(texSampler, fragUV).rgb * pushConstants.baseColor.rgb;
     vec3 normal = normalize(fragNormal);
     vec3 viewDir = normalize(ubo.viewPos.xyz - fragPos);
     float metallic = clamp(pushConstants.metallic, 0.0, 1.0);

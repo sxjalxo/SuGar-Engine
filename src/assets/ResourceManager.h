@@ -20,6 +20,10 @@ struct ResourceEntry {
 class ResourceManager {
 public:
     static constexpr const char* CheckerboardTextureId = "builtin://checkerboard";
+    // A 1x1 opaque-white texture. Pair with Material::baseColor for a flat solid
+    // colour (albedo * tint = tint), the readable option for 2D games where every
+    // entity would otherwise share the checkerboard.
+    static constexpr const char* WhiteTextureId = "builtin://white";
 
     static void init(
         VkDevice device,

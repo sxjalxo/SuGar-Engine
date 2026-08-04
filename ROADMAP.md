@@ -130,11 +130,13 @@ speculation. Every forced change is recorded in the **M4 friction log** below.
 - Result: 10 engine boundary features (all forced by Pong), zero architecture rewrites,
   gate held 38/38. Write-up: `E:\Sugar Engine - Games\Level 1\Report.md`; forced changes in
   the friction log below.
-- Open: #11 no flat-colour `Material` tint (bricks all checkerboard); no
-  camera-visible-bounds query (2D games hand-fit their field — caused the fixed Breakout
-  side-escape bug).
+- Open: ~~#11 no flat-colour `Material` tint~~ (RESOLVED in L2 — forced by the top-down
+  shooter, see friction log); no camera-visible-bounds query (2D games hand-fit their field —
+  caused the fixed Breakout side-escape bug).
 
-**Level 2 — Small (scale + content). Next.**
+**Level 2 — Small (scale + content). In progress.**
+- Top-down shooter: DONE (forced #11 flat-colour material + #12 mouse input; else reused the
+  L1 surface). Gate now 39/39 (+`MouseInput`).
 - Games: 2D platformer, Vampire-Survivors-like, top-down shooter.
 - Exercises: ECS at scale (hundreds of entities), audio, animation on a real character, the
   asset pipeline under many assets, hot reload + editor workflow under sustained use. Expect
@@ -242,6 +244,55 @@ standalone** (`<gameDir>/dist`, runs with no source tree / no repo). Engine gate
 **38/38** throughout. Friction #5 (a real quad/sprite mesh) never bit — a flattened box
 sufficed. First L1 game complete; the engine grew nine boundary features, zero architecture
 rewrites — the pattern M4 was meant to produce.
+
+### Level 2 — Small (scale + content). In progress.
+
+**Top-Down Shooter (L2) — #11 no flat-colour material tint.** *Forced:* the game has three
+entity kinds on screen at once (player, enemies, bullets); with `Material` albedo being a
+texture handle only, every one shared `builtin://checkerboard` and was unreadable — you
+could not tell player from enemy from projectile. Asteroids dodged this (everything was a
+"rock") but a shooter cannot. This was the #11 item L1 left open, now forced. *Change:* a
+flat-colour tint multiplied into the sampled albedo. `Material::baseColor` (glm::vec3,
+default white → texture unchanged); pushed to the shader via the existing per-object push
+constant (added `vec4 baseColor`, 96 B total, under the 128 B floor) in `basic.vert/frag`
+and `skinned.vert`; new `builtin://white` 1×1 texture so `white × tint` gives a solid flat
+colour; serialized as an optional `material.baseColor` (absent ⇒ white, so every pre-tint
+scene still loads); editor Inspector `ColorEdit3`. No cook change (material lives in the
+scene, not the `.sgc`). *Verdict:* fixed. *Ref:* `rendering/Material.h`,
+`BasicTrianglePass.cpp` `ObjectPushConstants`, `shaders/basic.*`, `ResourceManager`
+`WhiteTextureId`, `SceneSerializer` (write/read/apply/snapshot), Renderer Inspector,
+`SelfTests.h` golden. Gate 38/38.
+
+**Top-Down Shooter (L2) — #12 no mouse input.** *Forced:* the canonical shooter aims with
+the mouse, but `InputActions`/`Input` were keyboard-only — no buttons, no cursor position, no
+way to turn the cursor into a world point. (The game shipped a keyboard auto-fire first, but
+mouse aim is the natural control and user-directed as needed by many future 2D/3D games.)
+*Change:* three layers, each minimal. **Core `Input`:** mouse-button state (down +
+pressed-this-frame, mirroring keys), a `MouseRay{origin,direction}` the engine writes each
+frame, and `getMouseWorldOnPlane(point, normal)` — pure ray-plane math, no camera. Stores the
+**ray, not a world point**: the point is derived against whatever plane the game cares about
+(Z=0 today, Y=0 or terrain tomorrow), so it isn't state (Rule 21b). **Core `InputActions`:**
+one flat code space — mouse buttons are codes ≥ `MouseButtonBase` (512; GLFW keys end at
+348), so `bindAction("Fire", MouseLeft)` and `bindAction("Fire", Space)` compose with no
+special-casing. **Engine:** `SuGarApp` wires the GLFW mouse-button callback; `Renderer`
+factors its existing pick-ray unprojection into `cameraRayThroughPixel` and pushes the
+cursor's world ray to `Input` each viewport frame (viewport-local pixel coords → correct in
+editor panel *and* fullscreen shipped game; same camera the pass renders). *Verdict:* fixed.
+*Ref:* `core/Input.{h,cpp}` (`MouseRay`, buttons, `getMouseWorldOnPlane`),
+`core/InputActions.{h,cpp}` (`MouseButtonBase`/`MouseLeft`, `codeDown`/`codePressed`),
+`SuGarApp` button callback, `Renderer` `cameraRayThroughPixel` + per-frame `setMouseRay`,
+`SelfTests.h` `testMouseInput` (headless: binding composition + ray-plane cases). Gate 39/39.
+
+**Top-Down Shooter: DONE.** Playable **true twin-stick** — arrow-key movement, **mouse aim +
+left-click to fire** (bullets go to the cursor's world point on the play plane), with a
+keyboard/auto-target fallback under headless autoplay. Enemy AI chases the player, a
+spawn-rate difficulty ramp, player health + game-over/restart, readable green/red/yellow via
+#11. Enemy + bullet pools authored in `scene.json` (L1 pooling, reused unchanged). Verified:
+editor Play (colours + **bullets fire toward the cursor**, confirmed by driving the OS
+cursor), autoplay loop (deterministic, monotonic score, difficulty ramp), packaged standalone
+(`Packager::verify` OK). **Two engine changes forced (#11 flat colour, #12 mouse input);
+everything else reused the L1 surface.** *Open (not yet forced):* camera-visible-bounds query
+(2D games still hand-fit their field).
 
 ---
 
@@ -1214,4 +1265,6 @@ full phase-by-phase history is in git.
 - **Level 1 (done)** — Pong, Breakout, Flappy Bird, Asteroids. 10 engine boundary features
   forced (all by Pong), zero architecture rewrites, gate held 38/38. Detail:
   `E:\Sugar Engine - Games\Level 1\Report.md`; forced changes in the **M4 friction log** above.
-- **Level 2** — next (2D platformer / survivors-like / top-down shooter).
+- **Level 2 (in progress)** — top-down shooter done (forced #11 flat-colour material tint +
+  #12 mouse input; everything else reused the L1 surface; gate 38→39/39). Remaining: 2D
+  platformer, survivors-like.

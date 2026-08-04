@@ -11,6 +11,7 @@
 #include "ecs/Registry.h"
 #include "rendering/Mesh.h"
 #include "rendering/Camera.h"
+#include "core/Input.h"
 #include "editor/EditorCommands.h"
 #include "editor/EditorTheme.h"
 #include "editor/EntityQuery.h"
@@ -47,6 +48,11 @@
 #include <GLFW/glfw3.h>
 
 namespace {
+// Defined lower down (near the picking code that shares it); forward-declared so the
+// viewport panel above can push the cursor ray into Input each frame.
+MouseRay cameraRayThroughPixel(Camera& camera, float pixelX, float pixelY,
+                               float viewportWidth, float viewportHeight);
+
 void checkImGuiVkResult(VkResult result) {
     if (result == VK_SUCCESS) {
         return;
@@ -1634,6 +1640,16 @@ void Renderer::buildEditorUi() {
         runtimeUI.processMouse(mouse.x - imageMin.x, mouse.y - imageMin.y,
                                imageHovered && leftDown);
 
+        // Publish the cursor as a world-space ray for gameplay (behaviours read it via
+        // Input::getMouseRay / getMouseWorldOnPlane). Viewport-local pixel coords, so it
+        // is correct in both the editor panel and a fullscreen shipped game. The camera
+        // it unprojects through is the one this pass renders — no separate convention.
+        if (activePass != nullptr && size.x > 0.0f && size.y > 0.0f) {
+            Input::setMouseRay(cameraRayThroughPixel(
+                activePass->getCamera(), mouse.x - imageMin.x, mouse.y - imageMin.y,
+                size.x, size.y));
+        }
+
         // Gizmo, selection overlay and click-to-select are editor-only; a shipped game
         // just displays the image (its own UI runs through the runtime HUD above).
         if (!gameView) {
@@ -1670,6 +1686,27 @@ void Renderer::buildEditorUi() {
 }
 
 namespace {
+// Cursor pixel -> world-space ray, built straight from the camera frustum so the
+// Vulkan projection Y-flip doesn't matter. Mode-agnostic: the world basis comes from
+// the inverse view matrix (works for FREE/ORBIT/FOLLOW), not from yaw/pitch. Shared by
+// entity picking and the per-frame Input::setMouseRay push.
+MouseRay cameraRayThroughPixel(Camera& camera, float pixelX, float pixelY,
+                               float viewportWidth, float viewportHeight) {
+    const glm::mat4 invView = glm::inverse(camera.getViewMatrix());
+    const glm::vec3 rayOrigin = glm::vec3(invView[3]);
+    const glm::vec3 right = glm::normalize(glm::vec3(invView[0]));
+    const glm::vec3 up = glm::normalize(glm::vec3(invView[1]));
+    const glm::vec3 forward = glm::normalize(-glm::vec3(invView[2]));
+
+    const float ndcX = (2.0f * pixelX / viewportWidth) - 1.0f;
+    const float ndcY = 1.0f - (2.0f * pixelY / viewportHeight);
+    const float aspect = viewportWidth / viewportHeight;
+    const float tanHalfFovY = std::tan(glm::radians(camera.fov) * 0.5f);
+    const glm::vec3 rayDir = glm::normalize(
+        forward + right * (ndcX * aspect * tanHalfFovY) + up * (ndcY * tanHalfFovY));
+    return MouseRay{rayOrigin, rayDir};
+}
+
 // Slab-method ray vs axis-aligned box. Returns the near hit distance in tNear.
 bool rayIntersectsAabb(const glm::vec3& origin, const glm::vec3& dir,
                        const glm::vec3& lo, const glm::vec3& hi, float& tNear) {
@@ -1704,22 +1741,9 @@ Entity Renderer::pickEntityAt(float pixelX, float pixelY, float viewportWidth, f
     }
 
     Camera& camera = activePass->getCamera();
-    // Camera world basis from the inverse view matrix — mode-agnostic (works for
-    // FREE/ORBIT/FOLLOW), unlike reading yaw/pitch directly.
-    const glm::mat4 invView = glm::inverse(camera.getViewMatrix());
-    const glm::vec3 rayOrigin = glm::vec3(invView[3]);
-    const glm::vec3 right = glm::normalize(glm::vec3(invView[0]));
-    const glm::vec3 up = glm::normalize(glm::vec3(invView[1]));
-    const glm::vec3 forward = glm::normalize(-glm::vec3(invView[2]));
-
-    // Pixel -> normalized device coords in [-1,1] (y up). Build the ray straight
-    // from the camera frustum so the Vulkan projection Y-flip doesn't matter.
-    const float ndcX = (2.0f * pixelX / viewportWidth) - 1.0f;
-    const float ndcY = 1.0f - (2.0f * pixelY / viewportHeight);
-    const float aspect = viewportWidth / viewportHeight;
-    const float tanHalfFovY = std::tan(glm::radians(camera.fov) * 0.5f);
-    const glm::vec3 rayDir = glm::normalize(
-        forward + right * (ndcX * aspect * tanHalfFovY) + up * (ndcY * tanHalfFovY));
+    const MouseRay ray = cameraRayThroughPixel(camera, pixelX, pixelY, viewportWidth, viewportHeight);
+    const glm::vec3 rayOrigin = ray.origin;
+    const glm::vec3 rayDir = ray.direction;
 
     Entity hit = INVALID_ENTITY;
     float closest = std::numeric_limits<float>::max();
@@ -2562,6 +2586,7 @@ void Renderer::drawInspectorPanel() {
         ImGui::SliderFloat("Metallic", &material.metallic, 0.0f, 1.0f);
         ImGui::SliderFloat("Roughness", &material.roughness, 0.0f, 1.0f);
         ImGui::SliderFloat("AO", &material.ao, 0.0f, 1.0f);
+        ImGui::ColorEdit3("Base Color", &material.baseColor.x);
     }
 
     if (registry->scripts.has(selectedEntity)) {

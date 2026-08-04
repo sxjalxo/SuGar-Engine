@@ -19,6 +19,9 @@ struct ObjectPushConstants {
     float roughness = 0.5f;
     float ao = 1.0f;
     float padding = 0.0f;
+    // vec4 keeps the 16-byte std430 alignment the shader's push_constant block uses;
+    // .w is unused. Flat-colour tint (see Material::baseColor).
+    glm::vec4 baseColor{1.0f};
 };
 
 // Must match MAX_JOINTS in shaders/skinned.vert and shaders/skinned_shadow.vert.
@@ -387,6 +390,7 @@ void BasicTrianglePass::renderScenePass(VkCommandBuffer cmd, uint32_t imageIndex
         pushConstants.metallic = item.material.metallic;
         pushConstants.roughness = item.material.roughness;
         pushConstants.ao = item.material.ao;
+        pushConstants.baseColor = glm::vec4(item.material.baseColor, 1.0f);
 
         vkCmdPushConstants(
             cmd,

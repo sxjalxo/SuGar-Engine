@@ -41,6 +41,7 @@
 #include "assets/GltfLoader.h"
 #include "assets/GltfModel.h"
 #include "assets/ModelImporter.h"
+#include "core/Input.h"
 #include "core/InputActions.h"
 #include "core/SaveData.h"
 #include "core/SnapshotStorage.h"
@@ -2345,7 +2346,8 @@ inline bool testSerializer() {
         "        \"albedo\": \"\",\n"
         "        \"metallic\": 0,\n"
         "        \"roughness\": 0.5,\n"
-        "        \"ao\": 1\n"
+        "        \"ao\": 1,\n"
+        "        \"baseColor\": [1, 1, 1]\n"
         "      },\n"
         "      \"script\": \"Spin\",\n"
         "      \"rigidbody\": {\n"
@@ -3736,6 +3738,79 @@ inline bool testSaveData() {
     return ok;
 }
 
+// Mouse input, fully headless (no GLFW, no window). Two properties: (1) mouse buttons
+// bind as named actions in the same flat code space as keys, so an action fires from
+// either source; (2) the ray-plane helper derives the correct world point from the
+// stored cursor ray against an arbitrary plane. The renderer's pixel->ray unprojection
+// is not tested here (it needs a camera + viewport); this pins the Core contract
+// behaviours actually call.
+inline bool testMouseInput() {
+    bool ok = true;
+
+    Input::init();
+    InputActions::clear();
+
+    // (1) One action, two sources: a mouse button and a key.
+    constexpr int KeyA = 65;
+    InputActions::bindAction("Fire", InputActions::MouseLeft);
+    InputActions::bindAction("Fire", KeyA);
+
+    ok &= !InputActions::isActionDown("Fire"); // nothing pressed yet
+
+    Input::setMouseButton(0, true); // GLFW_MOUSE_BUTTON_LEFT
+    ok &= InputActions::isActionDown("Fire");
+    ok &= InputActions::isActionPressed("Fire"); // pressed-this-frame edge
+
+    Input::beginFrame();                          // clears the pressed edge, keeps held
+    ok &= InputActions::isActionDown("Fire");
+    ok &= !InputActions::isActionPressed("Fire");
+
+    Input::setMouseButton(0, false);
+    ok &= !InputActions::isActionDown("Fire");
+
+    Input::setKey(KeyA, true);                     // the key half of the same action
+    ok &= InputActions::isActionDown("Fire");
+    Input::setKey(KeyA, false);
+
+    // A right-drag axis composed from mouse buttons proves getAxis routes them too.
+    InputActions::bindAxis("MouseAxis", InputActions::MouseRight, InputActions::MouseMiddle);
+    Input::setMouseButton(1, true);                // right -> +1
+    ok &= std::abs(InputActions::getAxis("MouseAxis") - 1.0f) < 1e-5f;
+    Input::setMouseButton(1, false);
+
+    // (2) Ray-plane math. A downward ray onto Z=0.
+    auto approx = [](const glm::vec3& a, const glm::vec3& b) {
+        return glm::length(a - b) < 1e-4f;
+    };
+    glm::vec3 hit;
+    Input::setMouseRay(MouseRay{glm::vec3(0.0f, 0.0f, 10.0f), glm::vec3(0.0f, 0.0f, -1.0f)});
+    ok &= Input::getMouseWorldOnPlane(glm::vec3(0.0f), glm::vec3(0, 0, 1), hit);
+    ok &= approx(hit, glm::vec3(0.0f));
+
+    // Angled ray: from (0,0,10) along (1,0,-1) normalized hits Z=0 at x=10.
+    Input::setMouseRay(MouseRay{glm::vec3(0.0f, 0.0f, 10.0f),
+                                glm::normalize(glm::vec3(1.0f, 0.0f, -1.0f))});
+    ok &= Input::getMouseWorldOnPlane(glm::vec3(0.0f), glm::vec3(0, 0, 1), hit);
+    ok &= approx(hit, glm::vec3(10.0f, 0.0f, 0.0f));
+
+    // An arbitrary plane (Y=0) works with no camera-convention assumption.
+    Input::setMouseRay(MouseRay{glm::vec3(0.0f, 10.0f, 0.0f), glm::vec3(0.0f, -1.0f, 0.0f)});
+    ok &= Input::getMouseWorldOnPlane(glm::vec3(0.0f), glm::vec3(0, 1, 0), hit);
+    ok &= approx(hit, glm::vec3(0.0f));
+
+    // Parallel ray: no hit.
+    Input::setMouseRay(MouseRay{glm::vec3(0.0f, 0.0f, 10.0f), glm::vec3(1.0f, 0.0f, 0.0f)});
+    ok &= !Input::getMouseWorldOnPlane(glm::vec3(0.0f), glm::vec3(0, 0, 1), hit);
+
+    // Plane behind the ray: no hit (t < 0).
+    Input::setMouseRay(MouseRay{glm::vec3(0.0f, 0.0f, 10.0f), glm::vec3(0.0f, 0.0f, 1.0f)});
+    ok &= !Input::getMouseWorldOnPlane(glm::vec3(0.0f), glm::vec3(0, 0, 1), hit);
+
+    InputActions::clear();
+    Input::init();
+    return ok;
+}
+
 // Hostile / corrupt input must fail cleanly, never crash or read out of bounds. Pins the
 // three deserializers that take attacker-reachable bytes: the scene JSON parser, the glTF
 // importer, and the cooked (.sgc) container reader. A regression here is a security bug,
@@ -3861,6 +3936,7 @@ inline std::pair<int, int> run() {
         { "RegistryGraph",    testRegistryGraph },
         { "MalformedInput",   testMalformedInput },
         { "SaveData",         testSaveData },
+        { "MouseInput",       testMouseInput },
     };
 
     int passed = 0;
