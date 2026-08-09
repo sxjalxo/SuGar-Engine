@@ -204,6 +204,17 @@ Reason
 
 Provides HTML/CSS authoring while remaining renderer-independent.
 
+Rendering boundary (SuGar owns Vulkan)
+
+RmlUi is a **consumer** of SuGar's renderer, never a driver of it. It creates no Vulkan
+device, swapchain or render loop; it calls a hand-written `Rml::RenderInterface`
+(`RmlVulkanRenderer`) that SuGar owns entirely. That interface implements RmlUi 6's effect
+path — offscreen colour layers, a fullscreen Gaussian-blur composite, and save-layer-as-texture
+(so `box-shadow`/`blur` work) — as SuGar-owned Vulkan passes. The runtime UI renders in its
+**own render pass after the scene pass**, so the compositor can open offscreen passes a live
+scene pass would forbid. Effects are added only when a game forces one (Rule 22 seam, Rule 8
+scope): stencil clip masks are a documented, not-yet-built gap.
+
 State ownership (RULES.md Rule 21)
 
 Authoritative UI state — what game logic reads (menu open, selected slot, health

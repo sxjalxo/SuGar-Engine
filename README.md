@@ -55,7 +55,16 @@ standalone under `<dir>/dist` (a shipped build hides all editor chrome and shows
 game + its runtime HUD). **Level 1 is complete** — Pong, Breakout, Flappy Bird and Asteroids,
 built and shipped, forcing ten engine boundary features (game boot, 2D camera, game-DLL
 loading, `SaveData`, auto-play, `UILabelComponent`, runtime-file packaging, shipped-game view)
-and **zero architecture rewrites**. Next: Level 2.
+and **zero architecture rewrites**. **Level 2 is under way** — a top-down shooter is done
+(true twin-stick: keyboard move + mouse aim), plus a content pass that gave Asteroids a real
+sprite pack and upgraded all four HUDs from plaintext to styled panels. Unlike Level 1 (where
+every gap was a boundary/tooling fix), these games forced four *renderer* features — each built
+as a reusable **seam**, not a one-off (Rule 22): **#11** a flat-colour `Material` tint, **#12**
+mouse input (buttons + a world-space cursor ray), **#13** a per-material **blend-mode** seam
+(Opaque/Masked/Translucent/Additive) for transparent sprites, and **#14** an **RmlUi effects
+compositor** (offscreen layers + Gaussian-blur composite) that made `box-shadow`/blur work and
+moved the runtime UI into its own render pass. The `SUGAR_VALIDATE` gate held at **40/40**
+(Debug + Release) throughout.
 
 > Positioning: *"A Vulkan engine designed for instant iteration and debuggable
 > systems — not just rendering power."* Open-source, dev-led, aimed at indie devs.
@@ -86,6 +95,14 @@ and **zero architecture rewrites**. Next: Level 2.
   time-travels and hot-reloads like any other component; hover/layout/rendering are
   derived. Design: `docs/DESIGN_RUNTIME_UI.md` — rationale
   and lessons: `docs/RUNTIME_UI_LESSONS.md`
+* **RmlUi effects compositor** (M4 #14) — the runtime UI renders in its own pass after
+  the scene pass, and the Vulkan `RenderInterface` implements RmlUi 6's layer path
+  (offscreen colour layers + a fullscreen Gaussian-blur composite + save-layer-as-texture),
+  so `box-shadow`/`blur` work. Stencil clip masks are a deliberate not-yet-needed gap
+* **Player input** — `InputActions` maps named actions/axes to keys **and mouse buttons**
+  (one flat code space, so `"Fire"` binds Space *or* mouse-left); the engine publishes the
+  cursor as a world-space ray each frame, and `Input::getMouseWorldOnPlane(point, normal)`
+  turns it into a world point on any plane (Rule 21b: the ray is stored, the point derived)
 * **Editor Systems panel** (Phase 13C) — a live view of the gameplay pipeline:
   each system's declared read/write masks, the computed parallel stages, and any
   access violations (green when every system stays within its declaration)
@@ -262,7 +279,11 @@ and **zero architecture rewrites**. Next: Level 2.
 * Offscreen rendering with ImGui viewport integration
 * Depth testing and proper render pass separation
 * Multi-light system (ambient + diffuse + specular)
-* Physically-inspired materials (metallic + roughness)
+* Physically-inspired materials (metallic + roughness) with a **flat-colour tint**
+  (`Material::baseColor` over `builtin://white`) for 2D/sprite work
+* **Per-material blend modes** — Opaque / Masked (alpha cutout) / Translucent / Additive;
+  the draw list buckets opaque-first and sorts the blended tail back-to-front, one pipeline
+  per blend state (the Unreal/Unity render-queue seam)
 * Directional shadow mapping with PCF filtering
 * Gamma correction for improved visual output
 
@@ -519,7 +540,11 @@ Milestone summary:
   recorded in the `ROADMAP.md` friction log. **Level 1 is complete** — Pong, Breakout, Flappy
   Bird and Asteroids, each playable and shipped as a standalone, forcing ten engine boundary
   features and zero architecture rewrites (write-up in the games' `Level 1\Report.md`). Two
-  pre-freeze additions also landed here: input hardening and crash reporting. Next: Level 2.
+  pre-freeze additions also landed here: input hardening and crash reporting. **Level 2 is
+  under way** — a top-down shooter (keyboard move + mouse aim) plus a content pass (Asteroids
+  sprites, styled HUDs). These forced four *renderer* seams (Rule 22): #11 flat-colour material
+  tint, #12 mouse input, #13 per-material blend modes, #14 an RmlUi effects compositor
+  (box-shadow/blur; UI moved to its own pass). Gate held **40/40**, Debug + Release.
 
 ---
 

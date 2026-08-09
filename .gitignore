@@ -38,6 +38,14 @@ imgui.ini
 # Crash reports (CrashHandler writes ./crashes/crash_*.dmp + .txt at runtime)
 /crashes/
 
+# Debug symbols (MSVC). Emitted into /build/ already, but ignore stray copies too --
+# never source, and the game DLL build (M4) drops a Game.pdb beside the DLL.
+*.pdb
+
+# SaveData runtime store (core/SaveData). A game points it at <gameDir>/save.dat; if the
+# engine is ever run from the repo it would write ./save.dat. Runtime state, never committed.
+save.dat
+
 # OS files
 Thumbs.db
 .DS_Store
