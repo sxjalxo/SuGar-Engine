@@ -130,9 +130,14 @@ speculation. Every forced change is recorded in the **M4 friction log** below.
 - Result: 10 engine boundary features (all forced by Pong), zero architecture rewrites,
   gate held 38/38. Write-up: `E:\Sugar Engine - Games\Level 1\Report.md`; forced changes in
   the friction log below.
-- Open: ~~#11 no flat-colour `Material` tint~~ (RESOLVED in L2 — forced by the top-down
-  shooter, see friction log); no camera-visible-bounds query (2D games hand-fit their field —
-  caused the fixed Breakout side-escape bug).
+- Open: ~~#11 no flat-colour `Material` tint~~ (RESOLVED in L2); ~~`box-shadow` broken in the
+  RmlUi backend~~ (RESOLVED by #14, the RmlUi effects compositor — see friction log); no
+  camera-visible-bounds query (2D games hand-fit their field — caused the fixed Breakout
+  side-escape bug).
+- **HUD polish (content, no engine change):** all four HUDs upgraded from plaintext to a
+  shared RCSS look — rounded translucent chips with a caption + big value, per-game accent
+  colour, accent message text, soft box-shadow (via #14). Element ids the behaviours write are
+  preserved; all four repackaged, `verify` OK.
 
 **Level 2 — Small (scale + content). In progress.**
 - Top-down shooter: DONE (forced #11 flat-colour material + #12 mouse input; else reused the
@@ -338,6 +343,37 @@ files above; game-side `quad.obj` + `assets/textures/*.png` + `scene.json`. **Ga
 (+`BlendMode`), Debug + Release. Packaged standalone: 11 cooked assets, `verify` OK, boots
 from `dist`. *Deferred (Rule 8, not yet forced):* premultiplied-alpha and per-particle soft
 blending, and blended shadow-casting — the seam takes them without a rewrite.
+
+**HUDs (L1) — #14 no RmlUi effects (`box-shadow` rendered as a white quad).** *Forced:* polishing
+the four HUDs wanted soft drop-shadows, but the custom RmlUi Vulkan backend implemented only
+core geometry/texture/scissor — none of RmlUi 6's layer/filter path (`PushLayer`,
+`CompositeLayers`, `SaveLayerAsTexture`, `CompileFilter`). box-shadow's internal white mask
+geometry leaked straight to screen and its shadow texture resolved to the fallback white
+texture (even RmlUi's *own* reference Vulkan backend never shipped these — only GL3 did).
+*Change (per Rule 22 — build the compositor **seam**, not the whole effect catalogue):*
+- **Frame graph:** the UI now renders in its **own pass after the scene pass** (`Renderer::
+  createUiLayerPass`), not appended to it — so the compositor can open/close offscreen passes
+  a still-open scene pass would forbid. The scene pass hands the image off in
+  COLOR_ATTACHMENT; the UI pass LOADs it and `endFrame` barriers it to SHADER_READ for ImGui.
+  With no effects the output is pixel-identical (verified). Vulkan stays SuGar-owned; RmlUi is
+  purely a consumer.
+- **Compositor** (`RmlVulkanRenderer`): offscreen colour-layer pool + an offscreen render pass;
+  `PushLayer`/`PopLayer` open/clear/close layers; `CompositeLayers` draws a fullscreen triangle
+  sampling one layer onto another through a **single-pass Gaussian blur** (`rml_composite.frag`,
+  the box-shadow "blur" filter) or a plain copy; `SaveLayerAsTexture` copies the layer's scissor
+  region into a **persistent** image (RmlUi caches shadow textures across frames); `CompileFilter`
+  parses `blur`'s sigma. Lazy pass-open + a "current target" stack handle the interleaving.
+- **Scoped (Rule 8):** stencil **clip masks are a deliberate no-op** — box-shadow only needs
+  them to hide a shadow under a *translucent* element; opaque elements (the common case, all
+  the HUD chips) cover it. A documented, forced-later gap, not a silent one.
+*Verdict:* fixed — box-shadow renders correct soft offset shadows across all four HUDs (no
+white box, no validation errors); the headless RmlUi smoke test now carries a box-shadow to
+guard the effect codepath every launch. *Ref:* `Renderer::createUiLayerPass`,
+`BasicTrianglePass` (UI moved after scene pass; scene finalLayout), `RmlVulkanRenderer`
+(layer pool, offscreen pass, composite/blur pipeline, effect overrides), `shaders/rml_fullscreen.vert`
++ `rml_composite.frag`, `RuntimeUIView::smokeTest`. **Gate 40/40**, Debug + Release. All four
+HUDs repackaged, `verify` OK. *Deferred (not yet forced):* stencil clip masks (translucent-
+element shadows), separable/downsampled blur (perf for large sigma), non-blur RCSS filters.
 
 ---
 

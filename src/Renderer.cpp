@@ -216,6 +216,7 @@ void Renderer::init() {
     // Runtime player UI (Phase 16B.5). Draws into the *scene* render pass, i.e. onto
     // the offscreen game image the Viewport panel displays — not over the editor
     // chrome. Player UI belongs to the game; ImGui owns the tools around it.
+    createUiLayerPass();
     runtimeUI.init(app->getDevice(), app->getPhysicalDevice(), app->getCommandPool(),
                    app->getGraphicsQueue(), getSceneRenderPass(), viewportExtent, uiIntentQueue);
 }
@@ -257,6 +258,11 @@ void Renderer::shutdown() {
     if (uiRenderPass != VK_NULL_HANDLE) {
         vkDestroyRenderPass(device, uiRenderPass, nullptr);
         uiRenderPass = VK_NULL_HANDLE;
+    }
+
+    if (uiLayerPass != VK_NULL_HANDLE) {
+        vkDestroyRenderPass(device, uiLayerPass, nullptr);
+        uiLayerPass = VK_NULL_HANDLE;
     }
 
     if (imguiDescriptorPool != VK_NULL_HANDLE) {
@@ -684,6 +690,80 @@ void Renderer::createFramebuffers() {
         }
     }
 
+}
+
+void Renderer::createUiLayerPass() {
+    // Color: LOAD the finished scene image (left in COLOR_ATTACHMENT_OPTIMAL by the scene
+    // pass), draw UI over it, hand it to ImGui as SHADER_READ_ONLY. Depth is present only
+    // for render-pass compatibility with the scene framebuffer + UI pipeline; the UI never
+    // tests or writes it (DONT_CARE, contents undefined).
+    VkAttachmentDescription colorAttachment{};
+    colorAttachment.format = swapChainImageFormat;
+    colorAttachment.samples = VK_SAMPLE_COUNT_1_BIT;
+    colorAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
+    colorAttachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+    colorAttachment.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+    colorAttachment.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+    colorAttachment.initialLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    // Stays COLOR_ATTACHMENT so the compositor can re-open this pass after interleaving
+    // offscreen effect passes; endFrame() issues the final barrier to SHADER_READ_ONLY.
+    colorAttachment.finalLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+
+    VkAttachmentDescription depthAttachment{};
+    depthAttachment.format = depthFormat;
+    depthAttachment.samples = VK_SAMPLE_COUNT_1_BIT;
+    depthAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+    depthAttachment.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+    depthAttachment.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+    depthAttachment.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+    depthAttachment.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    depthAttachment.finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+
+    VkAttachmentReference colorRef{};
+    colorRef.attachment = 0;
+    colorRef.layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    VkAttachmentReference depthRef{};
+    depthRef.attachment = 1;
+    depthRef.layout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+
+    std::array<VkAttachmentDescription, 2> attachments = {colorAttachment, depthAttachment};
+
+    VkSubpassDescription subpass{};
+    subpass.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
+    subpass.colorAttachmentCount = 1;
+    subpass.pColorAttachments = &colorRef;
+    subpass.pDepthStencilAttachment = &depthRef;
+
+    // Dependencies match the scene pass verbatim: this pass shares the scene framebuffer,
+    // and render-pass/framebuffer compatibility validation compares subpass dependencies.
+    // They are also correct for the UI pass (wait before writing; publish writes to the
+    // ImGui sampler).
+    std::array<VkSubpassDependency, 2> dependencies{};
+    dependencies[0].srcSubpass = VK_SUBPASS_EXTERNAL;
+    dependencies[0].dstSubpass = 0;
+    dependencies[0].srcStageMask = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
+    dependencies[0].srcAccessMask = 0;
+    dependencies[0].dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT;
+    dependencies[0].dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+    dependencies[1].srcSubpass = 0;
+    dependencies[1].dstSubpass = VK_SUBPASS_EXTERNAL;
+    dependencies[1].srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
+    dependencies[1].srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+    dependencies[1].dstStageMask = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+    dependencies[1].dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+
+    VkRenderPassCreateInfo info{};
+    info.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
+    info.attachmentCount = static_cast<uint32_t>(attachments.size());
+    info.pAttachments = attachments.data();
+    info.subpassCount = 1;
+    info.pSubpasses = &subpass;
+    info.dependencyCount = static_cast<uint32_t>(dependencies.size());
+    info.pDependencies = dependencies.data();
+
+    if (vkCreateRenderPass(app->getDevice(), &info, nullptr, &uiLayerPass) != VK_SUCCESS) {
+        throw std::runtime_error("failed to create UI layer render pass!");
+    }
 }
 
 void Renderer::createViewportResources() {

@@ -348,17 +348,24 @@ void RuntimeUIView::syncLabelsFromEcs(const Registry* registry) {
     }
 }
 
-void RuntimeUIView::render(VkCommandBuffer cmd, VkExtent2D extent, const Registry* registry) {
-    if (context == nullptr || !renderer || !renderer->isReady()) {
+void RuntimeUIView::render(VkCommandBuffer cmd, VkExtent2D extent, VkFramebuffer framebuffer,
+                           VkRenderPass layerPass, VkImage sceneImage, const Registry* registry) {
+    if (!renderer || !renderer->isReady()) {
         return;
     }
-    syncFromEcs(registry); // ECS is the model; the document is a projection of it
-    syncTextFromEcs(registry);
-    syncLabelsFromEcs(registry);
-    context->SetDimensions(Rml::Vector2i(static_cast<int>(extent.width), static_cast<int>(extent.height)));
-    renderer->beginFrame(cmd, extent);
-    context->Update();
-    context->Render();
+    // The UI pass must run whenever the scene pass did, even with no document to draw:
+    // it is what transitions the scene image from COLOR_ATTACHMENT to SHADER_READ_ONLY
+    // for ImGui. So open/close it unconditionally; only the RmlUi draw is guarded.
+    renderer->beginFrame(cmd, extent, framebuffer, layerPass, sceneImage);
+    if (context != nullptr) {
+        syncFromEcs(registry); // ECS is the model; the document is a projection of it
+        syncTextFromEcs(registry);
+        syncLabelsFromEcs(registry);
+        context->SetDimensions(Rml::Vector2i(static_cast<int>(extent.width), static_cast<int>(extent.height)));
+        context->Update();
+        context->Render();
+    }
+    renderer->endFrame();
 }
 
 void RuntimeUIView::shutdown() {
@@ -397,8 +404,13 @@ bool RuntimeUIView::smokeTest() {
     ok = ok && context != nullptr;
 
     if (ok && context != nullptr) {
+        // #probe carries a box-shadow so this smoke test also exercises RmlUi's effect
+        // path (CompileFilter / PushLayer / CompositeLayers / SaveLayerAsTexture) end to
+        // end -- the compositor the Vulkan backend implements. A box-shadow-bearing
+        // document must load, lay out and render without crashing.
         const Rml::String documentRml =
-            "<rml><head><style>body{width:100%;height:100%;font-family:LatoLatin;}</style></head>"
+            "<rml><head><style>body{width:100%;height:100%;font-family:LatoLatin;}"
+            "#probe{display:block;width:80px;height:30px;box-shadow:#000000aa 2px 4px 6px;}</style></head>"
             "<body><div id=\"probe\">hello</div></body></rml>";
         Rml::ElementDocument* document = context->LoadDocumentFromMemory(documentRml);
         ok = ok && document != nullptr;

@@ -56,7 +56,9 @@ public:
     void setUIIntentQueue(UIIntentQueue* queue) { this->uiIntentQueue = queue; }
     // Records the player UI into the scene/viewport pass. Called by the scene pass
     // just before it ends, so the UI composites onto the game image.
-    void renderRuntimeUIViewport(VkCommandBuffer cmd) { runtimeUI.render(cmd, viewportExtent, registry); }
+    void renderRuntimeUIViewport(VkCommandBuffer cmd) {
+        runtimeUI.render(cmd, viewportExtent, viewportFramebuffer, uiLayerPass, viewportImage, registry);
+    }
     // Keyboard focus navigation for the player UI (emits intents; see RuntimeUIView).
     void runtimeUIFocusNext(bool reverse) { runtimeUI.focusNext(reverse); }
     void runtimeUIActivateFocused() { runtimeUI.activateFocused(); }
@@ -285,6 +287,15 @@ private:
     VkDeviceMemory viewportImageMemory = VK_NULL_HANDLE;
     VkImageView viewportImageView = VK_NULL_HANDLE;
     VkFramebuffer viewportFramebuffer = VK_NULL_HANDLE;
+    // The runtime UI (RmlUi) renders in its own pass *after* the scene pass ends, so the
+    // RmlUi compositor can begin/end offscreen layer passes (box-shadow/blur) that a
+    // still-open scene pass would forbid. This pass LOADs the finished scene image
+    // (which the scene pass now leaves in COLOR_ATTACHMENT_OPTIMAL), draws the UI over
+    // it, and transitions it to SHADER_READ_ONLY for the ImGui Viewport panel. Render-
+    // pass-compatible with the scene pass (same color+depth attachments), so the UI
+    // pipeline is reused unchanged.
+    VkRenderPass uiLayerPass = VK_NULL_HANDLE;
+    void createUiLayerPass();
     VkImage shadowImage = VK_NULL_HANDLE;
     VkDeviceMemory shadowImageMemory = VK_NULL_HANDLE;
     VkImageView shadowImageView = VK_NULL_HANDLE;

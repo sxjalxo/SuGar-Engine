@@ -55,7 +55,8 @@ public:
     // Records the runtime UI into `cmd`. Must be called inside the UI render pass.
     // Polls `registry` for the authoritative UI model first (never subscribes to it —
     // see docs/DESIGN_RUNTIME_UI.md), so the view is a pure function of ECS state.
-    void render(VkCommandBuffer cmd, VkExtent2D extent, const Registry* registry);
+    void render(VkCommandBuffer cmd, VkExtent2D extent, VkFramebuffer framebuffer,
+                VkRenderPass layerPass, VkImage sceneImage, const Registry* registry);
 
     void shutdown();
     bool isReady() const { return context != nullptr; }

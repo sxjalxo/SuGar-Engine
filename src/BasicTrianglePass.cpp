@@ -409,11 +409,12 @@ void BasicTrianglePass::renderScenePass(VkCommandBuffer cmd, uint32_t imageIndex
         vkCmdDrawIndexed(cmd, static_cast<uint32_t>(item.mesh->indices.size()), 1, 0, 0, 0);
     }
 
-    // Player UI (RmlUi) composites onto the game image, inside this pass and after
-    // the scene, so it lands in the Viewport panel rather than over the editor.
-    renderer->renderRuntimeUIViewport(cmd);
-
     vkCmdEndRenderPass(cmd);
+
+    // Player UI (RmlUi) composites onto the finished game image in its OWN pass (the scene
+    // pass is now closed), so the RmlUi compositor is free to open offscreen layer passes
+    // for effects like box-shadow. It LOADs the scene image and leaves it SHADER_READ_ONLY.
+    renderer->renderRuntimeUIViewport(cmd);
 }
 
 void BasicTrianglePass::moveCameraForward(float deltaTime) {
@@ -445,7 +446,10 @@ void BasicTrianglePass::createRenderPass() {
     colorAttachment.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
     colorAttachment.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
     colorAttachment.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-    colorAttachment.finalLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    // The runtime UI now renders in a following pass (see Renderer::createUiLayerPass), so
+    // the scene image is handed off in COLOR_ATTACHMENT_OPTIMAL for that pass to LOAD; the
+    // UI pass is what finally transitions it to SHADER_READ_ONLY for ImGui.
+    colorAttachment.finalLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
 
     VkAttachmentDescription depthAttachment{};
     depthAttachment.format = renderer->getDepthFormat();
