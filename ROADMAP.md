@@ -155,11 +155,36 @@ speculation. Every forced change is recorded in the **M4 friction log** below.
   layers/masks, trigger colliders, `PhysicsQuery::raycast`). Gate **40 → 47/47**.
 - Write-up: `E:\Sugar Engine - Games\Level 2\Report.md`.
 
-**Level 3 — The real game: voxel / Minecraft-like. (NEXT)**
-- Exercises: lighting, particles, AI, navigation, world/chunk serialization, packaging — all
-  at once. The honest test of "ship a real game without extending the architecture."
-- Most likely to force genuine *engine* additions (chunk streaming, voxel meshing) — which is
-  the point: by here we know exactly what is missing because a real game proved it.
+**Level 3 — The real game: voxel / Minecraft-like. IN PROGRESS.**
+- First slice runs: first-person, a chunked voxel world, gravity + game-side voxel collision,
+  raycast break/place. Forced **three architectural seams** — each designed as a record first
+  (`docs/DESIGN_RUNTIME_MESH.md`, the `AssetGateway` + `CameraComponent` designs), never
+  "add a function":
+  - **Camera as a component** (`CameraComponent`, Core): a game drives the view by placing it
+    on an entity; the renderer reads that entity's world transform (pose derived, Rule 21b).
+    Editor orbit camera unchanged when absent.
+  - **Asset-acquire seam** (`AssetGateway`, Core): the symmetric *acquire* half of the existing
+    `onReleaseAsset` release hook — a Core-only game turns an asset key into an increfed handle
+    (`acquireMesh/Texture/AudioClip`) without seeing ResourceManager. Killed the illegal
+    handle-clone place-block did.
+  - **Runtime-mesh seam** (`AssetGateway::createMesh(RuntimeMeshData)`): game-generated vertices
+    → a derived `runtime://` GPU mesh (non-source: never scanned/cooked/packaged/serialized).
+    Only `string`+`AssetHandle`+POD cross the boundary; the engine copies + uploads and owns
+    the lifetime.
+- One engine defect found + fixed: an all-runtime-spawned scene built zero texture descriptors
+  at load → first chunk threw `texture descriptor set was not created`; the renderer now lazily
+  rebuilds descriptors when the draw list references a never-seen texture.
+- **Measurement decided the deferred perf debate with evidence** (chunk-as-entity vs per-block,
+  25 600-block world): entities 25 600 → **102**, draws 25 600 → **100**, FPS 1.2 → **445**,
+  snapshot 410 ms → **under budget**. Conclusion: **C24 instancing, A4 storage rewrite, and a
+  binary/delta snapshot backend are all NOT forced** — the wrong *representation* was the wall,
+  not any subsystem. The game forced a chunk representation; it was not a decision to add one.
+- Also driven: the review-driven fix pass (16 confirmed defects — shadow-NaN, DrawList sort UB,
+  scene non-finite floats, entity id-gap OOM, audio voice-steal/OOB, determinism, hot-reload
+  use-after-free, `SaveData` caps, …) and a `SUGAR_FPSLOG` measurement overlay.
+- Write-up: `E:\Sugar Engine - Games\Level 3\Report.md`.
+- Remaining (measurement-gated, not built): greedy face-merge, per-block colour, voxel-edit
+  persistence (a game-data component — A3-adjacent), cursor capture for continuous mouse-look.
 
 ---
 
@@ -432,6 +457,51 @@ stays future work; the policy makes it unnecessary for now. *Ref:* `core/Snapsho
 `SuGarApp::captureSnapshotBudgeted`, `Renderer::drawTimelinePanel`. Also logged (not forced): no
 gameplay-facing asset-handle incref (→ authored pooling over runtime handle-clone), no in-game
 FPS overlay.
+
+**Minecraft (L3) — #16 a game can't drive the camera.** *Forced:* first-person is impossible —
+the engine camera was an editor orbit/free rig with no way for game code (Core-only) to set the
+view; the engine had even friction-logged "scene-authored cameras are the eventual replacement".
+*Change:* Core `CameraComponent {fovDegrees, nearPlane, farPlane, active}` (authoritative lens
+only — the eye *pose* is derived from the entity's world transform each frame, Rule 21b, no
+second owner); renderer gained `CameraMode::SCRIPTED` + `setScriptedCamera`;
+`updateCameraTargets` drives the view from the lowest-id active camera entity. Serialized as an
+optional `camera` block; absent ⇒ the orbit camera (back-compat). *Verdict:* fixed — the
+Unity/Godot "camera is a component" model, game-forced. *Ref:* `rendering/CameraComponent.h`,
+`Renderer::setScriptedCamera`, `SceneSerializer` camera block.
+
+**Minecraft (L3) — #17 a game can't acquire an asset handle.** *Forced:* a Core-only behaviour
+can't ask the engine-side ResourceManager for a mesh/texture handle, so runtime block placement
+had *cloned* an existing entity's handle without increfing it — a refcount-underflow bug.
+*Change:* `AssetGateway` (Core) — the symmetric *acquire* half of the existing `onReleaseAsset`
+release hook. The engine installs a backend wired to `ResourceManager::load*` (dedup + incref);
+game calls `acquireMesh/Texture/AudioClip(key)`. Only `string`+`AssetHandle` cross; ownership
+stays in ResourceManager; acquire/destroy balance. *Verdict:* fixed. *Ref:* `assets/AssetGateway`,
+self-test `AssetGateway`.
+
+**Minecraft (L3) — #18 a game can't create a mesh at runtime.** *Forced:* a chunked voxel world
+needs one mesh generated *from voxel data*, not loaded from a file — the per-block-entity
+alternative measured 1.2 FPS at 25 600 blocks. *Change:* `AssetGateway::createMesh(RuntimeMeshData)`
+→ `ResourceManager::createRuntimeMesh` (validate → copy into the engine vertex format → upload →
+synthetic `runtime://mesh/<id>` key). Designed first (`docs/DESIGN_RUNTIME_MESH.md`): CPU data is
+the caller's (engine copies before return, retains no pointer); `runtime://` is a derived,
+non-source resource (excluded from cook/package, not serialized — rebuilt from voxels on load,
+Rule 21a); runtime-key release idles the device (re-mesh swap safe). *Verdict:* fixed — chunk
+representation took 25 600 draws → **100**, 1.2 FPS → **445 FPS**, and *restored* time-travel
+(snapshot back under budget). It proved **C24/A4/binary-snapshot are all NOT forced** — the
+representation was the wall. *Ref:* `assets/RuntimeMeshData.h`, `ResourceManager::createRuntimeMesh`,
+`SceneSerializer::collectAssetKeys` (runtime:// skip).
+
+**Minecraft (L3) — #19 runtime-spawned renderables had no descriptor set.** *Forced:* a scene
+whose renderables are *all* spawned at runtime built texture descriptors for **zero** textures at
+load, so the first chunk's material threw `texture descriptor set was not created`. *Change:*
+`Renderer::drawFrame` now detects a draw-list texture with no descriptor and rebuilds the sets
+(device-idle-safe), so any runtime-spawned renderable works without the game or app knowing.
+*Verdict:* fixed. *Ref:* `Renderer::drawFrame`, `collectDrawListTextures`.
+
+**Minecraft (L3) — measurement tooling.** *Forced (soft):* the per-block vs chunk decision needed
+numbers, and the windowed app has no capturable FPS. *Change:* opt-in `SUGAR_FPSLOG=1` prints
+FPS + drawn-entity + draw count to stderr each second (the L2-noted missing profiler overlay).
+*Ref:* `SuGarApp::mainLoop`.
 
 ---
 

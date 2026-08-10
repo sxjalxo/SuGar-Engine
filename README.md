@@ -75,6 +75,25 @@ three small physics capabilities the games demonstrated a need for — **collisi
 **trigger (sensor) colliders**, and a **`PhysicsQuery::raycast`**. The `SUGAR_VALIDATE` gate rose
 **40 → 47/47** across all of it.
 
+**Level 3 is under way — the real game: a voxel / Minecraft-like.** The first slice runs:
+first-person, a chunked voxel world, gravity + game-side voxel collision, raycast break/place. It
+forced **three architectural seams**, each designed as a record before code (the `AssetGateway`
+and `CameraComponent` designs, `docs/DESIGN_RUNTIME_MESH.md`): **camera as a component**
+(`CameraComponent` — a game drives the view by placing it on an entity; the renderer reads that
+entity's world transform, pose derived); the **asset-acquire seam** (`AssetGateway` — the
+symmetric *acquire* half of the existing release hook, so a Core-only game turns an asset key into
+an increfed handle without touching ResourceManager); and the **runtime-mesh seam**
+(`AssetGateway::createMesh` — game-generated vertices become a derived `runtime://` GPU mesh that
+is never scanned, cooked, packaged, or serialized). A chunk-as-entity representation, measured
+against per-block entities on a 25 600-block world, took **25 600 draws → 100, 1.2 → 445 FPS**,
+and put the time-travel snapshot back under budget — evidence that GPU instancing, an ECS storage
+rewrite, and a binary snapshot backend are **all not forced**: the representation was the wall.
+Along the way a review-driven pass fixed **16 confirmed defects** (shadow-matrix NaN on a
+straight-down light, a `std::sort` UB on non-finite draw positions, non-finite scene floats, an
+entity id-gap OOM, audio voice-steal/out-of-bounds, cross-system determinism, a hot-reload
+use-after-free, `SaveData` size caps, …) and added a `SUGAR_FPSLOG` measurement overlay. The gate
+is **48/48**.
+
 > Positioning: *"A Vulkan engine designed for instant iteration and debuggable
 > systems — not just rendering power."* Open-source, dev-led, aimed at indie devs.
 
@@ -332,6 +351,17 @@ three small physics capabilities the games demonstrated a need for — **collisi
 * GPU resource lifetime management
 * Hot reload (in-place resource updates)
 * **Cross-platform texture loading via stb_image** (no Windows/WIC lock-in)
+* **`AssetGateway` (Core) — game-safe asset acquire/create** (M4 L3): a game module (which
+  links only `SuGarCore`) acquires meshes/textures/audio by key, or **creates a mesh from
+  generated vertices** (`RuntimeMeshData` → a derived `runtime://` GPU mesh), through injected
+  callbacks — only `string`+`AssetHandle`+POD cross the boundary; ResourceManager keeps sole
+  ownership and refcounting. Runtime meshes are non-source (never scanned/cooked/packaged)
+
+### Game Camera
+
+* **`CameraComponent` (Core)** — a game defines the view by placing it on an entity; the
+  renderer frames from that entity's world transform (pose derived, not stored). Absent ⇒ the
+  editor orbit/free camera. Serialized as an optional `camera` block
 
 ### Editor (ImGui)
 
@@ -405,7 +435,7 @@ and exits nonzero if any fail, so it drops straight into CI:
 
 ```powershell
 $env:SUGAR_VALIDATE = "1"; build\Release\SuGarEngine.exe; $env:SUGAR_VALIDATE = ""
-# ... [validate] === 37/37 checks passed, 0 failure(s) ===
+# ... [validate] === 48/48 checks passed, 0 failure(s) ===
 ```
 
 Benchmarks are intentionally excluded — they're measurements, not pass/fail gates
@@ -512,6 +542,10 @@ For regression tracking over time, emit machine-readable output:
 `SUGAR_BENCH_FORMAT=csv|json` (+ `SUGAR_BENCH_OUT=benchmarks/2026-08-14.json` to
 write a file), then diff runs across commits.
 
+**In-game FPS overlay (windowed):** `SUGAR_FPSLOG=1` prints FPS + drawn-entity + draw
+count to stderr each second — a lightweight, capturable stand-in for a profiler HUD, used
+to measure the L3 per-block-vs-chunk scaling decision from evidence rather than intuition.
+
 ---
 
 ## Roadmap
@@ -520,7 +554,8 @@ Full plan in **[ROADMAP.md](ROADMAP.md)**; architectural constraints in
 **[RULES.md](RULES.md)**; dependency boundaries in
 **[REQUIREMENTS_AND_SCOPE.md](REQUIREMENTS_AND_SCOPE.md)**. Architecture records live
 in **`docs/`** — `DESIGN_RUNTIME_UI.md`, `DESIGN_ANIMATION.md`,
-`DESIGN_NAVIGATION.md` and `DESIGN_ASSET_PIPELINE.md` (*what*),
+`DESIGN_NAVIGATION.md`, `DESIGN_ASSET_PIPELINE.md`, `DESIGN_PACKAGING.md`,
+`DESIGN_BUILD_PIPELINE.md` and `DESIGN_RUNTIME_MESH.md` (*what*),
 `RUNTIME_UI_LESSONS.md` (*why*), and `DEV_ENVIRONMENT.md` (toolchain traps — **read
 before debugging a build or GUI issue**).
 
@@ -539,7 +574,7 @@ Milestone summary:
   in-place restore, stable entity recreation (id-remap layer *deleted*), uniform-grid
   physics broadphase, and the self-test / stress / benchmark harnesses
   (`SUGAR_VALIDATE`).
-* **M3 — Engine Platform Complete** *(in progress)* — the platform is "complete" when
+* **M3 — Engine Platform Complete** *(done)* — the platform is "complete" when
   a developer can build a typical indie game **without extending the engine**.
   **Runtime UI (RmlUi) is done** (Phase 16): the ECS-authoritative model layer, a
   hand-written Vulkan render interface, and the UI composited into the game viewport
@@ -552,10 +587,11 @@ Milestone summary:
   keys, `.meta` import sidecars, a deterministic cooker whose cache is content-hash
   keyed, a runtime that reads only cooked artifacts, a dependency graph the database
   owns, and an editor surface that *requests* imports through the same path the file
-  watcher uses. **Packaging is under way** (Phase 20): a standalone export is the cooked artifacts a
+  watcher uses. **Packaging is done** (Phase 20): a standalone export is the cooked artifacts a
   scene can reach plus a manifest that lets the shipped runtime resolve asset keys with
-  no source tree (`SUGAR_PACKAGE=1`, headless). The Build pipeline remains. Explicitly
-  *not* required: AAA
+  no source tree (`SUGAR_PACKAGE=1`, headless). **The build pipeline is done** (Phase 21):
+  `scripts/build_release.ps1` runs `cmake --build` then `SUGAR_PACKAGE`, producing a
+  self-verified standalone. All six floor items done. Explicitly *not* required: AAA
   rendering, networking, console ports, world streaming, marketplace.
   * **The platform's missing half:** SuGar has a complete *developer* UI (Dear ImGui,
     permanently reserved for tooling) but intentionally **no *player* UI**. Runtime UI
@@ -566,10 +602,16 @@ Milestone summary:
   Bird and Asteroids, each playable and shipped as a standalone, forcing ten engine boundary
   features and zero architecture rewrites (write-up in the games' `Level 1\Report.md`). Two
   pre-freeze additions also landed here: input hardening and crash reporting. **Level 2 is
-  under way** — a top-down shooter (keyboard move + mouse aim) plus a content pass (Asteroids
-  sprites, styled HUDs). These forced four *renderer* seams (Rule 22): #11 flat-colour material
-  tint, #12 mouse input, #13 per-material blend modes, #14 an RmlUi effects compositor
-  (box-shadow/blur; UI moved to its own pass). Gate held **40/40**, Debug + Release.
+  complete** — a top-down shooter (keyboard move + mouse aim), a content pass (Asteroids
+  sprites, styled HUDs), a 2D platformer (forced *nothing*), and a survivors-like. These forced
+  four *renderer* seams (Rule 22): #11 flat-colour material tint, #12 mouse input, #13 per-material
+  blend modes, #14 an RmlUi effects compositor; plus a snapshot-capture policy. **Level 3 is under
+  way** — a voxel / Minecraft-like: first-person, a chunked world, break/place. It forced three
+  architectural seams — **camera as a component** (`CameraComponent`), the **asset-acquire seam**
+  (`AssetGateway`), and the **runtime-mesh seam** (`createMesh` → derived `runtime://` meshes) —
+  and a chunk-as-entity representation whose measurements (25 600 draws → 100, 1.2 → 445 FPS)
+  proved GPU instancing, an ECS storage rewrite, and a binary snapshot backend are all *not*
+  forced. Gate **48/48**, Debug + Release.
 
 ---
 

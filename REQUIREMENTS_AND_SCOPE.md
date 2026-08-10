@@ -340,6 +340,37 @@ not a subsystem. See `ROADMAP.md` friction log and the games' `Level 1\Report.md
   DockBuilder layout, replacing `StyleColorsDark` and the floating-panel default. Editor
   chrome only; never linked into Core or shipped to a game.
 
+### M4 Level 3 additions (voxel game — three seams)
+
+Forced by the first real game; each was designed as a record before code (the `AssetGateway`
+and `CameraComponent` designs; `docs/DESIGN_RUNTIME_MESH.md`). See the `ROADMAP.md` friction log
+(#16–#19) and `Level 3\Report.md`.
+
+- **`CameraComponent` (Core, `src/rendering/CameraComponent.h`).** A game defines the view by
+  placing this on an entity (`fovDegrees`/`nearPlane`/`farPlane`/`active` — *lens only*). The
+  eye pose is **derived** from the entity's world transform each frame (Rule 21b), never stored,
+  so there is no second owner to desync on restore. The engine renders from the lowest-id active
+  camera (`CameraMode::SCRIPTED`); absent ⇒ the editor orbit/free camera (back-compat).
+  Serialized as an optional `camera` block. *Boundary:* Core owns the component data; the engine
+  renderer reads it — no engine `Camera` type crosses into Core.
+- **`AssetGateway` (Core, `src/assets/AssetGateway.{h,cpp}`).** The *acquire* counterpart to the
+  existing `Registry::onReleaseAsset` release hook. The engine installs a backend of callbacks
+  at startup; a game module acquires assets **by key** (`acquireMesh/Texture/AudioClip`) or
+  **creates a mesh** (`createMesh`) and gets back an opaque `AssetHandle`. *Boundary invariant:*
+  only `std::string`, `AssetHandle`, and POD/glm `RuntimeMeshData` ever cross Core→Engine — no
+  `Mesh`, `Vertex`, `VkBuffer`, `VkDevice`, staging buffer, or renderer object. **Ownership stays
+  in `ResourceManager`** (sole owner + refcounter): acquire/create incref, entity-destroy decrefs
+  via `onReleaseAsset` — balanced, no clone, no second owner.
+- **Runtime meshes (`RuntimeMeshData` → `ResourceManager::createRuntimeMesh`).** Game-generated
+  vertices become a **derived** GPU mesh under a synthetic `runtime://mesh/<id>` key. The engine
+  validates (lengths, index range, cap), copies, and uploads — the caller keeps its CPU data
+  (engine retains no pointer). *Scope:* a runtime mesh is **non-source** — never scanned by
+  `AssetDatabase`, cooked by `AssetCooker`, packaged by `Packager`, or serialized as a source
+  asset (`runtime://` is excluded like `builtin://`). It is a derived resource owned by the
+  gameplay/chunk lifetime and rebuilt from its authoritative data on load (Rule 21a). Persisting
+  that authoritative data (e.g. voxel edits) is a *separate* future game-data seam, deliberately
+  out of scope here.
+
 ## tinygltf
 
 ### Responsibility

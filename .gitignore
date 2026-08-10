@@ -35,6 +35,14 @@ imgui.ini
 # anywhere in case the executable is run from elsewhere.
 *_live_*.dll
 
+# M4 game modules. A game (its Game.dll of behaviours, import lib, and export) lives
+# OUTSIDE this repo by policy (E:\Sugar Engine - Games\...). These patterns are a guard
+# for the case where a game is ever configured/built inside the tree: the build output is
+# never source. (Game.pdb / Game_live_*.dll are already covered above.)
+Game.dll
+Game.exp
+Game.lib
+
 # Crash reports (CrashHandler writes ./crashes/crash_*.dmp + .txt at runtime)
 /crashes/
 
