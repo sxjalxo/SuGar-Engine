@@ -63,8 +63,17 @@ as a reusable **seam**, not a one-off (Rule 22): **#11** a flat-colour `Material
 mouse input (buttons + a world-space cursor ray), **#13** a per-material **blend-mode** seam
 (Opaque/Masked/Translucent/Additive) for transparent sprites, and **#14** an **RmlUi effects
 compositor** (offscreen layers + Gaussian-blur composite) that made `box-shadow`/blur work and
-moved the runtime UI into its own render pass. The `SUGAR_VALIDATE` gate held at **40/40**
-(Debug + Release) throughout.
+moved the runtime UI into its own render pass.
+
+Two more Level-2 games followed. A **2D platformer** (real gravity + dynamic-vs-static box
+resolution + a short downward `PhysicsQuery::raycast` for ground checks) forced **zero** engine
+changes — the first game to force nothing. A **survivors-like** (hundreds of pooled chasing
+enemies) forced exactly one: a **snapshot-capture policy** (see Time-travel). Between them, a
+review-driven pass fixed confirmed correctness/safety issues (deterministic + crash-safe script
+ticking, cascade `destroyEntityTree`, atomic saves, real physics contact points, …) and added
+three small physics capabilities the games demonstrated a need for — **collision layers/masks**,
+**trigger (sensor) colliders**, and a **`PhysicsQuery::raycast`**. The `SUGAR_VALIDATE` gate rose
+**40 → 47/47** across all of it.
 
 > Positioning: *"A Vulkan engine designed for instant iteration and debuggable
 > systems — not just rendering power."* Open-source, dev-led, aimed at indie devs.
@@ -117,7 +126,16 @@ moved the runtime UI into its own render pass. The `SUGAR_VALIDATE` gate held at
 * **Hand-rolled physics** — semi-implicit Euler integration, gravity, box/sphere
   collision (uniform-grid broadphase → narrowphase → impulse resolution),
   restitution + Coulomb friction, on the fixed step. Deterministic; the grid keeps
-  the broadphase near-linear (2000 bodies ≈ 1.9 ms vs ~13 ms all-pairs)
+  the broadphase near-linear (2000 bodies ≈ 1.9 ms vs ~13 ms all-pairs).
+  **Collision layers/masks** filter which colliders interact; **trigger (sensor)**
+  colliders report overlaps without a physical response; collision events carry a
+  real per-shape contact point. `PhysicsQuery::raycast` (ray vs box/sphere,
+  layer-filtered) gives behaviors hitscan / ground checks / line-of-sight / picking —
+  all from `SuGarCore`, no solver access needed
+* **Cascade destroy** — `destroyEntityTree` removes an entity and its whole subtree
+  (plain `destroyEntity` orphans children to the world, the primitive the editor's
+  delete-then-undo relies on); a built-in `builtin://cube` mesh is the guaranteed,
+  file-free fallback for a missing mesh
 * **Prefabs** — save an entity subtree to `.prefab`, instantiate additively,
   revert instances to source
 * **3D model import** — glTF/glb via tinygltf (parse-only, isolated); nodes →
@@ -272,6 +290,12 @@ moved the runtime UI into its own render pass. The `SUGAR_VALIDATE` gate held at
   (e.g. `rigidbody where vel.y < 0`); click a match to select it
 * **Pluggable snapshot backend** (`ISnapshotStorage`) — the Timeline is decoupled
   from how frames are stored (JSON today; binary/delta later)
+* **Snapshot capture policy** (`SnapshotCapturePolicy`) — gates *when* a snapshot is
+  taken, not how it's stored: full per-step capture for scenes that fit a per-step
+  time budget, auto-paused (with a Timeline reason) once a scene is too large, and off
+  entirely in packaged builds. A survivors-like at 1000 entities forced this — the
+  full-scene JSON serialize was ~160 ms/frame (6 fps); gating it restored ~420 fps.
+  Because only the *policy* changed, a future binary/delta backend still drops in
 
 ### Rendering
 
@@ -402,9 +426,10 @@ EntityIdRecycling, EntityQuery, SnapshotStorage, Physics, PhysicsBroadphase,
 SystemScheduler, ComponentAccess, SnapshotPatch, RuntimeUI, Animation,
 AnimationImport, Skinning, SkinImport, AnimationGraph, Navigation, NavMeshBake,
 NavAvoidance, ViewportOverlay, Serializer, SceneLoad, BehaviorRegistry,
-RegistryGraph, MalformedInput, and SaveData. A test that *throws* is reported as
-`FAIL ... threw: <message>` and the run continues — one broken subsystem shouldn't
-hide the other fourteen results.
+RegistryGraph, MalformedInput, SaveData, ScriptSystem, SnapshotPolicy, ColliderFilter,
+Raycast, ContactPoint, DestroyEntityTree, and BuiltinCubeMesh. A test that *throws* is
+reported as `FAIL ... threw: <message>` and the run continues — one broken subsystem
+shouldn't hide the others.
 
 `Serializer` is a **golden test**: it pins the byte-exact scene text for an entity
 carrying every optional component. Deliberately brittle — the on-disk format is what

@@ -428,6 +428,11 @@ void SuGarApp::initScene() {
     // source tree -- resolve every asset key through the manifest and cook nothing.
     // Otherwise it is the editor: scan the source assets and cook on demand.
     const std::string manifestFile = Packager::manifestPath(".");
+    packagedBuild = AssetManifest::existsAt(manifestFile);
+    // Time-travel is an editor affordance: never capture in a shipped build, and pause
+    // capture once a single snapshot costs more than the budget (a large scene) so the
+    // game stays playable. 4 ms/step is a small fraction of the 16.6 ms fixed step.
+    snapshotPolicy.configure(4.0, packagedBuild);
     if (AssetManifest::existsAt(manifestFile)) {
         std::string manifestError;
         if (packageManifest.load(manifestFile, manifestError)) {
@@ -770,7 +775,8 @@ void SuGarApp::play() {
     snapshots->clear();
     bookmarks.clear();
     scrubCursor = -1;
-    captureSnapshot(); // record the initial play state as frame 0
+    snapshotPolicy.reset();       // re-arm for this session (a fresh scene may fit)
+    captureSnapshotBudgeted();    // record the initial play state as frame 0 (if enabled)
     std::cout << "[Play] entered play mode\n";
 }
 
@@ -826,6 +832,23 @@ void SuGarApp::stop() {
     std::cout << "[Stop] restored edit scene\n";
 }
 
+void SuGarApp::captureSnapshotBudgeted() {
+    if (!snapshotPolicy.enabled()) {
+        return; // packaged build, or auto-paused for a too-large scene
+    }
+    const auto start = std::chrono::high_resolution_clock::now();
+    captureSnapshot();
+    const double ms =
+        std::chrono::duration<double, std::milli>(std::chrono::high_resolution_clock::now() - start).count();
+    snapshotPolicy.recordCaptureCost(ms);
+    if (!snapshotPolicy.enabled()) {
+        // Just crossed the budget: drop the partial history so the Timeline shows a
+        // clean "paused" state rather than a misleading truncated ring.
+        snapshots->clear();
+        std::cout << "[Play] " << snapshotPolicy.disabledReason() << "\n";
+    }
+}
+
 void SuGarApp::captureSnapshot() {
     std::string snapshot = SceneSerializer::saveToString(registry, sceneLights);
     if (snapshot.empty()) {
@@ -863,7 +886,7 @@ void SuGarApp::restoreSnapshot(const std::string& snapshot) {
 
 void SuGarApp::advanceOneFixedStep() {
     updateSystems(FIXED_TIMESTEP);
-    captureSnapshot();
+    captureSnapshotBudgeted();
 }
 
 void SuGarApp::scrubTo(int index) {
@@ -1272,7 +1295,7 @@ void SuGarApp::mainLoop() {
             }
             while (fixedAccumulator >= FIXED_TIMESTEP) {
                 updateSystems(FIXED_TIMESTEP);
-                captureSnapshot(); // record each fixed step for time travel
+                captureSnapshotBudgeted(); // record each fixed step for time travel (budget-gated)
                 fixedAccumulator -= FIXED_TIMESTEP;
             }
         } else {

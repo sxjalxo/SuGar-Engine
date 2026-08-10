@@ -644,10 +644,14 @@ Physics simulation.
 
 Owns:
 
-- Collision
+- Collision (box/sphere; uniform-grid broadphase → narrowphase → impulse resolution)
+- Collision **filtering** — per-collider `layer`/`mask` bitmasks
+- **Trigger (sensor) colliders** — report overlaps, apply no physical response
 - Rigid bodies
-- Solver
-- Events
+- Solver (semi-implicit Euler, restitution + Coulomb friction, on the fixed step)
+- Events (carry a real per-shape contact point)
+- **Queries** — `PhysicsQuery::raycast` (ray vs box/sphere, layer-filtered), in Core so
+  gameplay behaviors can call it (hitscan, ground checks, line-of-sight, world picking)
 
 No Bullet.
 
@@ -655,7 +659,9 @@ No PhysX.
 
 No Jolt.
 
-Physics remains hand-rolled.
+Physics remains hand-rolled. Deliberately out of scope until a game forces it: rotational
+dynamics / angular velocity (boxes collide axis-aligned), continuous collision detection,
+capsule/convex/mesh shapes, multi-iteration solver stacking.
 
 ---
 
@@ -775,6 +781,13 @@ Must always preserve:
 - Editor state
 - Entity identity
 - Determinism
+
+Capture is **policy-gated** (`SnapshotCapturePolicy`), separate from storage
+(`ISnapshotStorage`): full per-step capture while a scene fits a per-step time budget,
+auto-paused when it does not, and off in packaged builds. This keeps time-travel an
+editor-only, affordable-by-default affordance without touching the snapshot format — a
+survivors-like at 1000 entities forced it (full-scene JSON per step was ~160 ms/frame).
+A binary/delta storage backend remains future work, unblocked by this separation.
 
 ---
 

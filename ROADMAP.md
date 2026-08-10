@@ -139,18 +139,23 @@ speculation. Every forced change is recorded in the **M4 friction log** below.
   colour, accent message text, soft box-shadow (via #14). Element ids the behaviours write are
   preserved; all four repackaged, `verify` OK.
 
-**Level 2 — Small (scale + content). In progress.**
+**Level 2 — Small (scale + content). COMPLETE.**
 - Top-down shooter: DONE (forced #11 flat-colour material + #12 mouse input; else reused the
   L1 surface).
 - Content pass: Asteroids (L1) retrofitted with a sprite pack → forced #13, the transparency
-  **blend-mode seam** (Opaque/Masked/Translucent/Additive; Rule 22). Gate now **40/40**
-  (+`MouseInput`, +`BlendMode`).
-- Games: 2D platformer, Vampire-Survivors-like, top-down shooter.
-- Exercises: ECS at scale (hundreds of entities), audio, animation on a real character, the
-  asset pipeline under many assets, hot reload + editor workflow under sustained use. Expect
-  *tooling* gaps (inspector, selection, prefab, profiler) more than engine gaps.
+  **blend-mode seam** (Opaque/Masked/Translucent/Additive; Rule 22).
+- 2D platformer: DONE (single-screen). First game to use gravity + dynamic-vs-static resolution;
+  ground checks via `PhysicsQuery::raycast`. **Forced zero engine changes.**
+- Survivors-like: DONE. Hundreds of pooled chasing enemies. Forced **one** fix — a time-travel
+  **snapshot-capture policy** (#15): full-scene JSON per fixed step collapsed 1000-entity scenes
+  to 6 fps; budget-gating capture (and disabling it in packaged builds) restored ~420 fps. The
+  sim itself scales (headless: 3000 enemies = 5.2 ms/step). See friction log.
+- Between the shooter and the platformer, a **review-driven hardening pass** landed confirmed
+  correctness/safety fixes + three small physics capabilities the games demonstrated (collision
+  layers/masks, trigger colliders, `PhysicsQuery::raycast`). Gate **40 → 47/47**.
+- Write-up: `E:\Sugar Engine - Games\Level 2\Report.md`.
 
-**Level 3 — The real game: voxel / Minecraft-like.**
+**Level 3 — The real game: voxel / Minecraft-like. (NEXT)**
 - Exercises: lighting, particles, AI, navigation, world/chunk serialization, packaging — all
   at once. The honest test of "ship a real game without extending the architecture."
 - Most likely to force genuine *engine* additions (chunk streaming, voxel meshing) — which is
@@ -374,6 +379,59 @@ guard the effect codepath every launch. *Ref:* `Renderer::createUiLayerPass`,
 + `rml_composite.frag`, `RuntimeUIView::smokeTest`. **Gate 40/40**, Debug + Release. All four
 HUDs repackaged, `verify` OK. *Deferred (not yet forced):* stencil clip masks (translucent-
 element shadows), separable/downsampled blur (perf for large sigma), non-blur RCSS filters.
+
+---
+
+**Review-driven hardening pass (between the shooter and the platformer).** *Found:* a
+game-developer review of the frozen platform (write-up outside the repo at
+`C:\Users\Sujal\Projects\SuGarEngine_Review_2026-08-09.md`) surfaced confirmed
+correctness/safety issues and a few small capabilities the L2 games had already demonstrated a
+need for. Per the dogfood discipline, only *confirmed* defects + *demonstrated* capabilities
+were fixed — no speculative features. *Change:* (bugs/safety) the Script tick moved to Core
+`ScriptSystem::run`, iterating a **sorted id snapshot** so behavior order is deterministic and a
+behavior may spawn/destroy entities mid-tick without iterator-invalidation UB; `SaveData::save`
+is now **atomic** (temp + rename); `Registry::reset` releases handles by resource-owner (a
+mesh/audio entity with no `Transform` no longer leaks); collision events carry a **real contact
+point**; `AudioEngine` caps voices; the renderer warns once past the skinned-draw cap.
+(capabilities) `ColliderComponent` gained **`isTrigger`** (sensor) + **`layer`/`mask`**
+filtering; **`PhysicsQuery::raycast`** (Core, ray vs box/sphere, layer-filtered) landed for
+ground/hitscan/LOS/picking; `Registry::destroyEntityTree` cascades a subtree; `Mesh::makeUnitCube`
+backs a **`builtin://cube`** fallback so a missing mesh can't fail a scene load. *Deferred with
+rationale (not silently carried):* **generational entity handles** — a genuine aliasing bug, but
+the only clean fix is an ECS-identity rewrite (undo's `createEntityWithId` does `Entity`
+arithmetic), so it waits for a game to actually hit the aliasing. *Verdict:* fixed + tested —
+gate **40 → 46/46**, +`ScriptSystem`/`ColliderFilter`/`Raycast`/`ContactPoint`/`DestroyEntityTree`/
+`BuiltinCubeMesh`. *Ref:* `scene/ScriptSystem`, `physics/PhysicsQuery`, `physics/PhysicsComponents`
++ `PhysicsWorld`, `ecs/Registry`, `core/SaveData`, `rendering/Mesh`, `assets/ResourceManager`,
+`scene/SceneSerializer`, `audio/AudioEngine`, `BasicTrianglePass`.
+
+---
+
+**2D Platformer (L2) — forced nothing.** *Found:* the first game to use real gravity + dynamic-
+vs-static box resolution (the shooter used static, no-gravity bodies). *Change:* **none.**
+Gravity + stable resting contact + jump (`velocity.y`) + ground checks via a short downward
+`PhysicsQuery::raycast` from below the feet all worked on the existing surface; meshes are the
+built-in cube, colours flat-tint. The strongest possible dogfood signal — a whole game category
+that costs the engine nothing. *Ref:* game is external (`E:\Sugar Engine - Games\Level 2\Platformer`).
+
+---
+
+**Survivors-like (L2) — #15 time-travel snapshot cost collapses large scenes.** *Found:*
+hundreds of pooled enemies chasing the player ran at **6 fps** at 1000 entities. Measured (not
+guessed): a headless Core harness showed the **sim scales fine** (3000 chasing+colliding enemies
+= 5.2 ms/step — the `unordered_map` ECS storage is *not* the wall), and timing the loop pinned
+the cost to **`captureSnapshot()`** — the time-travel ring serializes the *whole scene* to JSON
+every fixed step (~160 ms/frame at 1000 entities; the render was ~1 ms). *Change:* the smallest
+correct seam, **not** a backend rewrite — a Core `SnapshotCapturePolicy` gates *when* capture
+happens: full per-step capture while a scene fits a 4 ms/step budget, sticky-paused (with a
+Timeline reason) once a capture blows it, and off entirely in packaged builds (no Timeline to
+consume it). The ring + `ISnapshotStorage` format are untouched, so a future binary/delta backend
+still drops in. *Verdict:* fixed — **6 → ~420 fps** at 1000 entities; gate **46 → 47/47**
+(+`SnapshotPolicy`). *Deferred:* the binary/delta snapshot backend itself (the review's #44)
+stays future work; the policy makes it unnecessary for now. *Ref:* `core/SnapshotCapturePolicy`,
+`SuGarApp::captureSnapshotBudgeted`, `Renderer::drawTimelinePanel`. Also logged (not forced): no
+gameplay-facing asset-handle incref (→ authored pooling over runtime handle-clone), no in-game
+FPS overlay.
 
 ---
 

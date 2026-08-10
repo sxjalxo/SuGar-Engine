@@ -2121,6 +2121,15 @@ void Renderer::drawTimelinePanel() {
         return;
     }
 
+    // Capture may be off (packaged build) or auto-paused (scene too large for the
+    // per-step snapshot budget). Say so instead of a bare "no frames".
+    if (!app->snapshotsEnabled()) {
+        ImGui::TextColored(ImVec4(0.95f, 0.6f, 0.2f, 1.0f), "Time-travel off");
+        ImGui::TextWrapped("%s", app->snapshotDisabledReason().c_str());
+        ImGui::End();
+        return;
+    }
+
     const int count = app->getSnapshotCount();
     if (count <= 0) {
         ImGui::TextUnformatted("No frames recorded yet.");

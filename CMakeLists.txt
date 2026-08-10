@@ -102,6 +102,8 @@ add_library(SuGarCore SHARED
     src/ecs/SystemSchedule.h
     src/core/Input.cpp
     src/core/SaveData.cpp
+    src/core/SnapshotCapturePolicy.h
+    src/core/SnapshotCapturePolicy.cpp
     src/core/Input.h
     src/core/InputActions.cpp
     src/core/InputActions.h

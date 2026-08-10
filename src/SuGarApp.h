@@ -13,6 +13,7 @@
 #include <string>
 #include "core/EngineState.h"
 #include "core/SnapshotStorage.h"
+#include "core/SnapshotCapturePolicy.h"
 #include "ecs/Registry.h"
 #include "ecs/SystemSchedule.h"
 #include "GameModuleLoader.h"
@@ -60,6 +61,10 @@ public:
     // Time-travel debugging (Phase 11B). A ring buffer of full-scene snapshots is
     // captured each fixed step during Play; the editor Timeline panel drives these.
     int getSnapshotCount() const { return snapshots->count(); }
+    // Time-travel capture status for the Timeline panel: false + a reason when capture
+    // is off (packaged build, or auto-paused because the scene is too large).
+    bool snapshotsEnabled() const { return snapshotPolicy.enabled(); }
+    const std::string& snapshotDisabledReason() const { return snapshotPolicy.disabledReason(); }
     bool isScrubbing() const { return scrubCursor >= 0; }
     int getScrubCursor() const { return scrubCursor; }
     // Pauses and restores the snapshot at `index` (clamped) for inspection.
@@ -155,11 +160,21 @@ private:
     int scrubCursor = -1;
     std::unordered_map<uint64_t, std::string> bookmarks;
 
+    // Gates WHETHER a snapshot is captured each fixed step (the ring/format are
+    // unchanged). Off in packaged builds; auto-pauses when a scene's per-step capture
+    // blows the budget so a large game stays playable. See SnapshotCapturePolicy.
+    SnapshotCapturePolicy snapshotPolicy;
+    bool packagedBuild = false;
+
     void initWindow();
     void initVulkan();
     void initAudio();
     // Time-travel internals.
     void captureSnapshot();
+    // captureSnapshot() gated + timed by snapshotPolicy: no-op when capture is off,
+    // and it disables further capture (clearing the ring) the step a snapshot first
+    // blows the budget. All Play-path capture goes through this, not captureSnapshot.
+    void captureSnapshotBudgeted();
     void advanceOneFixedStep();
     void restoreSnapshot(const std::string& snapshot);
     int currentFrameIndex() const; // scrub cursor, or newest when live

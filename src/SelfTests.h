@@ -61,6 +61,7 @@
 #include "physics/PhysicsWorld.h"
 #include "physics/PhysicsQuery.h"
 #include "scene/ScriptSystem.h"
+#include "core/SnapshotCapturePolicy.h"
 #include "audio/AudioClip.h"
 #include "rendering/Mesh.h"
 #include "scene/BehaviorRegistry.h"
@@ -297,6 +298,38 @@ inline bool testPhysicsBroadphase() {
     ok &= events2.size() == events.size();
     for (size_t i = 0; i < events.size() && i < events2.size(); ++i) {
         ok &= events[i].a == events2[i].a && events[i].b == events2[i].b;
+    }
+
+    return ok;
+}
+
+// --- Snapshot capture policy: budget-gate + packaged disable (#44/#45 scaling). The
+// ring/format are untouched; this only decides WHEN to capture. Headless -----------
+inline bool testSnapshotCapturePolicy() {
+    bool ok = true;
+
+    { // non-packaged: on until a capture blows the budget, then sticky-off for session
+        SnapshotCapturePolicy p;
+        p.configure(4.0, /*packaged*/false);
+        ok &= p.enabled() && p.disabledReason().empty();
+        p.recordCaptureCost(1.5);   // under budget -> stays on
+        ok &= p.enabled();
+        p.recordCaptureCost(10.0);  // over budget -> disabled with a reason
+        ok &= !p.enabled() && !p.disabledReason().empty();
+        p.recordCaptureCost(0.1);   // sticky: a cheap capture does not re-enable mid-session
+        ok &= !p.enabled();
+        p.reset();                  // new session re-arms
+        ok &= p.enabled() && p.disabledReason().empty();
+    }
+
+    { // packaged: never captures, and reset does not turn it on
+        SnapshotCapturePolicy p;
+        p.configure(4.0, /*packaged*/true);
+        ok &= !p.enabled() && !p.disabledReason().empty();
+        p.recordCaptureCost(0.01);
+        ok &= !p.enabled();
+        p.reset();
+        ok &= !p.enabled();
     }
 
     return ok;
@@ -4360,6 +4393,7 @@ inline std::pair<int, int> run() {
         { "ColliderFilter",   testColliderFilter },
         { "Raycast",          testRaycast },
         { "ScriptSystem",     testScriptSystem },
+        { "SnapshotPolicy",   testSnapshotCapturePolicy },
         { "ContactPoint",     testContactPoint },
         { "DestroyEntityTree", testDestroyEntityTree },
         { "BuiltinCubeMesh",  testBuiltinCubeMesh },
