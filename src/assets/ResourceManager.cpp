@@ -123,7 +123,11 @@ AssetHandle ResourceManager::loadMesh(const std::string& path) {
     }
 
     auto mesh = std::make_shared<Mesh>();
-    loadCookedMesh(cacheKey, *mesh);
+    if (cacheKey == CubeMeshId) {
+        *mesh = Mesh::makeUnitCube(); // procedural, no cook/file
+    } else {
+        loadCookedMesh(cacheKey, *mesh);
+    }
     mesh->setResourceKey(cacheKey);
     mesh->upload(device, physicalDevice, commandPool, graphicsQueue);
 

@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <functional>
 #include <stdexcept>
+#include <unordered_set>
 #include "animation/AnimationComponents.h"
 #include "assets/AssetHandle.h"
 #include "audio/AudioComponents.h"
@@ -101,6 +102,34 @@ public:
         entityManager.destroyEntity(entity);
     }
 
+    // Destroys `root` AND its whole subtree. Plain destroyEntity() re-parents a
+    // destroyed entity's children to the world (they survive as orphan roots), which
+    // is the right primitive for the editor's delete-then-undo (it restores each node
+    // by id). Gameplay that wants "kill this enemy and everything attached to it"
+    // wants the cascade instead — a bullet's muzzle flash / an enemy's health bar
+    // should not outlive it. Iterative (leaves first) so a deep chain can't overflow
+    // the stack, and so each destroyEntity sees its children already gone.
+    void destroyEntityTree(Entity root) {
+        if (root == INVALID_ENTITY) {
+            return;
+        }
+        std::vector<Entity> stack{root};
+        std::vector<Entity> order; // root-first; destroyed in reverse (leaves first)
+        while (!stack.empty()) {
+            const Entity entity = stack.back();
+            stack.pop_back();
+            order.push_back(entity);
+            if (hierarchy.has(entity)) {
+                for (Entity child : hierarchy.get(entity).children) {
+                    stack.push_back(child);
+                }
+            }
+        }
+        for (auto it = order.rbegin(); it != order.rend(); ++it) {
+            destroyEntity(*it);
+        }
+    }
+
     void setParent(Entity child, Entity parent) {
         if (child == INVALID_ENTITY) {
             throw std::invalid_argument("child entity must be valid");
@@ -133,8 +162,15 @@ public:
     }
 
     void reset() {
-        for (const auto& [entity, transformComponent] : transforms.getAll()) {
-            (void)transformComponent;
+        // Release GPU/asset handles for every entity that *owns* one, keyed off the
+        // resource storages themselves — not off Transform. A mesh/material/audio
+        // entity with no TransformComponent would otherwise leak its handles here.
+        // A set dedups entities that own several (releaseResources frees all three).
+        std::unordered_set<Entity> resourceOwners;
+        for (const auto& [entity, component] : meshes.getAll()) { (void)component; resourceOwners.insert(entity); }
+        for (const auto& [entity, component] : materials.getAll()) { (void)component; resourceOwners.insert(entity); }
+        for (const auto& [entity, component] : audioSources.getAll()) { (void)component; resourceOwners.insert(entity); }
+        for (Entity entity : resourceOwners) {
             releaseResources(entity);
         }
 

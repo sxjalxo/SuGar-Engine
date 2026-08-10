@@ -1,8 +1,10 @@
 #include "core/SaveData.h"
 
+#include <filesystem>
 #include <fstream>
 #include <map>
 #include <sstream>
+#include <system_error>
 
 namespace {
 
@@ -55,14 +57,36 @@ bool load() {
 }
 
 bool save() {
-    std::ofstream file(g_path, std::ios::binary | std::ios::trunc);
-    if (!file) {
-        return false;
+    // Atomic write: fill a temp file, then rename it over the real one. A crash or
+    // power loss mid-write can only leave the *temp* half-written; the player's
+    // existing save is untouched until the rename swaps in a complete file.
+    const std::string tmpPath = g_path + ".tmp";
+    {
+        std::ofstream file(tmpPath, std::ios::binary | std::ios::trunc);
+        if (!file) {
+            return false;
+        }
+        for (const auto& [key, value] : g_store) {
+            file << key << '=' << value << '\n';
+        }
+        file.flush();
+        if (!file) {
+            return false; // write failed — leave the real save intact
+        }
+    } // stream closed before rename
+
+    std::error_code ec;
+    std::filesystem::rename(tmpPath, g_path, ec);
+    if (ec) {
+        // Some filesystems won't rename onto an existing file; remove then retry.
+        std::filesystem::remove(g_path, ec);
+        std::filesystem::rename(tmpPath, g_path, ec);
+        if (ec) {
+            std::filesystem::remove(tmpPath, ec); // don't leave a stray temp behind
+            return false;
+        }
     }
-    for (const auto& [key, value] : g_store) {
-        file << key << '=' << value << '\n';
-    }
-    return static_cast<bool>(file);
+    return true;
 }
 
 bool has(const std::string& key) {

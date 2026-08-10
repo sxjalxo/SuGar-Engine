@@ -2,6 +2,49 @@
 #include <stdexcept>
 #include <cstring>
 
+Mesh Mesh::makeUnitCube() {
+    Mesh mesh;
+    // Six faces, four unique vertices each (per-face normals, so no sharing), two
+    // triangles per face. Half-extent 0.5 → a unit cube centered on the origin.
+    struct Face {
+        float normal[3];
+        float corners[4][3]; // CCW when viewed from outside
+    };
+    const float h = 0.5f;
+    const Face faces[6] = {
+        {{ 0, 0, 1}, {{-h,-h, h},{ h,-h, h},{ h, h, h},{-h, h, h}}}, // +Z
+        {{ 0, 0,-1}, {{ h,-h,-h},{-h,-h,-h},{-h, h,-h},{ h, h,-h}}}, // -Z
+        {{ 1, 0, 0}, {{ h,-h, h},{ h,-h,-h},{ h, h,-h},{ h, h, h}}}, // +X
+        {{-1, 0, 0}, {{-h,-h,-h},{-h,-h, h},{-h, h, h},{-h, h,-h}}}, // -X
+        {{ 0, 1, 0}, {{-h, h, h},{ h, h, h},{ h, h,-h},{-h, h,-h}}}, // +Y
+        {{ 0,-1, 0}, {{-h,-h,-h},{ h,-h,-h},{ h,-h, h},{-h,-h, h}}}, // -Y
+    };
+    const float uvs[4][2] = {{0, 0}, {1, 0}, {1, 1}, {0, 1}};
+
+    for (const Face& face : faces) {
+        const uint32_t base = static_cast<uint32_t>(mesh.vertices.size());
+        for (int i = 0; i < 4; ++i) {
+            Vertex v{};
+            v.pos[0] = face.corners[i][0];
+            v.pos[1] = face.corners[i][1];
+            v.pos[2] = face.corners[i][2];
+            v.normal[0] = face.normal[0];
+            v.normal[1] = face.normal[1];
+            v.normal[2] = face.normal[2];
+            v.uv[0] = uvs[i][0];
+            v.uv[1] = uvs[i][1];
+            mesh.vertices.push_back(v);
+        }
+        mesh.indices.push_back(base + 0);
+        mesh.indices.push_back(base + 1);
+        mesh.indices.push_back(base + 2);
+        mesh.indices.push_back(base + 0);
+        mesh.indices.push_back(base + 2);
+        mesh.indices.push_back(base + 3);
+    }
+    return mesh;
+}
+
 namespace {
 uint32_t findMemoryType(VkPhysicalDevice physicalDevice, uint32_t typeFilter, VkMemoryPropertyFlags properties) {
     VkPhysicalDeviceMemoryProperties memProperties;

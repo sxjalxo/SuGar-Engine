@@ -7,6 +7,7 @@
 #include "Renderer.h"
 #include <stdexcept>
 #include <fstream>
+#include <iostream>
 #include <vector>
 #include <algorithm>
 #include <array>
@@ -1003,7 +1004,14 @@ void BasicTrianglePass::uploadJointMatrices() {
         if (slot >= MAX_SKINNED_DRAWS) {
             // Out of slices. Leaving the offset unset draws this character
             // unskinned, which is wrong but local — reusing another character's
-            // slice would pose it with someone else's skeleton.
+            // slice would pose it with someone else's skeleton. Warn once so the
+            // silent bind-pose fallback (#29) is at least visible to the developer.
+            static bool warned = false;
+            if (!warned) {
+                warned = true;
+                std::cerr << "[renderer] more than " << MAX_SKINNED_DRAWS
+                          << " skinned draws this frame; extra characters render in bind pose.\n";
+            }
             break;
         }
 

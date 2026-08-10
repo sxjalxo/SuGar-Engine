@@ -182,6 +182,14 @@ uint32_t AudioEngine::play(const std::shared_ptr<AudioClip>& clip, float volume,
                        [](const Voice& v) { return !v.active; }),
         impl->voices.end());
 
+    // Hard cap: if every voice is still active, steal the oldest rather than let the
+    // list grow without bound (a burst of one-shots with no follow-up play() would
+    // otherwise never be reclaimed). 64 simultaneous voices is ample for gameplay.
+    constexpr size_t MaxVoices = 64;
+    if (impl->voices.size() >= MaxVoices) {
+        impl->voices.erase(impl->voices.begin());
+    }
+
     voice.id = impl->nextVoiceId++;
     if (impl->nextVoiceId == 0) {
         impl->nextVoiceId = 1; // 0 is the "invalid" sentinel

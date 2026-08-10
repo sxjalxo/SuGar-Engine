@@ -21,13 +21,22 @@ struct WorldShape {
     glm::vec3 center{0.0f};
     glm::vec3 halfExtents{0.0f}; // box
     float radius = 0.0f;         // sphere
+    bool isTrigger = false;
+    uint32_t layer = 0xFFFFFFFFu;
+    uint32_t mask = 0xFFFFFFFFu;
 };
+
+// Two colliders interact only if each one's mask includes the other's layer.
+inline bool layersInteract(const WorldShape& a, const WorldShape& b) {
+    return (a.mask & b.layer) != 0u && (b.mask & a.layer) != 0u;
+}
 
 // Contact normal always points from shape A to shape B.
 struct Contact {
     bool hit = false;
     glm::vec3 normal{0.0f};
     float penetration = 0.0f;
+    glm::vec3 point{0.0f}; // world-space contact point (approx), for gameplay events
 };
 
 WorldShape makeWorldShape(Entity entity, const Transform& transform, const ColliderComponent& collider) {
@@ -40,6 +49,9 @@ WorldShape makeWorldShape(Entity entity, const Transform& transform, const Colli
                                      std::abs(transform.scale.y),
                                      std::abs(transform.scale.z)});
     shape.radius = collider.radius * maxScale;
+    shape.isTrigger = collider.isTrigger;
+    shape.layer = collider.layer;
+    shape.mask = collider.mask;
     return shape;
 }
 
@@ -74,6 +86,9 @@ Contact testBoxBox(const WorldShape& a, const WorldShape& b) {
     contact.hit = true;
     contact.normal = normal;
     contact.penetration = penetration;
+    // Contact point: centre of the overlapping AABB region, not the midpoint of the
+    // two centres (which drifts off the touching surfaces for dissimilar sizes).
+    contact.point = 0.5f * (glm::max(aMin, bMin) + glm::min(aMax, bMax));
     return contact;
 }
 
@@ -89,6 +104,8 @@ Contact testSphereSphere(const WorldShape& a, const WorldShape& b) {
     contact.hit = true;
     contact.penetration = radiusSum - dist;
     contact.normal = dist > 1e-6f ? diff / dist : glm::vec3(0.0f, 1.0f, 0.0f);
+    // Point on a's surface toward b, backed off half the penetration into the overlap.
+    contact.point = a.center + contact.normal * (a.radius - contact.penetration * 0.5f);
     return contact;
 }
 
@@ -108,6 +125,7 @@ Contact testBoxSphere(const WorldShape& box, const WorldShape& sphere) {
         contact.hit = true;
         contact.normal = diff / dist;
         contact.penetration = sphere.radius - dist;
+        contact.point = closest; // the point on the box surface nearest the sphere
         return contact;
     }
 
@@ -131,6 +149,7 @@ Contact testBoxSphere(const WorldShape& box, const WorldShape& sphere) {
     contact.hit = true;
     contact.normal = normal;
     contact.penetration = penetration + sphere.radius;
+    contact.point = sphere.center; // sphere centre is inside the box
     return contact;
 }
 
@@ -383,17 +402,26 @@ void PhysicsWorld::step(Registry& registry, float deltaTime) {
     //    gameplay (behaviors) can react; the contact point is approximated as the
     //    midpoint of the two centers (good enough for triggers/sfx; refine if needed).
     for (const auto& [i, k] : broadphasePairs(shapes)) {
+        // Collision filtering: layers that don't interact produce no contact and no
+        // event at all — as if the other shape weren't there.
+        if (!layersInteract(shapes[i], shapes[k])) {
+            continue;
+        }
+
         const Contact contact = narrowphase(shapes[i], shapes[k]);
         if (!contact.hit) {
             continue;
         }
 
-        const float impulse = resolveContact(registry, shapes[i], shapes[k], contact);
+        // A trigger (sensor) still reports the overlap but is never pushed apart, and
+        // never pushes the other body. Only a pair of non-triggers resolves physically.
+        const bool trigger = shapes[i].isTrigger || shapes[k].isTrigger;
+        const float impulse = trigger ? 0.0f : resolveContact(registry, shapes[i], shapes[k], contact);
 
         CollisionEvent event;
         event.a = shapes[i].entity;
         event.b = shapes[k].entity;
-        event.point = 0.5f * (shapes[i].center + shapes[k].center);
+        event.point = contact.point; // real per-shape contact point (was centre midpoint)
         event.normal = contact.normal;
         event.impulse = impulse;
         collisionEvents.push_back(event);

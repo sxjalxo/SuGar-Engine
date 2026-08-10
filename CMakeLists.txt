@@ -108,10 +108,14 @@ add_library(SuGarCore SHARED
     src/scene/Behavior.h
     src/scene/BehaviorRegistry.cpp
     src/scene/BehaviorRegistry.h
+    src/scene/ScriptSystem.h
+    src/scene/ScriptSystem.cpp
     src/scene/Transform.h
     src/scene/TransformMath.h
     src/physics/CollisionEvent.h
     src/physics/PhysicsComponents.h
+    src/physics/PhysicsQuery.h
+    src/physics/PhysicsQuery.cpp
     src/animation/AnimationClip.h
     src/animation/AnimationClip.cpp
     src/animation/AnimationClipRegistry.h

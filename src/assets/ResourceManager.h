@@ -24,6 +24,10 @@ public:
     // colour (albedo * tint = tint), the readable option for 2D games where every
     // entity would otherwise share the checkerboard.
     static constexpr const char* WhiteTextureId = "builtin://white";
+    // A procedural unit cube. The engine's guaranteed mesh fallback: a scene that
+    // references a missing/uncookable mesh loads this instead of failing, and it
+    // ships in no file, so it can never itself be the missing asset.
+    static constexpr const char* CubeMeshId = "builtin://cube";
 
     static void init(
         VkDevice device,

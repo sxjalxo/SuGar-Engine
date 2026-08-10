@@ -59,6 +59,8 @@
 #include "navigation/NavPath.h"
 #include "navigation/NavigationSystem.h"
 #include "physics/PhysicsWorld.h"
+#include "physics/PhysicsQuery.h"
+#include "scene/ScriptSystem.h"
 #include "audio/AudioClip.h"
 #include "rendering/Mesh.h"
 #include "scene/BehaviorRegistry.h"
@@ -295,6 +297,407 @@ inline bool testPhysicsBroadphase() {
     ok &= events2.size() == events.size();
     for (size_t i = 0; i < events.size() && i < events2.size(); ++i) {
         ok &= events[i].a == events2[i].a && events[i].b == events2[i].b;
+    }
+
+    return ok;
+}
+
+// --- Physics collision filtering (layers/mask) + triggers (sensors), plus their
+// serialization round-trip. All device-free, so it runs headless ---------------
+inline bool testColliderFilter() {
+    bool ok = true;
+
+    // Drops two overlapping unit boxes at the origin. Returns (eventCount, moved):
+    // `moved` is whether resolution pushed the first box off the origin.
+    auto simulate = [](bool trigger, uint32_t maskA, uint32_t layerA,
+                       uint32_t maskB, uint32_t layerB) {
+        Registry reg;
+        PhysicsWorld world;
+
+        const Entity a = reg.createEntity();
+        reg.transforms.add(a, { Transform{} });
+        RigidBodyComponent ra{};
+        ra.useGravity = false;
+        reg.rigidBodies.add(a, ra);
+        ColliderComponent ca{};
+        ca.halfExtents = glm::vec3(0.5f);
+        ca.isTrigger = trigger;
+        ca.mask = maskA;
+        ca.layer = layerA;
+        reg.colliders.add(a, ca);
+
+        const Entity b = reg.createEntity();
+        Transform tb;
+        tb.position = glm::vec3(0.3f, 0.0f, 0.0f); // overlaps a
+        reg.transforms.add(b, { tb });
+        RigidBodyComponent rb{};
+        rb.useGravity = false;
+        reg.rigidBodies.add(b, rb);
+        ColliderComponent cb{};
+        cb.halfExtents = glm::vec3(0.5f);
+        cb.isTrigger = trigger;
+        cb.mask = maskB;
+        cb.layer = layerB;
+        reg.colliders.add(b, cb);
+
+        world.step(reg, 1.0f / 60.0f);
+        const size_t events = world.getCollisionEvents().size();
+        const bool moved = glm::length(reg.transforms.get(a).transform.position) > 1e-4f;
+        return std::pair<size_t, bool>{ events, moved };
+    };
+
+    // Default masks, solid: overlap resolves (event + movement).
+    {
+        const auto [events, moved] = simulate(false, 0xFFFFFFFFu, 0xFFFFFFFFu, 0xFFFFFFFFu, 0xFFFFFFFFu);
+        ok &= events == 1 && moved;
+    }
+    // Non-interacting layers: no event, no movement — as if the other weren't there.
+    {
+        const auto [events, moved] = simulate(false, /*maskA*/0x1u, /*layerA*/0x1u,
+                                              /*maskB*/0x2u, /*layerB*/0x2u);
+        ok &= events == 0 && !moved;
+    }
+    // Trigger: overlap is reported (event) but neither body is pushed (no movement).
+    {
+        const auto [events, moved] = simulate(true, 0xFFFFFFFFu, 0xFFFFFFFFu, 0xFFFFFFFFu, 0xFFFFFFFFu);
+        ok &= events == 1 && !moved;
+    }
+
+    // Serialization round-trip: the new fields survive save -> load.
+    {
+        Registry reg;
+        std::vector<Light> lights;
+        const Entity e = reg.createEntity();
+        reg.transforms.add(e, { Transform{} });
+        ColliderComponent c{};
+        c.isTrigger = true;
+        c.layer = 0x00000004u;
+        c.mask = 0xFFFFFFFEu; // > 2^31, proves the uint32 (not int) read path
+        reg.colliders.add(e, c);
+
+        const std::string text = SceneSerializer::saveToString(reg, lights);
+
+        Registry loaded;
+        std::vector<Light> loadedLights;
+        ok &= SceneSerializer::loadFromString(loaded, loadedLights, text);
+
+        // Exactly one entity with a collider; find it (id may differ).
+        bool found = false;
+        for (const auto& [id, collider] : loaded.colliders.getAll()) {
+            (void)id;
+            found = true;
+            ok &= collider.isTrigger && collider.layer == 0x00000004u && collider.mask == 0xFFFFFFFEu;
+        }
+        ok &= found;
+
+        // Default-collider scenes stay byte-identical (no new fields emitted).
+        Registry plain;
+        const Entity p = plain.createEntity();
+        plain.transforms.add(p, { Transform{} });
+        plain.colliders.add(p, ColliderComponent{});
+        const std::string plainText = SceneSerializer::saveToString(plain, lights);
+        ok &= plainText.find("isTrigger") == std::string::npos;
+        ok &= plainText.find("\"layer\"") == std::string::npos;
+        ok &= plainText.find("\"mask\"") == std::string::npos;
+    }
+
+    return ok;
+}
+
+// Test behaviors + shared recording state for testScriptSystem. Header is included
+// in one TU, so inline file-scope state is safe. Names are prefixed so they can't
+// collide with any behavior a real game or another test registers.
+namespace scripttest_detail {
+inline std::vector<Entity> tickOrder;
+inline int spawnerRuns = 0;
+inline Entity spawnTarget = INVALID_ENTITY;
+inline Entity killTarget = INVALID_ENTITY;
+
+class RecorderBehavior : public Behavior {
+public:
+    void onUpdate(Registry&, Entity self, float) override { tickOrder.push_back(self); }
+};
+class SpawnerBehavior : public Behavior {
+public:
+    void onUpdate(Registry& reg, Entity, float) override {
+        ++spawnerRuns;
+        if (spawnTarget == INVALID_ENTITY) {
+            spawnTarget = reg.createEntity();
+            reg.scripts.add(spawnTarget, { "ScriptTest.Recorder", false });
+        }
+    }
+};
+class KillerBehavior : public Behavior {
+public:
+    void onUpdate(Registry& reg, Entity, float) override {
+        if (killTarget != INVALID_ENTITY && reg.scripts.has(killTarget)) {
+            reg.destroyEntity(killTarget);
+        }
+    }
+};
+} // namespace scripttest_detail
+
+// --- Script system: deterministic order + spawn/destroy-during-tick safety (the
+// #4/#5 fixes). Headless via Core's ScriptSystem::run --------------------------
+inline bool testScriptSystem() {
+    using namespace scripttest_detail;
+    bool ok = true;
+
+    BehaviorRegistry::registerBehavior("ScriptTest.Recorder", std::make_unique<RecorderBehavior>());
+    BehaviorRegistry::registerBehavior("ScriptTest.Spawner", std::make_unique<SpawnerBehavior>());
+    BehaviorRegistry::registerBehavior("ScriptTest.Killer", std::make_unique<KillerBehavior>());
+
+    // 1) Tick order is ascending entity id regardless of insertion order.
+    {
+        tickOrder.clear();
+        Registry reg;
+        std::vector<Entity> ids;
+        for (int i = 0; i < 6; ++i) {
+            ids.push_back(reg.createEntity());
+        }
+        // Insert scripts in reverse-id order so map insertion order != id order.
+        for (auto it = ids.rbegin(); it != ids.rend(); ++it) {
+            reg.scripts.add(*it, { "ScriptTest.Recorder", true });
+        }
+        ScriptSystem::run(reg, 0.016f);
+        ok &= tickOrder.size() == ids.size();
+        ok &= std::is_sorted(tickOrder.begin(), tickOrder.end());
+    }
+
+    // 2) Spawn during tick: no crash; the spawned entity ticks on the NEXT call,
+    //    not the one it was created in (deferred semantics).
+    {
+        tickOrder.clear();
+        spawnerRuns = 0;
+        spawnTarget = INVALID_ENTITY;
+        Registry reg;
+        const Entity s = reg.createEntity();
+        reg.scripts.add(s, { "ScriptTest.Spawner", true });
+
+        ScriptSystem::run(reg, 0.016f); // spawns one recorder
+        ok &= spawnerRuns == 1;
+        ok &= spawnTarget != INVALID_ENTITY && reg.scripts.has(spawnTarget);
+        ok &= tickOrder.empty(); // recorder not ticked this call
+
+        ScriptSystem::run(reg, 0.016f); // now the recorder ticks
+        ok &= std::find(tickOrder.begin(), tickOrder.end(), spawnTarget) != tickOrder.end();
+    }
+
+    // 3) Destroy during tick: killer (lower id, ticks first) destroys the victim
+    //    (higher id) before its turn. Victim must be skipped, not crash, not tick.
+    {
+        tickOrder.clear();
+        killTarget = INVALID_ENTITY;
+        Registry reg;
+        const Entity killer = reg.createEntity(); // lower id
+        const Entity victim = reg.createEntity(); // higher id
+        killTarget = victim;
+        reg.scripts.add(killer, { "ScriptTest.Killer", true });
+        reg.scripts.add(victim, { "ScriptTest.Recorder", true });
+
+        ScriptSystem::run(reg, 0.016f);
+        ok &= !reg.scripts.has(victim); // destroyed
+        ok &= std::find(tickOrder.begin(), tickOrder.end(), victim) == tickOrder.end(); // never ticked
+    }
+
+    return ok;
+}
+
+// --- Physics contact point: events report a point on the touching surfaces, not
+// the midpoint of the two centres (#17). Headless -------------------------------
+inline bool testContactPoint() {
+    bool ok = true;
+
+    // Two static bodies so positions are exact (no integration) but a contact event
+    // is still emitted. Returns the event's contact point.
+    auto contactPointOf = [](ColliderType typeA, glm::vec3 posA, glm::vec3 halfA, float radA,
+                             ColliderType typeB, glm::vec3 posB, glm::vec3 halfB, float radB) {
+        Registry reg;
+        PhysicsWorld world;
+        auto make = [&](ColliderType type, glm::vec3 pos, glm::vec3 half, float rad) {
+            const Entity e = reg.createEntity();
+            Transform t;
+            t.position = pos;
+            reg.transforms.add(e, { t });
+            RigidBodyComponent body{};
+            body.isStatic = true;
+            body.useGravity = false;
+            reg.rigidBodies.add(e, body);
+            ColliderComponent c{};
+            c.type = type;
+            c.halfExtents = half;
+            c.radius = rad;
+            reg.colliders.add(e, c);
+        };
+        make(typeA, posA, halfA, radA);
+        make(typeB, posB, halfB, radB);
+        world.step(reg, 1.0f / 60.0f);
+        return world.getCollisionEvents();
+    };
+
+    // box-box: overlap region centre. a@origin, b@(0.8,0,0), both half 0.5 -> x in
+    // [0.3,0.5], centre x = 0.4.
+    {
+        const auto events = contactPointOf(ColliderType::Box, glm::vec3(0.0f), glm::vec3(0.5f), 0.0f,
+                                           ColliderType::Box, glm::vec3(0.8f, 0.0f, 0.0f), glm::vec3(0.5f), 0.0f);
+        ok &= events.size() == 1 && std::abs(events[0].point.x - 0.4f) < 1e-2f
+              && std::abs(events[0].point.y) < 1e-2f;
+    }
+
+    // sphere-sphere: point on a's surface toward b. a@origin r0.5, b@(0.8,0,0) r0.5,
+    // penetration 0.2 -> point.x = 0.5 - 0.1 = 0.4.
+    {
+        const auto events = contactPointOf(ColliderType::Sphere, glm::vec3(0.0f), glm::vec3(0.5f), 0.5f,
+                                           ColliderType::Sphere, glm::vec3(0.8f, 0.0f, 0.0f), glm::vec3(0.5f), 0.5f);
+        ok &= events.size() == 1 && std::abs(events[0].point.x - 0.4f) < 1e-2f;
+    }
+
+    // box-sphere: nearest point on the box surface. box@origin half0.5, sphere@(0.8,0,0)
+    // r0.5 -> closest on box = (0.5,0,0).
+    {
+        const auto events = contactPointOf(ColliderType::Box, glm::vec3(0.0f), glm::vec3(0.5f), 0.0f,
+                                           ColliderType::Sphere, glm::vec3(0.8f, 0.0f, 0.0f), glm::vec3(0.5f), 0.5f);
+        ok &= events.size() == 1 && std::abs(events[0].point.x - 0.5f) < 1e-2f
+              && std::abs(events[0].point.y) < 1e-2f;
+    }
+
+    return ok;
+}
+
+// --- destroyEntityTree destroys the whole subtree, while destroyEntity still only
+// orphans children (#7). Headless -----------------------------------------------
+inline bool testDestroyEntityTree() {
+    bool ok = true;
+
+    { // cascade: parent + child + grandchild all gone
+        Registry reg;
+        const Entity parent = reg.createEntity();
+        const Entity child = reg.createEntity();
+        const Entity grandchild = reg.createEntity();
+        reg.transforms.add(parent, {});
+        reg.transforms.add(child, {});
+        reg.transforms.add(grandchild, {});
+        reg.setParent(child, parent);
+        reg.setParent(grandchild, child);
+
+        reg.destroyEntityTree(parent);
+        ok &= !reg.transforms.has(parent) && !reg.transforms.has(child) && !reg.transforms.has(grandchild);
+        ok &= !reg.hierarchy.has(parent) && !reg.hierarchy.has(child) && !reg.hierarchy.has(grandchild);
+    }
+
+    { // plain destroyEntity still orphans (children survive as roots) — unchanged
+        Registry reg;
+        const Entity parent = reg.createEntity();
+        const Entity child = reg.createEntity();
+        reg.transforms.add(parent, {});
+        reg.transforms.add(child, {});
+        reg.setParent(child, parent);
+
+        reg.destroyEntity(parent);
+        ok &= !reg.transforms.has(parent);
+        ok &= reg.transforms.has(child); // survived
+        ok &= !reg.hierarchy.has(child) || reg.hierarchy.get(child).parent == INVALID_ENTITY;
+    }
+
+    return ok;
+}
+
+// --- Built-in procedural cube: the file-free mesh fallback (#43). Headless ------
+inline bool testBuiltinCubeMesh() {
+    const Mesh cube = Mesh::makeUnitCube();
+    bool ok = cube.vertices.size() == 24 && cube.indices.size() == 36;
+    for (uint32_t idx : cube.indices) {
+        ok &= idx < cube.vertices.size(); // every index in range (no OOB draw)
+    }
+    for (const Vertex& v : cube.vertices) {
+        for (int i = 0; i < 3; ++i) {
+            ok &= v.pos[i] >= -0.5f - 1e-5f && v.pos[i] <= 0.5f + 1e-5f;
+        }
+        const float n2 = v.normal[0] * v.normal[0] + v.normal[1] * v.normal[1] + v.normal[2] * v.normal[2];
+        ok &= std::abs(n2 - 1.0f) < 1e-5f; // unit normals
+    }
+    return ok;
+}
+
+// --- Physics raycast query (hitscan / ground checks / picking). Headless --------
+inline bool testRaycast() {
+    bool ok = true;
+
+    auto addBox = [](Registry& reg, glm::vec3 pos, glm::vec3 half, uint32_t layer = 0xFFFFFFFFu) {
+        const Entity e = reg.createEntity();
+        Transform t;
+        t.position = pos;
+        reg.transforms.add(e, { t });
+        ColliderComponent c{};
+        c.type = ColliderType::Box;
+        c.halfExtents = half;
+        c.layer = layer;
+        reg.colliders.add(e, c);
+        return e;
+    };
+
+    { // straight hit: normal faces the ray, distance/point on the near face
+        Registry reg;
+        const Entity box = addBox(reg, glm::vec3(0.0f), glm::vec3(0.5f));
+        RaycastHit hit;
+        const bool got = PhysicsQuery::raycast(reg, glm::vec3(-5.0f, 0.0f, 0.0f),
+                                               glm::vec3(1.0f, 0.0f, 0.0f), 10.0f, hit);
+        ok &= got && hit.entity == box;
+        ok &= std::abs(hit.distance - 4.5f) < 1e-2f;
+        ok &= std::abs(hit.point.x + 0.5f) < 1e-2f;
+        ok &= hit.normal.x < -0.9f;
+    }
+
+    { // miss: ray passes above the box
+        Registry reg;
+        addBox(reg, glm::vec3(0.0f), glm::vec3(0.5f));
+        RaycastHit hit;
+        const bool got = PhysicsQuery::raycast(reg, glm::vec3(-5.0f, 5.0f, 0.0f),
+                                               glm::vec3(1.0f, 0.0f, 0.0f), 10.0f, hit);
+        ok &= !got;
+    }
+
+    { // maxDistance excludes a box that is farther than the cutoff
+        Registry reg;
+        addBox(reg, glm::vec3(0.0f), glm::vec3(0.5f));
+        RaycastHit hit;
+        const bool got = PhysicsQuery::raycast(reg, glm::vec3(-5.0f, 0.0f, 0.0f),
+                                               glm::vec3(1.0f, 0.0f, 0.0f), 3.0f, hit);
+        ok &= !got; // near face at distance 4.5 > 3.0
+    }
+
+    { // layer mask filters which colliders are considered
+        Registry reg;
+        addBox(reg, glm::vec3(0.0f), glm::vec3(0.5f), /*layer*/0x2u);
+        RaycastHit hit;
+        ok &= !PhysicsQuery::raycast(reg, glm::vec3(-5.0f, 0.0f, 0.0f),
+                                     glm::vec3(1.0f, 0.0f, 0.0f), 10.0f, hit, /*mask*/0x1u);
+        ok &= PhysicsQuery::raycast(reg, glm::vec3(-5.0f, 0.0f, 0.0f),
+                                    glm::vec3(1.0f, 0.0f, 0.0f), 10.0f, hit, /*mask*/0x2u);
+    }
+
+    { // nearest of several hits wins; non-unit direction is normalized internally
+        Registry reg;
+        const Entity near = addBox(reg, glm::vec3(2.0f, 0.0f, 0.0f), glm::vec3(0.5f));
+        addBox(reg, glm::vec3(5.0f, 0.0f, 0.0f), glm::vec3(0.5f));
+        RaycastHit hit;
+        const bool got = PhysicsQuery::raycast(reg, glm::vec3(0.0f), glm::vec3(3.0f, 0.0f, 0.0f), 10.0f, hit);
+        ok &= got && hit.entity == near && std::abs(hit.distance - 1.5f) < 1e-2f;
+    }
+
+    { // sphere hit
+        Registry reg;
+        const Entity e = reg.createEntity();
+        Transform t;
+        t.position = glm::vec3(0.0f, 0.0f, 10.0f);
+        reg.transforms.add(e, { t });
+        ColliderComponent c{};
+        c.type = ColliderType::Sphere;
+        c.radius = 1.0f;
+        reg.colliders.add(e, c);
+        RaycastHit hit;
+        const bool got = PhysicsQuery::raycast(reg, glm::vec3(0.0f), glm::vec3(0.0f, 0.0f, 1.0f), 20.0f, hit);
+        ok &= got && hit.entity == e && std::abs(hit.distance - 9.0f) < 1e-2f && hit.normal.z < -0.9f;
     }
 
     return ok;
@@ -3954,6 +4357,12 @@ inline std::pair<int, int> run() {
         { "SnapshotStorage",  testSnapshotStorage },
         { "Physics",          testPhysics },
         { "PhysicsBroadphase", testPhysicsBroadphase },
+        { "ColliderFilter",   testColliderFilter },
+        { "Raycast",          testRaycast },
+        { "ScriptSystem",     testScriptSystem },
+        { "ContactPoint",     testContactPoint },
+        { "DestroyEntityTree", testDestroyEntityTree },
+        { "BuiltinCubeMesh",  testBuiltinCubeMesh },
         { "SystemScheduler",  testSystemScheduler },
         { "ComponentAccess",  testComponentAccess },
         { "SnapshotPatch",    testSnapshotPatch },

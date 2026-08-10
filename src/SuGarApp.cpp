@@ -24,6 +24,7 @@
 #include "scene/BehaviorRegistry.h"
 #include "scene/DrawList.h"
 #include "scene/SceneSerializer.h"
+#include "scene/ScriptSystem.h"
 #include "scene/TransformMath.h"
 #include "imgui.h"
 #include <stdexcept>
@@ -1004,19 +1005,9 @@ void SuGarApp::setupSystemSchedule() {
         maskOf(ComponentType::Script, ComponentType::Transform, ComponentType::RigidBody,
                ComponentType::AudioSource),
         [this](float dt) {
-            // Behaviors are stateless and shared; per-entity lifecycle state
-            // (`started`) lives in the component so it survives snapshot/restore.
-            for (auto& [entity, scriptComponent] : registry.scripts.getAll()) {
-                Behavior* behavior = BehaviorRegistry::get(scriptComponent.behavior);
-                if (behavior == nullptr) {
-                    continue;
-                }
-                if (!scriptComponent.started) {
-                    behavior->onStart(registry, entity);
-                    scriptComponent.started = true;
-                }
-                behavior->onUpdate(registry, entity, dt);
-            }
+            // Sorted-snapshot iteration + spawn/destroy safety live in Core's
+            // ScriptSystem::run so they are headless-testable (see testScriptSystem).
+            ScriptSystem::run(registry, dt);
         }});
 
     // Navigation: plans a route for any agent whose destination changed this step,

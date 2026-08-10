@@ -332,6 +332,16 @@ int getIntValue(const JsonValue& value, const std::string& name) {
     return static_cast<int>(value.number);
 }
 
+// Collision layer/mask bitfields need the full 32-bit range, and the parser stores
+// numbers as double (exact through 2^53), so read the double and cast — not
+// getIntValue, whose int cast would mangle values above 2^31.
+uint32_t getUint32Value(const JsonValue& value, const std::string& name) {
+    if (value.type != JsonValue::Type::Number) {
+        throw std::runtime_error(name + " must be a JSON number.");
+    }
+    return static_cast<uint32_t>(value.number);
+}
+
 bool getBoolValue(const JsonValue& value, const std::string& name) {
     return getFloatValue(value, name) != 0.0f;
 }
@@ -437,7 +447,10 @@ AssetHandle loadMeshWithFallback(const std::string& meshKey) {
     try {
         return ResourceManager::loadMesh(meshKey);
     } catch (...) {
-        return ResourceManager::loadMesh("assets/models/textured_cube.obj");
+        // Fall back to the built-in procedural cube, NOT a demo file: a packaged game
+        // may not ship any particular .obj, and a file fallback that is itself absent
+        // would throw again and fail the whole scene load. The built-in cannot.
+        return ResourceManager::loadMesh(ResourceManager::CubeMeshId);
     }
 }
 
@@ -613,7 +626,25 @@ void writeEntityObject(std::ostream& output, const Registry& registry, Entity en
             writeVec3(out, collider.halfExtents);
             out << ",\n";
             writeIndent(out, 4);
-            out << "\"radius\": " << collider.radius << "\n";
+            out << "\"radius\": " << collider.radius;
+            // Optional filtering/trigger fields — emitted only when non-default so
+            // existing scenes are byte-identical and stay back-compatible.
+            if (collider.isTrigger) {
+                out << ",\n";
+                writeIndent(out, 4);
+                out << "\"isTrigger\": true";
+            }
+            if (collider.layer != 0xFFFFFFFFu) {
+                out << ",\n";
+                writeIndent(out, 4);
+                out << "\"layer\": " << collider.layer;
+            }
+            if (collider.mask != 0xFFFFFFFFu) {
+                out << ",\n";
+                writeIndent(out, 4);
+                out << "\"mask\": " << collider.mask;
+            }
+            out << "\n";
             writeIndent(out, 3);
             out << "}";
         });
@@ -1113,6 +1144,15 @@ PendingEntityData parseEntityObject(const JsonValue& objectValue, int sceneVersi
         }
         if (const JsonValue* v = findObjectField(colliderData, "radius")) {
             pendingEntity.collider.radius = getFloatValue(*v, "collider.radius");
+        }
+        if (const JsonValue* v = findObjectField(colliderData, "isTrigger")) {
+            pendingEntity.collider.isTrigger = getBoolValue(*v, "collider.isTrigger");
+        }
+        if (const JsonValue* v = findObjectField(colliderData, "layer")) {
+            pendingEntity.collider.layer = getUint32Value(*v, "collider.layer");
+        }
+        if (const JsonValue* v = findObjectField(colliderData, "mask")) {
+            pendingEntity.collider.mask = getUint32Value(*v, "collider.mask");
         }
     }
 
