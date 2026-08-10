@@ -1211,6 +1211,14 @@ void SuGarApp::initVulkan() {
         [](const std::string& key) -> AssetHandle {
             try { return ResourceManager::loadAudioClip(key); } catch (...) { return INVALID_HANDLE; }
         },
+        [](const RuntimeMeshData& data) -> AssetHandle {
+            std::string error;
+            const AssetHandle handle = ResourceManager::createRuntimeMesh(data, error);
+            if (handle == INVALID_HANDLE && !error.empty()) {
+                std::cerr << "[assets] createMesh rejected: " << error << "\n";
+            }
+            return handle;
+        },
         [](AssetHandle handle) { ResourceManager::release(handle); },
     });
 

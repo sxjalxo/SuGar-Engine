@@ -5,6 +5,7 @@
 #include <unordered_map>
 #include <vulkan/vulkan.h>
 #include "assets/AssetHandle.h"
+#include "assets/RuntimeMeshData.h"
 
 class Mesh;
 class Texture;
@@ -45,6 +46,13 @@ public:
     static AssetHandle loadMesh(const std::string& path);
     static AssetHandle loadTexture(const std::string& path);
     static AssetHandle loadAudioClip(const std::string& path);
+
+    // Create a DERIVED GPU mesh from game-generated vertex data (runtime-mesh seam,
+    // docs/DESIGN_RUNTIME_MESH.md). Validates, copies into the engine vertex format,
+    // uploads, and stores under a synthetic `runtime://mesh/<id>` key (never a source
+    // asset — not scanned/cooked/packaged). Returns an increfed handle, or
+    // INVALID_HANDLE with `error` set. Main-thread + device only.
+    static AssetHandle createRuntimeMesh(const RuntimeMeshData& data, std::string& error);
     static bool reloadAsset(const std::string& path);
     static std::shared_ptr<Mesh> getMesh(AssetHandle handle);
     static std::shared_ptr<Texture> getTexture(AssetHandle handle);

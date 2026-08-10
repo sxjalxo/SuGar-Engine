@@ -4,6 +4,7 @@
 #include <string>
 
 #include "assets/AssetHandle.h"
+#include "assets/RuntimeMeshData.h"
 
 // Core-safe asset-acquire seam (M4 L3). A game module links only Core and cannot see
 // the engine-side ResourceManager (it owns Vulkan), so before this a behavior could
@@ -32,6 +33,10 @@ struct Backend {
     std::function<AssetHandle(const std::string& key)> acquireMesh;
     std::function<AssetHandle(const std::string& key)> acquireTexture;
     std::function<AssetHandle(const std::string& key)> acquireAudioClip;
+    // Create + upload a mesh from game-generated vertices (a *derived*, non-source GPU
+    // resource — docs/DESIGN_RUNTIME_MESH.md). The engine copies the data and returns an
+    // increfed handle; the caller keeps ownership of `data`. Not for source assets.
+    std::function<AssetHandle(const RuntimeMeshData& data)> createMesh;
     std::function<void(AssetHandle handle)> release;
 };
 
@@ -50,6 +55,11 @@ bool available();
 AssetHandle acquireMesh(const std::string& key);
 AssetHandle acquireTexture(const std::string& key);
 AssetHandle acquireAudioClip(const std::string& key);
+
+// Create a derived GPU mesh from CPU vertex data. Returns an increfed handle, or
+// INVALID_HANDLE when no backend is installed or the data is rejected (engine-side
+// validation: lengths, index range, caps). The caller retains ownership of `data`.
+AssetHandle createMesh(const RuntimeMeshData& data);
 
 // Drops one reference. Only needed to balance an acquire whose handle was NOT handed
 // to an entity — an entity's handles are released automatically on destroy.

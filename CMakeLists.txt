@@ -156,6 +156,7 @@ add_library(SuGarCore SHARED
     src/assets/AssetHandle.h
     src/assets/AssetGateway.h
     src/assets/AssetGateway.cpp
+    src/assets/RuntimeMeshData.h
     src/assets/AssetPath.h
     src/assets/AssetPath.cpp
     src/assets/AssetHash.h

@@ -282,7 +282,20 @@ void Renderer::drawFrame() {
         deferredResourceReleases.clear();
     }
 
-    if (descriptorRefreshRequested) {
+    // Ensure a descriptor set exists for every texture the current draw list uses.
+    // A behavior can spawn a renderable entity at runtime (an L3 voxel chunk, a pooled
+    // enemy with a fresh material) whose albedo the descriptor pool has never seen; the
+    // draw loop would then throw "texture descriptor set was not created". Detect a
+    // never-seen texture here (before recording) and rebuild the sets — rare (only when
+    // new renderables appear), and refresh idles the device so it is in-flight-safe.
+    bool needsNewTextureDescriptors = false;
+    for (const AssetHandle texture : collectDrawListTextures()) {
+        if (textureDescriptorSets.find(texture) == textureDescriptorSets.end()) {
+            needsNewTextureDescriptors = true;
+            break;
+        }
+    }
+    if (descriptorRefreshRequested || needsNewTextureDescriptors) {
         refreshDrawListResources();
         descriptorRefreshRequested = false;
     }

@@ -35,6 +35,10 @@ AssetHandle acquireAudioClip(const std::string& key) {
     return g_backend.acquireAudioClip ? g_backend.acquireAudioClip(key) : INVALID_HANDLE;
 }
 
+AssetHandle createMesh(const RuntimeMeshData& data) {
+    return g_backend.createMesh ? g_backend.createMesh(data) : INVALID_HANDLE;
+}
+
 void release(AssetHandle handle) {
     if (g_backend.release) {
         g_backend.release(handle);

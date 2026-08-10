@@ -2033,7 +2033,11 @@ bool SceneSerializer::collectAssetKeys(const std::string& sceneText, std::vector
                              [&](const char* field) { return member.first == field; }) !=
                 std::end(assetFields);
             if (isAssetField && member.second.type == JsonValue::Type::String &&
-                !member.second.string.empty()) {
+                !member.second.string.empty() &&
+                // Derived runtime meshes are not source assets — never cook/package them
+                // (docs/DESIGN_RUNTIME_MESH.md). (builtin:// stays collected: its runtime
+                // resolution is unchanged and existing packaging relies on it.)
+                member.second.string.rfind("runtime://", 0) != 0) {
                 outKeys.push_back(member.second.string);
             }
             visit(member.second);

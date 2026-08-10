@@ -4428,10 +4428,16 @@ inline bool testAssetGateway() {
     int releases = 0;
     AssetHandle lastReleased = INVALID_HANDLE;
 
+    int meshCreates = 0;
+
     AssetGateway::install(AssetGateway::Backend{
         [&](const std::string& key) -> AssetHandle { ++meshAcquires; return key == "builtin://cube" ? AssetHandle{101} : INVALID_HANDLE; },
         [&](const std::string& key) -> AssetHandle { ++texAcquires; return key == "builtin://white" ? AssetHandle{202} : INVALID_HANDLE; },
         [&](const std::string&) -> AssetHandle { return INVALID_HANDLE; },
+        [&](const RuntimeMeshData& data) -> AssetHandle {
+            ++meshCreates;
+            return data.positions.empty() ? INVALID_HANDLE : AssetHandle{303}; // stub validate
+        },
         [&](AssetHandle handle) { ++releases; lastReleased = handle; },
     });
 
@@ -4440,6 +4446,15 @@ inline bool testAssetGateway() {
     ok &= AssetGateway::acquireTexture("builtin://white") == AssetHandle{202};
     ok &= AssetGateway::acquireMesh("missing") == INVALID_HANDLE; // resolve fail, not a crash
     ok &= meshAcquires == 2 && texAcquires == 1;
+
+    // createMesh routes and its handle releases through the same path (no second owner).
+    RuntimeMeshData mesh;
+    mesh.positions = {glm::vec3(0.0f), glm::vec3(1.0f), glm::vec3(0.0f, 1.0f, 0.0f)};
+    mesh.normals.assign(3, glm::vec3(0.0f, 0.0f, 1.0f));
+    mesh.indices = {0, 1, 2};
+    ok &= AssetGateway::createMesh(mesh) == AssetHandle{303};
+    ok &= AssetGateway::createMesh(RuntimeMeshData{}) == INVALID_HANDLE; // empty rejected
+    ok &= meshCreates == 2;
 
     AssetGateway::release(AssetHandle{101});
     ok &= releases == 1 && lastReleased == AssetHandle{101};

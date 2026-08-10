@@ -207,6 +207,66 @@ AssetHandle ResourceManager::loadAudioClip(const std::string& path) {
     return handle;
 }
 
+AssetHandle ResourceManager::createRuntimeMesh(const RuntimeMeshData& data, std::string& error) {
+    ensureInitialized();
+
+    // Engine-side validation (the Core boundary passes only data). Reject anything that
+    // would upload a malformed buffer or let the GPU read out of range.
+    constexpr size_t kMaxVertices = 8u * 1000u * 1000u;
+    if (data.positions.empty() || data.indices.empty()) {
+        error = "runtime mesh has no geometry";
+        return INVALID_HANDLE;
+    }
+    if (data.normals.size() != data.positions.size()) {
+        error = "runtime mesh normals length must equal positions length";
+        return INVALID_HANDLE;
+    }
+    if (!data.uvs.empty() && data.uvs.size() != data.positions.size()) {
+        error = "runtime mesh uvs length must equal positions length (or be empty)";
+        return INVALID_HANDLE;
+    }
+    if (data.positions.size() > kMaxVertices || data.indices.size() > 3u * kMaxVertices) {
+        error = "runtime mesh exceeds size cap";
+        return INVALID_HANDLE;
+    }
+    for (const uint32_t index : data.indices) {
+        if (index >= data.positions.size()) {
+            error = "runtime mesh index out of range";
+            return INVALID_HANDLE;
+        }
+    }
+
+    // Copy into the engine's own vertex format, then upload. Nothing retains a pointer
+    // into the caller's data — it may be discarded the moment this returns.
+    auto mesh = std::make_shared<Mesh>();
+    mesh->vertices.resize(data.positions.size());
+    for (size_t i = 0; i < data.positions.size(); ++i) {
+        Vertex vertex{};
+        vertex.pos[0] = data.positions[i].x;
+        vertex.pos[1] = data.positions[i].y;
+        vertex.pos[2] = data.positions[i].z;
+        vertex.normal[0] = data.normals[i].x;
+        vertex.normal[1] = data.normals[i].y;
+        vertex.normal[2] = data.normals[i].z;
+        if (!data.uvs.empty()) {
+            vertex.uv[0] = data.uvs[i].x;
+            vertex.uv[1] = data.uvs[i].y;
+        }
+        mesh->vertices[i] = vertex; // skin attributes default to zero (never skinned)
+    }
+    mesh->indices = data.indices;
+
+    static uint64_t nextRuntimeId = 1;
+    const std::string key = "runtime://mesh/" + std::to_string(nextRuntimeId++);
+    mesh->setResourceKey(key);
+    mesh->upload(device, physicalDevice, commandPool, graphicsQueue);
+
+    const AssetHandle handle = nextHandle++;
+    meshTable.emplace(handle, ResourceEntry<Mesh>{mesh, key, 1});
+    meshPathToHandle.emplace(key, handle);
+    return handle;
+}
+
 bool ResourceManager::reloadAsset(const std::string& path) {
     ensureInitialized();
 
@@ -351,6 +411,16 @@ void ResourceManager::release(AssetHandle handle) {
 
         if (meshIt->second.refCount == 0) {
             if (meshIt->second.resource) {
+                // A runtime mesh (docs/DESIGN_RUNTIME_MESH.md) is typically released to
+                // swap in a freshly re-meshed chunk, so its GPU buffer may still be
+                // referenced by a frame in flight — idle before destroy so it can't be
+                // freed underneath the GPU. First-slice policy: player-paced edits make
+                // the stall invisible; a per-frame deferred-free queue is the upgrade if
+                // it ever shows up in a measurement. Source assets keep the old path.
+                if (device != VK_NULL_HANDLE &&
+                    meshIt->second.resourceKey.rfind("runtime://", 0) == 0) {
+                    vkDeviceWaitIdle(device);
+                }
                 meshIt->second.resource->destroy(device);
             }
             meshPathToHandle.erase(meshIt->second.resourceKey);
@@ -436,8 +506,10 @@ void ResourceManager::shutdown() {
 }
 
 std::string ResourceManager::normalizeResourceKey(const std::string& path) {
-    // Built-ins are not files and have no path to normalize.
-    if (path.rfind("builtin://", 0) == 0) {
+    // Built-ins and runtime-created meshes are not files and have no path to normalize.
+    // (`runtime://` keys are minted by createRuntimeMesh and never re-resolved through a
+    // file cook; keep them byte-stable rather than letting AssetPath mangle them.)
+    if (path.rfind("builtin://", 0) == 0 || path.rfind("runtime://", 0) == 0) {
         // ASCII-only fold, not std::tolower: the ambient locale must never decide a key's
         // spelling (tr_TR folds 'I' to a dotless 'i'). Same rule AssetPath::normalize
         // follows -- one lowering discipline across the whole engine.
