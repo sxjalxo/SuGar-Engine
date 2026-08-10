@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
+#include <iostream>
 #include <limits>
 #include <queue>
 #include <vector>
@@ -231,8 +232,14 @@ void stringPull(const NavMesh& mesh,
         glm::vec3 right(0.0f);
         if (!portalPoints(mesh, corridor[i], corridor[i + 1], left, right)) {
             // The corridor named two polygons that do not share an edge, which means
-            // the adjacency and the search disagree. Bail to the goal rather than
-            // emitting a path through geometry we cannot justify.
+            // the adjacency and the search disagree — a navmesh bake/adjacency bug.
+            // Bail to the goal rather than emitting a path through geometry we cannot
+            // justify, but say so: a silent straight line that cuts through a wall is
+            // exactly the kind of "legal-looking output that is quietly wrong" this
+            // file is written to avoid, and a developer needs a reason to rebake.
+            std::cerr << "[nav] corridor polygons " << corridor[i] << " and "
+                      << corridor[i + 1] << " share no edge; adjacency disagrees with "
+                      << "the search — steering straight to goal (rebake the navmesh)\n";
             outWaypoints.push_back(goal);
             return;
         }

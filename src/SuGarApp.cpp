@@ -8,6 +8,7 @@
 #include "assets/AssetManifest.h"
 #include "assets/AssetReimport.h"
 #include "assets/Packager.h"
+#include "assets/AssetGateway.h"
 #include "assets/ResourceManager.h"
 #include "audio/AudioSystem.h"
 #include "SelfTests.h"
@@ -725,6 +726,32 @@ void SuGarApp::updateCameraTargets() {
         return;
     }
 
+    // A game camera (Core CameraComponent) supersedes the editor orbit/follow rig:
+    // the active camera entity's world transform *is* the view (position = world
+    // translation, forward = rotation * -Z). Lowest active entity id wins, for the
+    // same determinism reason the rest of the engine sorts by id. Absent ⇒ fall
+    // through to the orbit/follow behavior below, so non-game scenes are unchanged.
+    if (runningGame) {
+        Entity cameraEntity = INVALID_ENTITY;
+        for (const auto& [entity, camera] : registry.cameras.getAll()) {
+            if (camera.active && registry.transforms.has(entity) &&
+                (cameraEntity == INVALID_ENTITY || entity < cameraEntity)) {
+                cameraEntity = entity;
+            }
+        }
+        if (cameraEntity != INVALID_ENTITY) {
+            const glm::mat4 world = getWorldMatrix(cameraEntity, registry);
+            const glm::mat3 basis(world);
+            const glm::vec3 position = glm::vec3(world[3]);
+            const glm::vec3 forward = glm::normalize(basis * glm::vec3(0.0f, 0.0f, -1.0f));
+            const glm::vec3 up = glm::normalize(basis * glm::vec3(0.0f, 1.0f, 0.0f));
+            const CameraComponent& camera = registry.cameras.get(cameraEntity);
+            renderer->setScriptedCamera(position, forward, up,
+                                        camera.fovDegrees, camera.nearPlane, camera.farPlane);
+            return;
+        }
+    }
+
     if (orbitParent == INVALID_ENTITY || !registry.transforms.has(orbitParent)) {
         renderer->setOrbitTarget(glm::vec3(0.0f, 0.0f, 0.0f));
         renderer->setFollowTargetPosition(glm::vec3(0.0f, 0.0f, 0.0f));
@@ -1167,6 +1194,26 @@ void SuGarApp::initVulkan() {
     // Engine wires the ECS's asset-release hook to ResourceManager, so Core's
     // Registry never references the Vulkan-coupled resource system directly.
     registry.onReleaseAsset = [](AssetHandle handle) { ResourceManager::release(handle); };
+
+    // Symmetric ACQUIRE half of the dependency-inversion asset seam (M4 L3): game code
+    // links only Core and cannot see ResourceManager, so it acquires renderable assets
+    // by key through AssetGateway, whose backend we wire here. loadMesh/loadTexture/
+    // loadAudioClip already dedup by key and incref; the release above balances them on
+    // entity destroy. Resolve failures are swallowed to INVALID_HANDLE so a game never
+    // faults on a missing key — it degrades (no mesh) instead.
+    AssetGateway::install(AssetGateway::Backend{
+        [](const std::string& key) -> AssetHandle {
+            try { return ResourceManager::loadMesh(key); } catch (...) { return INVALID_HANDLE; }
+        },
+        [](const std::string& key) -> AssetHandle {
+            try { return ResourceManager::loadTexture(key); } catch (...) { return INVALID_HANDLE; }
+        },
+        [](const std::string& key) -> AssetHandle {
+            try { return ResourceManager::loadAudioClip(key); } catch (...) { return INVALID_HANDLE; }
+        },
+        [](AssetHandle handle) { ResourceManager::release(handle); },
+    });
+
     createCommandBuffers();
 }
 
@@ -1313,7 +1360,16 @@ void SuGarApp::mainLoop() {
         framesThisSecond++;
         const double fpsWindow = currentTime - fpsTimer;
         if (fpsWindow >= 1.0) {
-            updateWindowTitle(window, static_cast<double>(framesThisSecond) / fpsWindow);
+            const double fps = static_cast<double>(framesThisSecond) / fpsWindow;
+            updateWindowTitle(window, fps);
+            // Opt-in measurement (SUGAR_FPSLOG=1): emit FPS + drawn-entity count to
+            // stderr each second. A dogfood-driven stand-in for the missing in-game
+            // profiler overlay — lets a scaling run be measured, not guessed.
+            if (std::getenv("SUGAR_FPSLOG") != nullptr) {
+                std::cerr << "[fps] " << fps
+                          << " entities=" << registry.transforms.getAll().size()
+                          << " draws=" << drawList.items.size() << "\n";
+            }
             fpsTimer = currentTime;
             framesThisSecond = 0;
         }

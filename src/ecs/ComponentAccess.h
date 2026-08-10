@@ -42,6 +42,7 @@ enum class ComponentType : uint32_t {
     NavAgent,
     NavMeshSource,
     NavObstacle,
+    Camera,
     Count
 };
 

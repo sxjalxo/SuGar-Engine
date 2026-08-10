@@ -6,6 +6,7 @@
 #include "animation/Pose.h"
 #include "ecs/Registry.h"
 
+#include <algorithm>
 #include <cmath>
 #include <string>
 #include <vector>
@@ -45,7 +46,21 @@ void update(Registry& registry, float dt) {
     // scratch buffer, not state.
     Pose pose;
 
-    for (auto& [entity, player] : registry.animations.getAll()) {
+    // Ascending id order, not unordered_map order: applyPose writes transforms on
+    // *other* entities (the skeleton's bone entities, resolved by name), so when two
+    // players can touch overlapping targets the outcome is iteration-order dependent.
+    // Sorting by id keeps it stable run-to-run and across a snapshot restore, the
+    // same discipline ScriptSystem/Physics/DrawList follow.
+    std::vector<Entity> ordered;
+    ordered.reserve(registry.animations.getAll().size());
+    for (const auto& [entity, player] : registry.animations.getAll()) {
+        (void)player;
+        ordered.push_back(entity);
+    }
+    std::sort(ordered.begin(), ordered.end());
+
+    for (Entity entity : ordered) {
+        auto& player = registry.animations.get(entity);
         const AnimationClip* clip = AnimationClipRegistry::get(player.clip);
         if (clip == nullptr) {
             // Unknown clip name — nothing to sample and nothing to advance against.

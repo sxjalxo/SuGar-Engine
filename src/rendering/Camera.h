@@ -8,7 +8,11 @@
 enum class CameraMode : uint8_t {
     FREE,
     ORBIT,
-    FOLLOW
+    FOLLOW,
+    // Driven by a game's CameraComponent: position + look direction come straight
+    // from an entity's world transform each frame (first-person, chase rigs, etc).
+    // The engine's own input never moves it — the game owns the pose.
+    SCRIPTED
 };
 
 struct Camera {
@@ -17,6 +21,10 @@ struct Camera {
     glm::vec3 worldUp = {0.0f, 1.0f, 0.0f};
     glm::vec3 target = {0.0f, 0.0f, 0.0f};
     glm::vec3 followTargetPosition = {0.0f, 0.0f, 0.0f};
+    // SCRIPTED mode: the eye's look direction and up, set from the game camera
+    // entity's world transform each frame.
+    glm::vec3 scriptedForward = {0.0f, 0.0f, -1.0f};
+    glm::vec3 scriptedUp = {0.0f, 1.0f, 0.0f};
     float distance = 5.0f;
     bool hasFollowTarget = false;
 
@@ -74,8 +82,8 @@ struct Camera {
     }
 
     void rotate(float xOffset, float yOffset) {
-        if (mode == CameraMode::FOLLOW) {
-            return;
+        if (mode == CameraMode::FOLLOW || mode == CameraMode::SCRIPTED) {
+            return; // the game (or the follow target) owns the orientation
         }
 
         yaw += xOffset * mouseSensitivity;
@@ -87,6 +95,10 @@ struct Camera {
     glm::mat4 getViewMatrix() {
         if (mode == CameraMode::FREE) {
             return glm::lookAt(position, position + getForward(), worldUp);
+        }
+
+        if (mode == CameraMode::SCRIPTED) {
+            return glm::lookAt(position, position + scriptedForward, scriptedUp);
         }
 
         if (mode == CameraMode::ORBIT) {

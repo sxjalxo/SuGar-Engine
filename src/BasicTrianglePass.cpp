@@ -11,6 +11,7 @@
 #include <vector>
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <cstring>
 #include <glm/gtc/matrix_transform.hpp>
 
@@ -1112,8 +1113,46 @@ void BasicTrianglePass::updateUniformBuffer() {
         }
     }
 
-    const glm::mat4 lightView = glm::lookAt(lightPosition, lightTarget, glm::vec3(0.0f, 1.0f, 0.0f));
-    const glm::mat4 lightProj = glm::ortho(-10.0f, 10.0f, -10.0f, 10.0f, 0.1f, 50.0f);
+    // Fit the shadow frustum to the scene instead of a hardcoded [-10,10]x[0.1,50]
+    // box, which left anything past ~20 units unshadowed and starved texel density.
+    // Bound the scene by a sphere around the light target: radius = farthest object
+    // center from the target, plus a margin for mesh extent (object origins ignore
+    // the geometry that surrounds them). Empty scene keeps a sane default extent.
+    float sceneRadius = 5.0f;
+    if (drawList != nullptr && !drawList->items.empty()) {
+        float maxDistSq = 0.0f;
+        for (const auto& item : drawList->items) {
+            const glm::vec3 delta = glm::vec3(item.model[3]) - lightTarget;
+            maxDistSq = std::max(maxDistSq, glm::dot(delta, delta));
+        }
+        sceneRadius = std::sqrt(maxDistSq);
+    }
+    // Margin so a mesh whose *center* sits on the bound still has its body covered,
+    // and so a lone-object scene (radius 0) still gets a usable frustum.
+    const float shadowExtent = sceneRadius * 1.25f + 5.0f;
+
+    // Guard the up vector: a light pointing (near) straight down is parallel to the
+    // default (0,1,0) up, which makes glm::lookAt degenerate and produces a NaN
+    // matrix — and a top-down light is the common case for a top-down game. Fall
+    // back to a Z-up basis when the light direction is nearly vertical.
+    glm::vec3 lightDir = lightTarget - lightPosition;
+    const float lightDirLen = glm::length(lightDir);
+    lightDir = lightDirLen > 1e-6f ? lightDir / lightDirLen : glm::vec3(0.0f, -1.0f, 0.0f);
+    const glm::vec3 up = std::abs(lightDir.y) > 0.999f
+        ? glm::vec3(0.0f, 0.0f, 1.0f)
+        : glm::vec3(0.0f, 1.0f, 0.0f);
+
+    // Push the light back far enough that the whole bounding sphere is in front of
+    // the near plane, then size near/far to span it. Distance to the target plus the
+    // radius on each side, clamped so near stays positive.
+    const float lightDistance = std::max(lightDirLen, shadowExtent + 1.0f);
+    const glm::vec3 fitLightPos = lightTarget - lightDir * lightDistance;
+    const float nearPlane = std::max(lightDistance - shadowExtent, 0.05f);
+    const float farPlane = lightDistance + shadowExtent;
+
+    const glm::mat4 lightView = glm::lookAt(fitLightPos, lightTarget, up);
+    const glm::mat4 lightProj =
+        glm::ortho(-shadowExtent, shadowExtent, -shadowExtent, shadowExtent, nearPlane, farPlane);
     ubo.lightSpaceMatrix = lightProj * lightView;
 
     if (uniformBufferMapped == nullptr) {

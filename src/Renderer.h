@@ -78,6 +78,11 @@ public:
     // orbit target, so it needs to frame its own scene; the built-in default faces -Z,
     // which is the XY play plane 2D games use. Scene-authored cameras supersede this later.
     void setCameraPose(const glm::vec3& position, float yaw, float pitch);
+    // Drives the camera from a game's CameraComponent: eye position + look direction
+    // come from the camera entity's world transform (SCRIPTED mode). Engine input no
+    // longer moves the camera while this is active. Called each frame by SuGarApp.
+    void setScriptedCamera(const glm::vec3& position, const glm::vec3& forward,
+                           const glm::vec3& up, float fovDegrees, float nearPlane, float farPlane);
     void setOrbitTarget(const glm::vec3& target);
     void setFollowTargetPosition(const glm::vec3& position);
     void renderImGui(VkCommandBuffer cmd);

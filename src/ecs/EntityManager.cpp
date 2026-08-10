@@ -26,6 +26,20 @@ Entity EntityManager::createEntityWithId(Entity id) {
 
     // Otherwise it must be beyond the allocated range: advance the counter to it,
     // banking every id we skip so they can be handed out later.
+    //
+    // Guard the gap: banking one entry per skipped id turns a single call with an
+    // absurd id (a corrupt undo record or hostile prefab-with-ids list) into an OOM
+    // — millions of push_backs — plus an O(n) std::find over the free list on every
+    // later call. A legitimate restore id is always within a handful of nextEntity
+    // (ids are dense and sequential), so a gap this large is never real. Skip past
+    // it without banking; the leaped ids become permanently unused (they were never
+    // live entities), which is a bounded, correct outcome. The requested id is still
+    // honored so the restore/prefab path gets the entity it asked for.
+    constexpr Entity kMaxBankGap = 1u << 20; // ~1M ids
+    if (id > nextEntity && (id - nextEntity) > kMaxBankGap) {
+        nextEntity = id + 1;
+        return id;
+    }
     while (nextEntity <= id) {
         const Entity skipped = nextEntity++;
         if (skipped != id) {

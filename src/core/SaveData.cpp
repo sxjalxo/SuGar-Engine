@@ -1,5 +1,7 @@
 #include "core/SaveData.h"
 
+#include <cctype>
+#include <cstdint>
 #include <filesystem>
 #include <fstream>
 #include <map>
@@ -36,6 +38,16 @@ bool load() {
     std::ifstream file(g_path, std::ios::binary);
     if (!file) {
         return true; // no save yet is not an error
+    }
+
+    // Bound the read: a save file is small key=value text. A corrupt or hostile file
+    // of gigabytes would otherwise be pulled fully into memory line by line. 16 MiB is
+    // orders of magnitude above any real save; past it, refuse rather than swallow it.
+    constexpr std::uintmax_t kMaxSaveBytes = 16u * 1024u * 1024u;
+    std::error_code sizeEc;
+    const std::uintmax_t fileSize = std::filesystem::file_size(g_path, sizeEc);
+    if (!sizeEc && fileSize > kMaxSaveBytes) {
+        return false; // implausibly large -- treat as corrupt
     }
 
     std::string line;
@@ -103,10 +115,18 @@ long long getInt(const std::string& key, long long fallback) {
     if (found == g_store.end()) {
         return fallback;
     }
+    // Accept only the exact shape setInt writes (std::to_string: optional leading '-'
+    // then digits). std::stoll otherwise silently tolerates leading whitespace and a
+    // '+' sign, so a hand-edited or foreign save could read back a value setInt could
+    // never have produced — an asymmetry between what is written and what is read.
+    const std::string& text = found->second;
+    if (text.empty() || std::isspace(static_cast<unsigned char>(text.front())) || text.front() == '+') {
+        return fallback;
+    }
     try {
         size_t consumed = 0;
-        const long long value = std::stoll(found->second, &consumed);
-        return consumed == found->second.size() ? value : fallback;
+        const long long value = std::stoll(text, &consumed);
+        return consumed == text.size() ? value : fallback;
     } catch (...) {
         return fallback; // non-numeric stored value -> the caller's default
     }

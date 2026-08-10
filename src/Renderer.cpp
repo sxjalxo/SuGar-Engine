@@ -429,6 +429,20 @@ void Renderer::setCameraPose(const glm::vec3& position, float yaw, float pitch) 
     }
 }
 
+void Renderer::setScriptedCamera(const glm::vec3& position, const glm::vec3& forward,
+                                 const glm::vec3& up, float fovDegrees, float nearPlane, float farPlane) {
+    if (activePass != nullptr) {
+        Camera& camera = activePass->getCamera();
+        camera.mode = CameraMode::SCRIPTED;
+        camera.position = position;
+        camera.scriptedForward = forward;
+        camera.scriptedUp = up;
+        camera.fov = fovDegrees;
+        camera.nearPlane = nearPlane;
+        camera.farPlane = farPlane;
+    }
+}
+
 void Renderer::setOrbitTarget(const glm::vec3& target) {
     if (activePass != nullptr) {
         activePass->setOrbitTarget(target);

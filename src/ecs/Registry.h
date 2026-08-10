@@ -13,6 +13,7 @@
 #include "ecs/EntityManager.h"
 #include "navigation/NavComponents.h"
 #include "physics/PhysicsComponents.h"
+#include "rendering/CameraComponent.h"
 #include "ui/UIComponents.h"
 
 // Component type -> ComponentType bit, so ComponentStorage can report access
@@ -48,6 +49,7 @@ SUGAR_TRACK_COMPONENT(AnimationParametersComponent, AnimationParameters);
 SUGAR_TRACK_COMPONENT(NavAgentComponent, NavAgent);
 SUGAR_TRACK_COMPONENT(NavMeshSourceComponent, NavMeshSource);
 SUGAR_TRACK_COMPONENT(NavObstacleComponent, NavObstacle);
+SUGAR_TRACK_COMPONENT(CameraComponent, Camera);
 
 #undef SUGAR_TRACK_COMPONENT
 
@@ -99,6 +101,7 @@ public:
         navAgents.remove(entity);
         navMeshSources.remove(entity);
         navObstacles.remove(entity);
+        cameras.remove(entity);
         entityManager.destroyEntity(entity);
     }
 
@@ -196,6 +199,7 @@ public:
         navAgents.clear();
         navMeshSources.clear();
         navObstacles.clear();
+        cameras.clear();
         entityManager.reset();
     }
 
@@ -221,6 +225,7 @@ public:
     ComponentStorage<NavAgentComponent> navAgents;
     ComponentStorage<NavMeshSourceComponent> navMeshSources;
     ComponentStorage<NavObstacleComponent> navObstacles;
+    ComponentStorage<CameraComponent> cameras;
 
     // Injected by the Engine layer to release GPU/asset handles when an entity is
     // destroyed. Keeps the ECS (Core layer) free of any ResourceManager / Vulkan

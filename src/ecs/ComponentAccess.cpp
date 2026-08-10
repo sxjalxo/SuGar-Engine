@@ -24,6 +24,7 @@ const char* componentTypeName(ComponentType type) {
         case ComponentType::NavAgent:       return "NavAgent";
         case ComponentType::NavMeshSource:  return "NavMeshSource";
         case ComponentType::NavObstacle:    return "NavObstacle";
+        case ComponentType::Camera:         return "Camera";
         case ComponentType::Count:          break;
     }
     return "<unknown>";

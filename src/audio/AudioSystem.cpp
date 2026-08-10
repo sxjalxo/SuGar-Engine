@@ -7,6 +7,7 @@
 
 #include <algorithm>
 #include <memory>
+#include <vector>
 #include <glm/glm.hpp>
 
 namespace {
@@ -29,14 +30,24 @@ struct ListenerState {
 // Transform, and Hierarchy read-only and have that verified (Phase 13B).
 ListenerState findListener(const Registry& registry) {
     ListenerState state;
+    // "First listener wins" must be deterministic: the storage is an unordered_map,
+    // so iterating it directly makes the winner depend on hash order when a scene has
+    // more than one listener. Pick the lowest entity id instead — stable run-to-run
+    // and across a snapshot restore, matching the id-order discipline used elsewhere.
+    Entity chosen = INVALID_ENTITY;
     for (const auto& [entity, listener] : registry.audioListeners.getAll()) {
+        (void)listener;
         if (!registry.transforms.has(entity)) {
             continue;
         }
-        state.position = getWorldPosition(entity, registry);
-        state.gain = listener.gain;
+        if (chosen == INVALID_ENTITY || entity < chosen) {
+            chosen = entity;
+        }
+    }
+    if (chosen != INVALID_ENTITY) {
+        state.position = getWorldPosition(chosen, registry);
+        state.gain = registry.audioListeners.get(chosen).gain;
         state.exists = true;
-        break; // first listener wins
     }
     return state;
 }
@@ -59,7 +70,20 @@ namespace AudioSystem {
 void update(Registry& registry, AudioEngine& engine) {
     const ListenerState listener = findListener(registry);
 
-    for (auto& [entity, source] : registry.audioSources.getAll()) {
+    // Iterate sources in ascending id order, not unordered_map order: play() hands
+    // out voice ids in call order and fires one-shots as it goes, so a stable
+    // iteration keeps audio behavior identical run-to-run and across a snapshot
+    // restore (the same determinism guarantee ScriptSystem/Physics/DrawList hold).
+    std::vector<Entity> ordered;
+    ordered.reserve(registry.audioSources.getAll().size());
+    for (const auto& [entity, source] : registry.audioSources.getAll()) {
+        (void)source;
+        ordered.push_back(entity);
+    }
+    std::sort(ordered.begin(), ordered.end());
+
+    for (Entity entity : ordered) {
+        auto& source = registry.audioSources.get(entity);
         if (source.clip == INVALID_HANDLE) {
             source.oneShotPending = false;
             continue;

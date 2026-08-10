@@ -154,6 +154,8 @@ add_library(SuGarCore SHARED
     src/ui/RuntimeUISystem.cpp
     src/audio/AudioComponents.h
     src/assets/AssetHandle.h
+    src/assets/AssetGateway.h
+    src/assets/AssetGateway.cpp
     src/assets/AssetPath.h
     src/assets/AssetPath.cpp
     src/assets/AssetHash.h
@@ -165,6 +167,7 @@ add_library(SuGarCore SHARED
     src/assets/AssetManifest.h
     src/assets/AssetManifest.cpp
     src/rendering/Material.h
+    src/rendering/CameraComponent.h
 )
 
 target_include_directories(SuGarCore PUBLIC

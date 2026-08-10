@@ -30,6 +30,7 @@
 #include "animation/SkinRegistry.h"
 #include "animation/Skinning.h"
 #include "assets/AssetCooker.h"
+#include "assets/AssetGateway.h"
 #include "assets/AssetDatabase.h"
 #include "assets/AssetHash.h"
 #include "assets/AssetMeta.h"
@@ -151,6 +152,17 @@ inline bool testEntityIdRecycling() {
         // The gap (first+1 .. target-1) is now free and gets handed out next.
         const Entity next = reg.createEntity();
         ok &= next > first && next < target;
+    }
+
+    { // an absurd id must not bank its whole gap (OOM/O(n^2) bomb): it is still
+      // honored, but the leaped ids are dropped rather than pushed one-by-one.
+        Registry reg;
+        reg.createEntity(); // nextEntity -> 2
+        const Entity huge = 300000000u; // ~300M: banking each would blow memory
+        ok &= reg.createEntityWithId(huge) == huge; // request still honored
+        // nextEntity advanced past it, so the next fresh id is above the huge one
+        // (the gap was NOT banked for reuse — that is the point).
+        ok &= reg.createEntity() > huge;
     }
 
     return ok;
@@ -4211,6 +4223,16 @@ inline bool testSaveData() {
     // Newlines can't be represented in the line format; the setter must refuse them.
     ok &= !SaveData::setString("bad", "a\nb");
 
+    // getInt reads back only the exact shape setInt writes. A stored value with a
+    // leading space or a '+' (a hand-edited/foreign save) that std::stoll would
+    // otherwise accept must fall back, not read a value setInt could never produce.
+    ok &= SaveData::setString("plus", "+5");
+    ok &= SaveData::getInt("plus", -1) == -1;      // '+' rejected
+    ok &= SaveData::setString("space", " 7");
+    ok &= SaveData::getInt("space", -1) == -1;     // leading whitespace rejected
+    SaveData::setInt("neg", -42);
+    ok &= SaveData::getInt("neg", 0) == -42;       // legitimate negative still round-trips
+
     SaveData::clear();
     std::filesystem::remove(file, ec);
     return ok;
@@ -4375,6 +4397,59 @@ inline bool testMalformedInput() {
         std::filesystem::remove(path, ec);
     }
 
+    // (4) A scene position that overflows float must be refused, not loaded as inf.
+    // 1e300 is a finite double but narrows to +inf as float; an inf transform would
+    // propagate into world matrices, the DrawList sort (strict-weak-ordering UB) and
+    // the shadow math. The loader must reject the whole scene cleanly.
+    {
+        const char* scene =
+            "{\"version\":2,\"objects\":[{"
+            "\"name\":\"Bad\",\"parent\":-1,"
+            "\"transform\":{\"pos\":[1e300,0,0],\"rot\":[0,0,0,1],\"scale\":[1,1,1]},"
+            "\"mesh\":\"\",\"material\":{\"albedo\":\"\",\"metallic\":0,\"roughness\":0.5}"
+            "}],\"lights\":[]}";
+        Registry registry;
+        std::vector<Light> lights;
+        const bool loaded = SceneSerializer::loadFromString(registry, lights, scene);
+        ok &= !loaded; // non-finite rejected, process intact
+    }
+
+    return ok;
+}
+
+// AssetGateway: the Core-safe asset-acquire seam (M4 L3). Pure indirection — no Vulkan
+// — so a stub backend proves the contract game code depends on: acquire routes by key
+// and increfs, release routes, available() reflects install state, and a cleared
+// backend degrades to INVALID_HANDLE with no callback firing (the headless path).
+inline bool testAssetGateway() {
+    bool ok = true;
+    int meshAcquires = 0;
+    int texAcquires = 0;
+    int releases = 0;
+    AssetHandle lastReleased = INVALID_HANDLE;
+
+    AssetGateway::install(AssetGateway::Backend{
+        [&](const std::string& key) -> AssetHandle { ++meshAcquires; return key == "builtin://cube" ? AssetHandle{101} : INVALID_HANDLE; },
+        [&](const std::string& key) -> AssetHandle { ++texAcquires; return key == "builtin://white" ? AssetHandle{202} : INVALID_HANDLE; },
+        [&](const std::string&) -> AssetHandle { return INVALID_HANDLE; },
+        [&](AssetHandle handle) { ++releases; lastReleased = handle; },
+    });
+
+    ok &= AssetGateway::available();
+    ok &= AssetGateway::acquireMesh("builtin://cube") == AssetHandle{101};
+    ok &= AssetGateway::acquireTexture("builtin://white") == AssetHandle{202};
+    ok &= AssetGateway::acquireMesh("missing") == INVALID_HANDLE; // resolve fail, not a crash
+    ok &= meshAcquires == 2 && texAcquires == 1;
+
+    AssetGateway::release(AssetHandle{101});
+    ok &= releases == 1 && lastReleased == AssetHandle{101};
+
+    // Cleared backend = the headless/self-test state: acquire yields INVALID_HANDLE,
+    // available() is false, release is a safe no-op (a game degrades, never faults).
+    AssetGateway::install(AssetGateway::Backend{});
+    ok &= !AssetGateway::available();
+    ok &= AssetGateway::acquireMesh("builtin://cube") == INVALID_HANDLE;
+    AssetGateway::release(AssetHandle{999}); // must not crash with no backend
     return ok;
 }
 
@@ -4422,6 +4497,7 @@ inline std::pair<int, int> run() {
         { "RegistryGraph",    testRegistryGraph },
         { "MalformedInput",   testMalformedInput },
         { "SaveData",         testSaveData },
+        { "AssetGateway",     testAssetGateway },
         { "MouseInput",       testMouseInput },
     };
 

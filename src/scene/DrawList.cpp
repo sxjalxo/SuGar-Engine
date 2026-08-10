@@ -5,6 +5,8 @@
 #include "assets/ResourceManager.h"
 #include "ecs/Registry.h"
 #include <algorithm>
+#include <cmath>
+#include <limits>
 #include <tuple>
 #include <vector>
 #include <glm/geometric.hpp>
@@ -64,9 +66,15 @@ void buildDrawListFromECS(const Registry& registry, const std::vector<Light>& li
     //      alpha blending needs to look right without reading depth;
     //   3. within each group, batch by material/mesh to minimise pipeline/descriptor
     //      churn (blended items keep the distance key primary; batching only breaks ties).
+    // Distance must stay finite: a NaN/inf world position (a physics blow-up, or a
+    // non-finite value that slipped through scene load) would make the `da > db`
+    // compare below violate std::sort's strict-weak-ordering requirement, which is
+    // undefined behavior — std::sort can then read out of bounds and crash. Map any
+    // non-finite distance to a large finite sentinel so the ordering stays total.
     auto distanceToCamera = [&](const RenderItem& item) {
         const glm::vec3 worldPos = glm::vec3(item.model[3]);
-        return glm::dot(worldPos - cameraPosition, worldPos - cameraPosition);
+        const float distSq = glm::dot(worldPos - cameraPosition, worldPos - cameraPosition);
+        return std::isfinite(distSq) ? distSq : std::numeric_limits<float>::max();
     };
     std::sort(
         out.items.begin(),

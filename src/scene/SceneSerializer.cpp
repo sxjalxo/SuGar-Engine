@@ -11,6 +11,7 @@
 #include "scene/TransformMath.h"
 #include <algorithm>
 #include <cctype>
+#include <cmath>
 #include <cstddef>
 #include <fstream>
 #include <iostream>
@@ -55,6 +56,16 @@ public:
 
 private:
     JsonValue parseValue() {
+        // Breadth guard: the DepthGuard bounds *nesting*, but a shallow-yet-enormous
+        // file (one array of tens of millions of elements) would still parse into an
+        // ever-growing tree until it exhausts memory — and scene.json is parsed at
+        // startup and on every hot reload, so a corrupt or hostile file must fail
+        // cleanly. Each parsed value counts once; the cap is orders of magnitude above
+        // any real scene (thousands of entities x ~dozens of values each).
+        if (++valueCount > MaxValues) {
+            throw std::runtime_error("scene JSON has too many values.");
+        }
+
         skipWhitespace();
         if (position >= text.size()) {
             throw std::runtime_error("unexpected end of scene JSON.");
@@ -273,9 +284,15 @@ private:
         JsonParser& owner;
     };
 
+    // Total parsed values allowed across the whole document (breadth cap, paired with
+    // MaxDepth's nesting cap). 8M is far past any hand-authored or procedurally-built
+    // scene yet small enough that the parsed tree cannot exhaust memory.
+    static constexpr size_t MaxValues = 8'000'000;
+
     const std::string& text;
     size_t position = 0;
     int depth = 0;
+    size_t valueCount = 0;
 };
 
 const JsonValue& requireObjectField(
@@ -322,7 +339,16 @@ float getFloatValue(const JsonValue& value, const std::string& name) {
     if (value.type != JsonValue::Type::Number) {
         throw std::runtime_error(name + " must be a JSON number.");
     }
-    return static_cast<float>(value.number);
+    // Reject non-finite values before they enter transforms/physics. A JSON number
+    // like 1e300 parses as a finite double but overflows to +inf when narrowed to
+    // float; an inf/NaN position then propagates into world matrices, the DrawList
+    // sort (strict-weak-ordering UB), and the shadow math. Fail the load cleanly
+    // instead of shipping a NaN cascade.
+    const float result = static_cast<float>(value.number);
+    if (!std::isfinite(result)) {
+        throw std::runtime_error(name + " must be a finite number.");
+    }
+    return result;
 }
 
 int getIntValue(const JsonValue& value, const std::string& name) {
@@ -479,7 +505,12 @@ AssetHandle loadTextureWithFallback(const std::string& textureKey) {
 
     try {
         return ResourceManager::loadTexture(textureKey);
-    } catch (...) {
+    } catch (const std::exception& error) {
+        // Surface *why* the texture fell back to the debug checkerboard. Silently
+        // substituting it (the old behavior) left the developer staring at a
+        // checkerboard with no reason — better error messages are a feature (Rule 1).
+        std::cerr << "[scene] texture '" << textureKey << "' failed to load ("
+                  << error.what() << "); using checkerboard fallback\n";
         return ResourceManager::loadTexture(ResourceManager::CheckerboardTextureId);
     }
 }
@@ -905,6 +936,27 @@ void writeEntityObject(std::ostream& output, const Registry& registry, Entity en
         });
     }
 
+    // Optional: game camera (Core CameraComponent). Only the lens fields — the eye
+    // pose is derived from the entity's transform every frame (Rule 21b), so it is
+    // never written here.
+    if (registry.cameras.has(entity)) {
+        fields.push_back([&](std::ostream& out) {
+            const auto& cam = registry.cameras.get(entity);
+            writeIndent(out, 3);
+            out << "\"camera\": {\n";
+            writeIndent(out, 4);
+            out << "\"fov\": " << cam.fovDegrees << ",\n";
+            writeIndent(out, 4);
+            out << "\"near\": " << cam.nearPlane << ",\n";
+            writeIndent(out, 4);
+            out << "\"far\": " << cam.farPlane << ",\n";
+            writeIndent(out, 4);
+            out << "\"active\": " << (cam.active ? "true" : "false") << "\n";
+            writeIndent(out, 3);
+            out << "}";
+        });
+    }
+
     // Closes the material object — the last mandatory field, so it takes a comma
     // only when an optional actually follows it.
     writeIndent(output, 3);
@@ -1038,6 +1090,8 @@ struct PendingEntityData {
     NavMeshSourceComponent navMeshSource{};
     bool hasNavObstacle = false;
     NavObstacleComponent navObstacle{};
+    bool hasCamera = false;
+    CameraComponent camera{};
 };
 
 // Parses one object entry from the JSON. `sceneVersion` selects modern vs. the
@@ -1327,6 +1381,23 @@ PendingEntityData parseEntityObject(const JsonValue& objectValue, int sceneVersi
         pendingEntity.navObstacle.radius = getFloatValue(*obstacleValue, "object.navobstacle");
     }
 
+    if (const JsonValue* camValue = findObjectField(objectData, "camera")) {
+        const auto& camData = requireObject(*camValue, "object.camera");
+        pendingEntity.hasCamera = true;
+        if (const JsonValue* v = findObjectField(camData, "fov")) {
+            pendingEntity.camera.fovDegrees = getFloatValue(*v, "camera.fov");
+        }
+        if (const JsonValue* v = findObjectField(camData, "near")) {
+            pendingEntity.camera.nearPlane = getFloatValue(*v, "camera.near");
+        }
+        if (const JsonValue* v = findObjectField(camData, "far")) {
+            pendingEntity.camera.farPlane = getFloatValue(*v, "camera.far");
+        }
+        if (const JsonValue* v = findObjectField(camData, "active")) {
+            pendingEntity.camera.active = getBoolValue(*v, "camera.active");
+        }
+    }
+
     return pendingEntity;
 }
 
@@ -1445,6 +1516,10 @@ std::vector<Entity> createEntitiesFromObjects(Registry& registry, const std::vec
 
         if (pendingEntity.hasNavObstacle) {
             registry.navObstacles.add(entity, pendingEntity.navObstacle);
+        }
+
+        if (pendingEntity.hasCamera) {
+            registry.cameras.add(entity, pendingEntity.camera);
         }
     }
 
@@ -1721,6 +1796,16 @@ void patchEntity(Registry& registry, Entity entity, const PendingEntityData& dat
         }
     } else if (registry.navObstacles.has(entity)) {
         registry.navObstacles.remove(entity);
+    }
+
+    if (data.hasCamera) {
+        if (registry.cameras.has(entity)) {
+            registry.cameras.get(entity) = data.camera;
+        } else {
+            registry.cameras.add(entity, data.camera);
+        }
+    } else if (registry.cameras.has(entity)) {
+        registry.cameras.remove(entity);
     }
 }
 

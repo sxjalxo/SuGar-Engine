@@ -167,6 +167,13 @@ uint32_t AudioEngine::play(const std::shared_ptr<AudioClip>& clip, float volume,
     if (!clip || clip->frameCount == 0) {
         return 0;
     }
+    // Guard the mixer's fixed-format assumption: it indexes samples as
+    // frame*AudioMixChannels+channel, so a clip whose buffer is shorter than that
+    // (a mismatched/truncated decode) would read out of bounds on the audio thread.
+    // Refuse it here rather than corrupt playback or crash.
+    if (clip->samples.size() < clip->frameCount * DeviceChannels) {
+        return 0;
+    }
 
     Voice voice;
     voice.clip = clip;
@@ -182,12 +189,21 @@ uint32_t AudioEngine::play(const std::shared_ptr<AudioClip>& clip, float volume,
                        [](const Voice& v) { return !v.active; }),
         impl->voices.end());
 
-    // Hard cap: if every voice is still active, steal the oldest rather than let the
-    // list grow without bound (a burst of one-shots with no follow-up play() would
+    // Hard cap: if every voice is still active, steal one rather than let the list
+    // grow without bound (a burst of one-shots with no follow-up play() would
     // otherwise never be reclaimed). 64 simultaneous voices is ample for gameplay.
+    // Prefer stealing the oldest *non-looping* voice: looping voices are almost
+    // always long-lived background music/ambience, and cutting the music because a
+    // pile of one-shots fired is the worst-sounding choice. Only when every voice is
+    // a loop do we fall back to the oldest overall.
     constexpr size_t MaxVoices = 64;
     if (impl->voices.size() >= MaxVoices) {
-        impl->voices.erase(impl->voices.begin());
+        auto victim = std::find_if(impl->voices.begin(), impl->voices.end(),
+                                   [](const Voice& v) { return !v.loop; });
+        if (victim == impl->voices.end()) {
+            victim = impl->voices.begin(); // all looping: steal the oldest
+        }
+        impl->voices.erase(victim);
     }
 
     voice.id = impl->nextVoiceId++;

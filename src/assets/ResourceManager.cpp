@@ -213,6 +213,16 @@ bool ResourceManager::reloadAsset(const std::string& path) {
     const std::string cacheKey = normalizeResourceKey(path);
     bool reloaded = false;
 
+    // A hot reload replaces a mesh/texture's GPU resource and destroys the old one.
+    // If a command buffer submitted for the frame in flight still references that
+    // VkBuffer/VkImage, destroying it now is a use-after-free (validation error /
+    // GPU hang). Wait for the device to go idle first so nothing is mid-flight. Hot
+    // reload is a developer action (rare), so the stall is invisible; correctness of
+    // the resource lifetime is not something the caller should have to remember.
+    if (device != VK_NULL_HANDLE) {
+        vkDeviceWaitIdle(device);
+    }
+
     // The source changed, so every artifact cooked from it is stale. Dropping the
     // cooker's memo is what makes the reload below cook the new bytes instead of
     // handing back the artifact this process already verified.

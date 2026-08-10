@@ -87,7 +87,11 @@ bool GameModuleLoader::load(std::string name, const fs::path& directory) {
         return false; // loadedWriteTime unchanged -> the watch retries when stable
     }
 
-    HMODULE module = LoadLibraryA(live.string().c_str());
+    // LoadLibraryW with the path's native wide form: LoadLibraryA can't represent a
+    // module directory containing non-ASCII characters (a user profile like
+    // C:\Users\José\...) under a non-UTF-8 ANSI codepage, and would fail to load a
+    // perfectly valid DLL. fs::path::wstring() is already the OS-native encoding.
+    HMODULE module = LoadLibraryW(live.wstring().c_str());
     if (module == nullptr) {
         std::cerr << "[GameModule] failed to load " << live.string() << "\n";
         return false;
