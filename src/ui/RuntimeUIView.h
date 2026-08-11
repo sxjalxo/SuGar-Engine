@@ -26,6 +26,15 @@ class Registry;
 class UIIntentQueue;
 class IntentEmitter;
 
+// One label to draw this frame: text plus where the renderer projected it. Derived data,
+// handed over per frame — the view never keeps it (docs/DESIGN_RUNTIME_UI.md addendum).
+struct ScreenLabel {
+    std::string text;
+    float x = 0.0f;      // viewport pixels, origin top-left
+    float y = 0.0f;
+    float opacity = 1.0f;
+};
+
 class RuntimeUIView {
 public:
     RuntimeUIView();
@@ -59,6 +68,10 @@ public:
     void render(VkCommandBuffer cmd, VkExtent2D extent, VkFramebuffer framebuffer,
                 VkRenderPass layerPass, VkImage sceneImage, const Registry* registry);
 
+    // World-space labels for this frame, projected by the renderer (which owns the
+    // camera). Replaced wholesale each frame; nothing here is state.
+    void setWorldLabels(std::vector<ScreenLabel> labels) { worldLabels = std::move(labels); }
+
     void shutdown();
     bool isReady() const { return context != nullptr; }
 
@@ -79,6 +92,8 @@ private:
     void syncLabelsFromEcs(const Registry* registry);
     // Applies UIElementStateComponent: the classes and inline style an element carries.
     void syncElementStatesFromEcs(const Registry* registry);
+    // Positions the pooled world-label elements from `worldLabels`.
+    void syncWorldLabels();
 
     std::unique_ptr<RmlVulkanRenderer> renderer;
     std::unique_ptr<IntentEmitter> openListener;
@@ -101,4 +116,10 @@ private:
     // *order* comes from the DOM, but the focused *value* lives in ECS.
     std::vector<std::string> focusables;
     UIIntentQueue* intentQueue = nullptr;
+    std::vector<ScreenLabel> worldLabels;
+    // The document's label pool is built once, on the first frame that has labels: a
+    // fixed set of elements whose text and position change, rather than markup rebuilt
+    // every frame (RmlUi re-lays-out on SetInnerRML).
+    bool worldLabelPoolBuilt = false;
+    static constexpr int MaxWorldLabels = 32;
 };

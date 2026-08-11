@@ -1034,6 +1034,27 @@ void writeEntityObject(std::ostream& output, const Registry& registry, Entity en
         });
     }
 
+    // Optional: text anchored to this entity in the world (a nameplate).
+    if (registry.worldLabels.has(entity)) {
+        fields.push_back([&](std::ostream& out) {
+            const auto& label = registry.worldLabels.get(entity);
+            writeIndent(out, 3);
+            out << "\"worldlabel\": {\n";
+            writeIndent(out, 4);
+            out << "\"text\": \"" << escapeJsonString(label.text) << "\",\n";
+            writeIndent(out, 4);
+            out << "\"offsetY\": ";
+            writeFloat(out, label.offsetY);
+            out << ",\n";
+            writeIndent(out, 4);
+            out << "\"maxDistance\": ";
+            writeFloat(out, label.maxDistance);
+            out << "\n";
+            writeIndent(out, 3);
+            out << "}";
+        });
+    }
+
     // Optional: a light on this entity (docs/DESIGN_LIGHTING.md). Position and direction
     // are absent by design — both derive from the entity's transform every frame.
     if (registry.lights.has(entity)) {
@@ -1268,6 +1289,8 @@ struct PendingEntityData {
     LightComponent light{};
     bool hasUIElementState = false;
     UIElementStateComponent uiElementState{};
+    bool hasWorldLabel = false;
+    WorldLabelComponent worldLabel{};
 };
 
 // Parses one object entry from the JSON. `sceneVersion` selects modern vs. the
@@ -1557,6 +1580,20 @@ PendingEntityData parseEntityObject(const JsonValue& objectValue, int sceneVersi
         pendingEntity.navObstacle.radius = getFloatValue(*obstacleValue, "object.navobstacle");
     }
 
+    if (const JsonValue* labelValue = findObjectField(objectData, "worldlabel")) {
+        const auto& labelData = requireObject(*labelValue, "object.worldlabel");
+        pendingEntity.hasWorldLabel = true;
+        if (const JsonValue* v = findObjectField(labelData, "text")) {
+            pendingEntity.worldLabel.text = getStringValue(*v, "worldlabel.text");
+        }
+        if (const JsonValue* v = findObjectField(labelData, "offsetY")) {
+            pendingEntity.worldLabel.offsetY = getFloatValue(*v, "worldlabel.offsetY");
+        }
+        if (const JsonValue* v = findObjectField(labelData, "maxDistance")) {
+            pendingEntity.worldLabel.maxDistance = getFloatValue(*v, "worldlabel.maxDistance");
+        }
+    }
+
     if (const JsonValue* stateValue = findObjectField(objectData, "uielementstate")) {
         const auto& stateData = requireObject(*stateValue, "object.uielementstate");
         pendingEntity.hasUIElementState = true;
@@ -1763,6 +1800,10 @@ std::vector<Entity> createEntitiesFromObjects(Registry& registry, const std::vec
 
         if (pendingEntity.hasUIElementState) {
             registry.uiElementStates.add(entity, pendingEntity.uiElementState);
+        }
+
+        if (pendingEntity.hasWorldLabel) {
+            registry.worldLabels.add(entity, pendingEntity.worldLabel);
         }
     }
 
@@ -2079,6 +2120,16 @@ void patchEntity(Registry& registry, Entity entity, const PendingEntityData& dat
         }
     } else if (registry.uiElementStates.has(entity)) {
         registry.uiElementStates.remove(entity);
+    }
+
+    if (data.hasWorldLabel) {
+        if (registry.worldLabels.has(entity)) {
+            registry.worldLabels.get(entity) = data.worldLabel;
+        } else {
+            registry.worldLabels.add(entity, data.worldLabel);
+        }
+    } else if (registry.worldLabels.has(entity)) {
+        registry.worldLabels.remove(entity);
     }
 }
 

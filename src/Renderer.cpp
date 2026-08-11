@@ -1,4 +1,5 @@
 #include "Renderer.h"
+#include "rendering/ScreenProjection.h"
 #include "SuGarApp.h"
 #include "BasicTrianglePass.h"
 #include "assets/AssetCooker.h"
@@ -2636,6 +2637,73 @@ void Renderer::drawHierarchyPanel() {
     }
 
     ImGui::End();
+}
+
+// Every WorldLabelComponent, projected through this frame's camera. Nearest first, capped,
+// and faded with distance — see the world-label addendum in docs/DESIGN_RUNTIME_UI.md.
+void Renderer::updateWorldLabels() {
+    std::vector<ScreenLabel> labels;
+    if (registry == nullptr || activePass == nullptr || viewportExtent.width == 0 ||
+        viewportExtent.height == 0) {
+        runtimeUI.setWorldLabels(std::move(labels));
+        return;
+    }
+
+    Camera camera = activePass->getCamera(); // a copy: getViewMatrix() recomputes lazily
+    const float width = static_cast<float>(viewportExtent.width);
+    const float height = static_cast<float>(viewportExtent.height);
+    const glm::mat4 viewProjection = camera.getProjectionMatrix(width / height) * camera.getViewMatrix();
+
+    struct Candidate {
+        ScreenLabel label;
+        float distance = 0.0f;
+    };
+    std::vector<Candidate> candidates;
+    candidates.reserve(registry->worldLabels.getAll().size());
+
+    for (const auto& [entity, label] : registry->worldLabels.getAll()) {
+        if (label.text.empty() || !registry->transforms.has(entity)) {
+            continue;
+        }
+        const glm::vec3 anchor =
+            getWorldPosition(entity, *registry) + glm::vec3(0.0f, label.offsetY, 0.0f);
+        ScreenProjection::Result projected;
+        if (!ScreenProjection::project(viewProjection, anchor, width, height, projected)) {
+            continue; // behind the camera
+        }
+        if (projected.distance > label.maxDistance) {
+            continue;
+        }
+        // Off the sides is culled here rather than in the projection: whether an
+        // off-screen label should clamp to an edge (a quest marker) or vanish (a
+        // nameplate) is a policy, and this is where the policy lives.
+        if (projected.x < -80.0f || projected.y < -40.0f || projected.x > width + 80.0f ||
+            projected.y > height + 40.0f) {
+            continue;
+        }
+
+        Candidate candidate;
+        candidate.label.text = label.text;
+        candidate.label.x = projected.x;
+        candidate.label.y = projected.y;
+        // Fade out over the last quarter of the range, so labels leave rather than pop.
+        const float fadeStart = label.maxDistance * 0.75f;
+        candidate.label.opacity =
+            projected.distance <= fadeStart
+                ? 1.0f
+                : std::max(0.0f, 1.0f - (projected.distance - fadeStart) /
+                                            std::max(0.001f, label.maxDistance - fadeStart));
+        candidate.distance = projected.distance;
+        candidates.push_back(std::move(candidate));
+    }
+
+    std::sort(candidates.begin(), candidates.end(),
+              [](const Candidate& a, const Candidate& b) { return a.distance < b.distance; });
+    labels.reserve(candidates.size());
+    for (const Candidate& candidate : candidates) {
+        labels.push_back(candidate.label);
+    }
+    runtimeUI.setWorldLabels(std::move(labels));
 }
 
 void Renderer::drawInspectorPanel() {

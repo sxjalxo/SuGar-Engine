@@ -55,6 +55,7 @@ SUGAR_TRACK_COMPONENT(CameraComponent, Camera);
 SUGAR_TRACK_COMPONENT(GameDataComponent, GameData);
 SUGAR_TRACK_COMPONENT(LightComponent, Light);
 SUGAR_TRACK_COMPONENT(UIElementStateComponent, UIElementState);
+SUGAR_TRACK_COMPONENT(WorldLabelComponent, WorldLabel);
 
 #undef SUGAR_TRACK_COMPONENT
 
@@ -110,6 +111,7 @@ public:
         gameData.remove(entity);
         lights.remove(entity);
         uiElementStates.remove(entity);
+        worldLabels.remove(entity);
         entityManager.destroyEntity(entity);
     }
 
@@ -211,6 +213,7 @@ public:
         gameData.clear();
         lights.clear();
         uiElementStates.clear();
+        worldLabels.clear();
         entityManager.reset();
     }
 
@@ -244,6 +247,8 @@ public:
     ComponentStorage<LightComponent> lights;
     // Per-element UI presentation state (classes / inline style).
     ComponentStorage<UIElementStateComponent> uiElementStates;
+    // Text anchored to this entity's world position (nameplates, hints).
+    ComponentStorage<WorldLabelComponent> worldLabels;
 
     // Injected by the Engine layer to release GPU/asset handles when an entity is
     // destroyed. Keeps the ECS (Core layer) free of any ResourceManager / Vulkan

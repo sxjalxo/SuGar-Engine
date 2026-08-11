@@ -56,6 +56,10 @@ public:
     void setUIIntentQueue(UIIntentQueue* queue) { this->uiIntentQueue = queue; }
     // Records the player UI into the scene/viewport pass. Called by the scene pass
     // just before it ends, so the UI composites onto the game image.
+    // Projects every WorldLabelComponent through this frame's camera and hands the view
+    // the ones worth drawing. Called just before the UI records.
+    void updateWorldLabels();
+
     void renderRuntimeUIViewport(VkCommandBuffer cmd) {
         runtimeUI.render(cmd, viewportExtent, viewportFramebuffer, uiLayerPass, viewportImage, registry);
     }

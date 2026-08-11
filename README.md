@@ -100,7 +100,7 @@ built: a **per-texture sampler filter** as an import setting, **`GameDataCompone
 per-entity state — the ECS gap mobs made unworkable), **lights as components** (directional / point
 / ambient, pose derived from the transform, range falloff, eight lights), **`UIElementStateComponent`**
 (a HUD needs classes and inline style, not only text), and **cursor capture** as a request the
-engine grants only in Play. The gate is **51/51**.
+engine grants only in Play. The gate is **52/52**.
 
 > Positioning: *"A Vulkan engine designed for instant iteration and debuggable
 > systems — not just rendering power."* Open-source, dev-led, aimed at indie devs.
@@ -443,7 +443,7 @@ and exits nonzero if any fail, so it drops straight into CI:
 
 ```powershell
 $env:SUGAR_VALIDATE = "1"; build\Release\SuGarEngine.exe; $env:SUGAR_VALIDATE = ""
-# ... [validate] === 51/51 checks passed, 0 failure(s) ===
+# ... [validate] === 52/52 checks passed, 0 failure(s) ===
 ```
 
 Benchmarks are intentionally excluded — they're measurements, not pass/fail gates
@@ -622,7 +622,7 @@ Milestone summary:
   forced. Its second arc — the full game (biomes, mobs + engine navigation, day-night lighting,
   particles, HUD, persistence, packaging) — forced five more: a per-texture sampler filter,
   `GameDataComponent`, lights as components, `UIElementStateComponent`, and cursor capture.
-  Gate **51/51**, Debug + Release.
+  Gate **52/52**, Debug + Release.
 
 ---
 

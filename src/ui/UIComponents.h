@@ -82,3 +82,20 @@ struct UIElementStateComponent {
     std::string classes;
     std::string style;
 };
+
+// Text anchored to a point in the WORLD rather than to the screen — a mob nameplate, an
+// interaction hint, a damage number (M4 L3, see the addendum in docs/DESIGN_RUNTIME_UI.md).
+//
+// The anchor is the entity's own transform plus `offsetY`; there is no second position to
+// desync. Everything about *where it lands on screen* — pixel position, scale, whether it
+// is visible at all — is derived every frame from the camera and never stored.
+struct WorldLabelComponent {
+    std::string text;
+
+    // Metres above the entity's origin. A nameplate sits over the head, not in the chest.
+    float offsetY = 2.0f;
+
+    // Past this distance the label is dropped entirely. A world full of labelled mobs is
+    // unreadable long before it is slow, so the cull is a legibility decision first.
+    float maxDistance = 24.0f;
+};

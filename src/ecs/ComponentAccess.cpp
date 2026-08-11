@@ -28,6 +28,7 @@ const char* componentTypeName(ComponentType type) {
         case ComponentType::GameData:       return "GameData";
         case ComponentType::Light:          return "Light";
         case ComponentType::UIElementState: return "UIElementState";
+        case ComponentType::WorldLabel:     return "WorldLabel";
         case ComponentType::Count:          break;
     }
     return "<unknown>";

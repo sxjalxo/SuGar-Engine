@@ -466,6 +466,7 @@ void BasicTrianglePass::renderScenePass(VkCommandBuffer cmd, uint32_t imageIndex
     // Player UI (RmlUi) composites onto the finished game image in its OWN pass (the scene
     // pass is now closed), so the RmlUi compositor is free to open offscreen layer passes
     // for effects like box-shadow. It LOADs the scene image and leaves it SHADER_READ_ONLY.
+    renderer->updateWorldLabels(); // project world-anchored text with this frame's camera
     renderer->renderRuntimeUIViewport(cmd);
 }
 

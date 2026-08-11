@@ -65,6 +65,7 @@
 #include "core/SnapshotCapturePolicy.h"
 #include "audio/AudioClip.h"
 #include "rendering/Mesh.h"
+#include "rendering/ScreenProjection.h"
 #include "rendering/UniformBufferObject.h"
 #include "scene/BehaviorRegistry.h"
 #include "scene/Light.h"
@@ -3323,6 +3324,69 @@ inline bool testLighting() {
     return ok;
 }
 
+// --- WorldLabels: world-anchored text (M4 L3) ------------------------------
+// Two claims: the component survives the scene file, and the projection refuses the case
+// that produces the classic mirrored-marker bug (a point behind the camera landing at a
+// plausible on-screen position).
+inline bool testWorldLabels() {
+    Registry source;
+    std::vector<Light> lights;
+
+    const Entity mob = source.createEntity();
+    source.names.add(mob, { "Mob" });
+    source.transforms.add(mob, {});
+    WorldLabelComponent label;
+    label.text = "wolf (neutral)";
+    label.offsetY = 2.4f;
+    label.maxDistance = 18.0f;
+    source.worldLabels.add(mob, label);
+
+    Registry loaded;
+    std::vector<Light> loadedLights;
+    if (!SceneSerializer::loadFromString(loaded, loadedLights,
+                                         SceneSerializer::saveToString(source, lights))) {
+        std::cout << "[selftest] world label scene load returned false\n";
+        return false;
+    }
+    Entity restored = INVALID_ENTITY;
+    for (const auto& [entity, nameComponent] : loaded.names.getAll()) {
+        if (nameComponent.name == "Mob") restored = entity;
+    }
+    bool ok = restored != INVALID_ENTITY && loaded.worldLabels.has(restored);
+    if (!ok) {
+        return false;
+    }
+    ok &= loaded.worldLabels.get(restored).text == "wolf (neutral)";
+    ok &= std::fabs(loaded.worldLabels.get(restored).offsetY - 2.4f) < 1e-4f;
+    ok &= std::fabs(loaded.worldLabels.get(restored).maxDistance - 18.0f) < 1e-4f;
+
+    // Projection: a camera at the origin looking down -Z.
+    const glm::mat4 view = glm::lookAt(glm::vec3(0.0f), glm::vec3(0.0f, 0.0f, -1.0f),
+                                       glm::vec3(0.0f, 1.0f, 0.0f));
+    glm::mat4 projection = glm::perspective(glm::radians(60.0f), 16.0f / 9.0f, 0.1f, 100.0f);
+    projection[1][1] *= -1.0f; // Vulkan clip space
+    const glm::mat4 viewProjection = projection * view;
+
+    ScreenProjection::Result result;
+    // Dead ahead lands at the centre of the viewport.
+    ok &= ScreenProjection::project(viewProjection, glm::vec3(0.0f, 0.0f, -10.0f), 1600.0f,
+                                    900.0f, result);
+    ok &= std::fabs(result.x - 800.0f) < 1.0f && std::fabs(result.y - 450.0f) < 1.0f;
+    ok &= std::fabs(result.distance - 10.0f) < 1e-3f;
+
+    // Up and to the right of the eye must land up and to the right on screen (this is
+    // where a wrong Vulkan y-flip shows itself).
+    ok &= ScreenProjection::project(viewProjection, glm::vec3(2.0f, 2.0f, -10.0f), 1600.0f,
+                                    900.0f, result);
+    ok &= result.x > 800.0f && result.y < 450.0f;
+
+    // Behind the camera: rejected, not mirrored to a plausible position.
+    ok &= !ScreenProjection::project(viewProjection, glm::vec3(0.0f, 0.0f, 5.0f), 1600.0f,
+                                     900.0f, result);
+
+    return ok;
+}
+
 // --- BehaviorRegistry: register / resolve by name / clear -------------------
 // Tests Core's registry *mechanism* with a local behavior (concrete behaviors now
 // live in the game module DLL, which isn't loaded in the headless self-test).
@@ -4787,6 +4851,7 @@ inline std::pair<int, int> run() {
         { "SceneLoad",        testSceneLoad },
         { "GameData",         testGameData },
         { "Lighting",         testLighting },
+        { "WorldLabels",      testWorldLabels },
         { "BehaviorRegistry", testBehaviorRegistry },
         { "RegistryGraph",    testRegistryGraph },
         { "MalformedInput",   testMalformedInput },

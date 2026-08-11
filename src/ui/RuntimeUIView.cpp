@@ -447,6 +447,48 @@ void RuntimeUIView::syncElementStatesFromEcs(const Registry* registry) {
     }
 }
 
+void RuntimeUIView::syncWorldLabels() {
+    if (document == nullptr) {
+        return;
+    }
+    Rml::Element* container = document->GetElementById("worldlabels");
+    if (container == nullptr) {
+        return; // a document that doesn't want labels simply doesn't have the container
+    }
+
+    if (!worldLabelPoolBuilt) {
+        // Built once. Each element then only ever has its text and two properties set,
+        // which is what keeps a screen full of nameplates off the layout path.
+        std::string markup;
+        for (int i = 0; i < MaxWorldLabels; ++i) {
+            markup += "<span class=\"worldlabel\" id=\"wl" + std::to_string(i) + "\"></span>";
+        }
+        container->SetInnerRML(markup);
+        worldLabelPoolBuilt = true;
+    }
+
+    const int used = static_cast<int>(std::min<std::size_t>(worldLabels.size(), MaxWorldLabels));
+    for (int i = 0; i < MaxWorldLabels; ++i) {
+        Rml::Element* element = document->GetElementById("wl" + std::to_string(i));
+        if (element == nullptr) {
+            continue;
+        }
+        if (i >= used) {
+            element->SetProperty("display", "none");
+            continue;
+        }
+        const ScreenLabel& label = worldLabels[static_cast<std::size_t>(i)];
+        if (element->GetInnerRML() != label.text) {
+            element->SetInnerRML(label.text);
+        }
+        element->SetProperty("display", "block");
+        element->SetProperty("position", "absolute");
+        element->SetProperty("left", std::to_string(static_cast<int>(label.x)) + "px");
+        element->SetProperty("top", std::to_string(static_cast<int>(label.y)) + "px");
+        element->SetProperty("opacity", std::to_string(label.opacity));
+    }
+}
+
 void RuntimeUIView::render(VkCommandBuffer cmd, VkExtent2D extent, VkFramebuffer framebuffer,
                            VkRenderPass layerPass, VkImage sceneImage, const Registry* registry) {
     if (!renderer || !renderer->isReady()) {
@@ -461,6 +503,7 @@ void RuntimeUIView::render(VkCommandBuffer cmd, VkExtent2D extent, VkFramebuffer
         syncTextFromEcs(registry);
         syncLabelsFromEcs(registry);
         syncElementStatesFromEcs(registry);
+        syncWorldLabels();
         context->SetDimensions(Rml::Vector2i(static_cast<int>(extent.width), static_cast<int>(extent.height)));
         context->Update();
         context->Render();

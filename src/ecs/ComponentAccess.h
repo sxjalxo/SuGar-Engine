@@ -46,6 +46,7 @@ enum class ComponentType : uint32_t {
     GameData,
     Light,
     UIElementState,
+    WorldLabel,
     Count
 };
 

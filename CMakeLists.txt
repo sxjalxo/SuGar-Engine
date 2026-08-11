@@ -171,6 +171,7 @@ add_library(SuGarCore SHARED
     src/rendering/Material.h
     src/rendering/CameraComponent.h
     src/rendering/LightComponent.h
+    src/rendering/ScreenProjection.h
     src/scene/Light.h
 )
 

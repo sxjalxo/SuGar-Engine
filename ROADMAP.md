@@ -189,7 +189,7 @@ speculation. Every forced change is recorded in the **M4 friction log** below.
   **#22 lights as components** with Directional/Point/Ambient, derived pose, ≤8 selection and
   range falloff (`docs/DESIGN_LIGHTING.md`), **#23 `UIElementStateComponent`** (a HUD needs
   classes and inline style, not only text), **#24 cursor capture** as a request the engine
-  grants only in Play. Gate **48 → 51/51**, Debug + Release (+`GameData`, `Lighting`, `NavLinks`).
+  grants only in Play. Gate **48 → 52/52**, Debug + Release (+`GameData`, `Lighting`, `NavLinks`, `WorldLabels`).
   - **Navigation held up, with one instructive failure.** A first navmesh built from flat
     per-column quads plus vertical "bridges" had 10 318 of 27 310 triangles rejected as too
     steep — a navmesh welds by vertex, so every one-block step was a cliff. Rebuilt game-side as
@@ -208,6 +208,18 @@ speculation. Every forced change is recorded in the **M4 friction log** below.
     is regenerated, so a save is hundreds of bytes rather than 750 KB). Verified across
     restarts. Cost: the snapshot policy now pauses time travel in this scene (13.3 ms > 4 ms) —
     a JSON snapshot per fixed step does not survive a particle pool.
+- **The full mob taxonomy went in with ZERO engine changes** (2026-08-11): passive (6 kinds),
+  neutral (5, anger-driven), hostile (5, undead burn at noon), a boss with a HUD boss bar and
+  minion summons, tamed pets that follow and sit, 15 villager professions x 7 biome outfits with
+  job-site blocks and a trade panel, and "similar entities" (armour stands, dropped items with no
+  AI and no navmesh agent). One data table, one behaviour switched on the category. Every piece
+  landed on seams the earlier arcs built — `GameDataComponent`, `NavAgentComponent` (55 agents
+  planning at once), `UIElementStateComponent` (boss bar width, trade panel visibility) and the
+  instanced draw path (~330 entities, 92 submitted draws). Release: **340 FPS**, packaged
+  standalone **461 FPS**, `nav[... following=55 unreachable=0]`. *That a whole feature area needed
+  no engine work is the M4 threshold's actual test, and it passed.* Noted, unforced: the engine has
+  **no world-space text**, so mob nameplates are not expressible (the game uses a centre-screen
+  prompt).
 - Write-up: `E:\Sugar Engine - Games\Level 3\Report.md`.
 - **"HUD clipped under display scaling" was NOT an engine bug** — it was the screenshot
   method. On a 125 % display a DPI-unaware capture process gets a *logical* 1536x792 rect and
@@ -632,6 +644,24 @@ every re-layout, which for a HUD whose text changes is every frame. *Change:* re
 way the renderer already retires geometry (`retiredTextures` + `collectRetiredTextures`, freed after
 the frames-in-flight margin) — one policy for both, not two. *Verdict:* fixed; validation output is
 clean over a 28 s run.
+
+**Minecraft (L3) — #29 no world-space text → `WorldLabelComponent`.** *Forced:* mob nameplates.
+The game has 60+ creatures of a dozen kinds and 15 villager professions, and the HUD can only
+describe whatever the crosshair is on — identifying anything meant aiming at it, one at a time.
+*Change:* designed first (addendum in `docs/DESIGN_RUNTIME_UI.md`), then **UI anchored to a world
+point**, not glyph geometry in the scene: Core `WorldLabelComponent{text, offsetY, maxDistance}`
+whose anchor is the entity's own transform, plus pure `ScreenProjection::project` (Core, headless-
+testable) for the one piece of real math. The renderer projects, culls behind-camera / past-range /
+off-screen, keeps the nearest 32 and hands the view a flat list; `RuntimeUIView` drives a fixed
+pool of `<span class="worldlabel">` elements — text and inline `left`/`top`/`opacity` only, no
+markup rebuilt per frame — inside a `#worldlabels` container the document opts into. Same reasoning
+Unity's Screen-Space-Camera canvas and Unreal's widget components use: a nameplate wants the
+document's font and styling and must stay legible, not perspective-correct. *Verdict:* fixed;
+`WorldLabels` self-test pins the round-trip **and** that a point behind the camera is rejected
+rather than mirrored to a plausible on-screen position. Gate **51 → 52/52**. Not built: depth
+occlusion (labels show through walls), per-label styling from the game, world-space rotation.
+*Ref:* `ui/UIComponents.h`, `rendering/ScreenProjection.h`, `Renderer::updateWorldLabels`,
+`RuntimeUIView::syncWorldLabels`.
 
 **Minecraft (L3) — measurement tooling.** *Forced (soft):* the per-block vs chunk decision needed
 numbers, and the windowed app has no capturable FPS. *Change:* opt-in `SUGAR_FPSLOG=1` prints
