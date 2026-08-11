@@ -3,6 +3,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <glm/glm.hpp>
 
 // Phase 17C.2 — skinning influences (`joints` / `weights`) live on the *one* Vertex
 // type rather than in a separate skinned vertex format.
@@ -86,6 +87,52 @@ struct Vertex
         attributes[4].location = 4;
         attributes[4].format = VK_FORMAT_R32G32B32A32_SFLOAT;
         attributes[4].offset = offsetof(Vertex, weights);
+
+        return attributes;
+    }
+};
+
+// Per-object data for an instanced draw (M4 L3): what would otherwise be push constants,
+// moved into a vertex buffer so one draw call covers many objects. Only the two fields
+// that actually differ between the objects a game batches — a pooled particle system's
+// members share their mesh, texture and material but never their transform or colour.
+//
+// Locations start at 5 because 3 and 4 belong to the skinning attributes on binding 0,
+// and a skinned mesh is never instanced (its pose is per-entity by definition).
+struct InstanceData {
+    glm::mat4 model{1.0f};
+    glm::vec4 baseColor{1.0f};
+
+    static VkVertexInputBindingDescription getBindingDescription()
+    {
+        VkVertexInputBindingDescription binding{};
+        binding.binding = 1;
+        binding.stride = sizeof(InstanceData);
+        binding.inputRate = VK_VERTEX_INPUT_RATE_INSTANCE;
+        return binding;
+    }
+
+    // The three static attributes plus five per-instance ones (a mat4 is four locations).
+    static std::array<VkVertexInputAttributeDescription, 8> getAttributeDescriptions()
+    {
+        std::array<VkVertexInputAttributeDescription, 8> attributes{};
+        const auto base = Vertex::getAttributeDescriptions();
+        attributes[0] = base[0];
+        attributes[1] = base[1];
+        attributes[2] = base[2];
+
+        for (uint32_t column = 0; column < 4; ++column) {
+            attributes[3 + column].binding = 1;
+            attributes[3 + column].location = 5 + column;
+            attributes[3 + column].format = VK_FORMAT_R32G32B32A32_SFLOAT;
+            attributes[3 + column].offset =
+                static_cast<uint32_t>(offsetof(InstanceData, model) + column * sizeof(glm::vec4));
+        }
+
+        attributes[7].binding = 1;
+        attributes[7].location = 9;
+        attributes[7].format = VK_FORMAT_R32G32B32A32_SFLOAT;
+        attributes[7].offset = offsetof(InstanceData, baseColor);
 
         return attributes;
     }

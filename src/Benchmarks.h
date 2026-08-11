@@ -207,6 +207,58 @@ inline void run() {
     });
     add("snapshot_save", saveMs, "ms", trimNum(saveMs) + " ms");
 
+    // The same scene with game data on every entity — the shape M4 L3's particle pool
+    // produces (six keys of velocity/lifetime per pooled particle), and the thing that
+    // pushed a 245-entity scene past the 4 ms capture budget. Measured beside the plain
+    // save so the *marginal* cost of game data is a number rather than a suspicion.
+    {
+        Registry withData;
+        std::vector<Light> dataLights;
+        buildScene(withData, entityCount);
+        int index = 0;
+        for (const auto& [entity, transform] : withData.transforms.getAll()) {
+            (void)transform;
+            GameDataComponent& data = ensureGameData(withData, entity);
+            data.setFloat("vx", 0.25f);
+            data.setFloat("vy", -1.5f);
+            data.setFloat("vz", 0.75f);
+            data.setFloat("life", 0.8f);
+            data.setFloat("maxLife", 1.0f);
+            data.setFloat("size", 0.1f);
+            data.setString("kind", "particle");
+            ++index;
+        }
+        (void)index;
+        const std::string dataSnapshot = SceneSerializer::saveToString(withData, dataLights);
+        const double dataKiB = static_cast<double>(dataSnapshot.size()) / 1024.0;
+        add("snapshot_size_gamedata", dataKiB, "KiB",
+            trimNum(dataKiB) + " KiB (" +
+                std::to_string(dataSnapshot.size() / std::max(1, entityCount)) + " B/entity)");
+
+        const double dataSaveMs = timeBest(50, [&] {
+            sink += SceneSerializer::saveToString(withData, dataLights).size();
+        });
+        add("snapshot_save_gamedata", dataSaveMs, "ms", trimNum(dataSaveMs) + " ms");
+    }
+
+    // Where does a snapshot's time actually go? The scene above writes ~30 floats per
+    // entity; this writes the same count into an ostringstream and nothing else. If the
+    // two are close, the cost is *number formatting*, not the ECS walk or the string
+    // building — which decides whether a faster writer or a different format is the fix.
+    {
+        const int floatsPerEntity = 30;
+        const double formatMs = timeBest(50, [&] {
+            std::ostringstream probe;
+            for (int i = 0; i < entityCount * floatsPerEntity; ++i) {
+                probe << (static_cast<float>(i) * 0.37f) << ',';
+            }
+            sink += probe.str().size();
+        });
+        add("ostream_float_writes", formatMs, "ms",
+            trimNum(formatMs) + " ms for " + std::to_string(entityCount * floatsPerEntity) +
+                " floats");
+    }
+
     // In-place restore (Phase 14A) over the whole scene.
     const double patchMs = timeBest(50, [&] {
         sink += SceneSerializer::patchFromString(registry, lights, oneSnapshot) ? 1u : 0u;

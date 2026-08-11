@@ -137,8 +137,23 @@ private:
     void destroyGeometry(Geometry& geometry);
     void collectRetiredGeometry(bool force);
 
+    // Textures have exactly the same problem, and it was found by the validation layer
+    // rather than reasoned about: RmlUi drops a cached box-shadow/layer texture whenever
+    // the HUD re-lays-out — every frame for a HUD whose text changes — while in-flight
+    // command buffers still reference its descriptor set:
+    //   "vkFreeDescriptorSets(): pDescriptorSets[0] can't be called on VkDescriptorSet
+    //    ... that is currently in use by VkCommandBuffer ..."
+    // Same retire-and-collect answer as geometry, so there is one policy, not two.
+    struct RetiredTexture {
+        TextureEntry entry;
+        uint64_t retiredAtFrame = 0;
+    };
+    void destroyTexture(TextureEntry& entry);
+    void collectRetiredTextures(bool force);
+
     std::unordered_map<uintptr_t, Geometry> geometries;
     std::vector<RetiredGeometry> retiredGeometries;
+    std::vector<RetiredTexture> retiredTextures;
     uint64_t frameCounter = 0;
     // Swapchain uses 2 frames in flight; 3 gives a safety margin.
     static constexpr uint64_t FramesInFlightMargin = 3;

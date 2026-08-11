@@ -34,6 +34,7 @@ layout(location = 0) in vec3 fragPos;
 layout(location = 1) in vec3 fragNormal;
 layout(location = 2) in vec2 fragUV;
 layout(location = 3) in vec4 fragPosLightSpace;
+layout(location = 4) in vec4 fragBaseColor;
 layout(location = 0) out vec4 outColor;
 
 float ShadowCalculation(vec4 fragPosLightSpace, vec3 normal, vec3 lightDir) {
@@ -73,7 +74,7 @@ void main() {
         discard;
     }
 
-    vec3 albedo = sampled.rgb * pushConstants.baseColor.rgb;
+    vec3 albedo = sampled.rgb * fragBaseColor.rgb;
     vec3 normal = normalize(fragNormal);
     vec3 viewDir = normalize(ubo.viewPos.xyz - fragPos);
     float metallic = clamp(pushConstants.metallic, 0.0, 1.0);

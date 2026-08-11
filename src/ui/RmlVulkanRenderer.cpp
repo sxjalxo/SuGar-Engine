@@ -886,6 +886,7 @@ void RmlVulkanRenderer::beginFrame(VkCommandBuffer commandBuffer, VkExtent2D ext
     sceneImage = sceneImageIn;
     ++frameCounter;
     collectRetiredGeometry(false); // free buffers no longer referenced in flight
+    collectRetiredTextures(false); // and the textures/descriptors released with them
 
     // Compositor state resets each frame. No pass is opened yet: the first RenderGeometry
     // (via ensureActivePass) opens layer 0; effect methods open/close offscreen passes.
@@ -1099,21 +1100,41 @@ Rml::TextureHandle RmlVulkanRenderer::GenerateTexture(Rml::Span<const Rml::byte>
     return registerTexture(std::move(texture));
 }
 
+void RmlVulkanRenderer::destroyTexture(TextureEntry& entry) {
+    if (entry.descriptorSet != VK_NULL_HANDLE) {
+        vkFreeDescriptorSets(device, descriptorPool, 1, &entry.descriptorSet);
+        entry.descriptorSet = VK_NULL_HANDLE;
+    }
+    if (entry.texture) {
+        entry.texture->destroy(device);
+        entry.texture.reset();
+    }
+    // Compositor-saved layer copies own their image/view/memory directly.
+    if (entry.rawView != VK_NULL_HANDLE) { vkDestroyImageView(device, entry.rawView, nullptr); entry.rawView = VK_NULL_HANDLE; }
+    if (entry.rawImage != VK_NULL_HANDLE) { vkDestroyImage(device, entry.rawImage, nullptr); entry.rawImage = VK_NULL_HANDLE; }
+    if (entry.rawMemory != VK_NULL_HANDLE) { vkFreeMemory(device, entry.rawMemory, nullptr); entry.rawMemory = VK_NULL_HANDLE; }
+}
+
+void RmlVulkanRenderer::collectRetiredTextures(bool force) {
+    for (auto it = retiredTextures.begin(); it != retiredTextures.end();) {
+        const bool safe = force || (frameCounter - it->retiredAtFrame) > FramesInFlightMargin;
+        if (safe) {
+            destroyTexture(it->entry);
+            it = retiredTextures.erase(it);
+        } else {
+            ++it;
+        }
+    }
+}
+
 void RmlVulkanRenderer::ReleaseTexture(Rml::TextureHandle textureHandle) {
     const auto it = textures.find(static_cast<uintptr_t>(textureHandle));
     if (it == textures.end()) {
         return;
     }
-    if (it->second.descriptorSet != VK_NULL_HANDLE) {
-        vkFreeDescriptorSets(device, descriptorPool, 1, &it->second.descriptorSet);
-    }
-    if (it->second.texture) {
-        it->second.texture->destroy(device);
-    }
-    // Compositor-saved layer copies own their image/view/memory directly.
-    if (it->second.rawView != VK_NULL_HANDLE) vkDestroyImageView(device, it->second.rawView, nullptr);
-    if (it->second.rawImage != VK_NULL_HANDLE) vkDestroyImage(device, it->second.rawImage, nullptr);
-    if (it->second.rawMemory != VK_NULL_HANDLE) vkFreeMemory(device, it->second.rawMemory, nullptr);
+    // Retire rather than destroy: the descriptor set and image may still be referenced by
+    // a command buffer in flight (see RetiredTexture in the header).
+    retiredTextures.push_back(RetiredTexture{ std::move(it->second), frameCounter });
     textures.erase(it);
 }
 
@@ -1158,6 +1179,7 @@ void RmlVulkanRenderer::shutdown() {
 
     // Callers idle the device before shutdown, so everything is safe to free now.
     collectRetiredGeometry(true);
+    collectRetiredTextures(true);
     for (auto& [handle, geometry] : geometries) {
         (void)handle;
         destroyGeometry(geometry);

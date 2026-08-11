@@ -34,6 +34,11 @@ public:
     // Getters for command buffer recording
     VkRenderPass getRenderPass() const { return renderPass; }
     VkRenderPass getShadowRenderPass() const { return shadowRenderPass; }
+    // Draw calls actually submitted last frame (shadow + scene). Reported rather than
+    // inferred from the item count: with instancing the two stopped being the same
+    // number, and an editor stat that silently means something else is worse than none.
+    int getSubmittedDrawCalls() const { return submittedDrawCalls; }
+
     VkBuffer getUniformBuffer() const { return uniformBuffer; }
     // The descriptor's range is one slice; the dynamic offset selects which frame's.
     VkDeviceSize getUniformSliceSize() const { return uniformSliceSize; }
@@ -91,6 +96,33 @@ private:
     // Byte offset into jointBuffer per drawList item index; 0xFFFFFFFF = unskinned.
     std::vector<uint32_t> jointOffsets;
 
+    // Instanced draws (M4 L3). Consecutive draw-list items that agree on mesh, texture,
+    // material and blend mode — and are unskinned — collapse into ONE draw call, with the
+    // model matrix and base colour arriving per instance from this buffer. A pooled
+    // particle system is the case that forced it: 4 000 pooled particles were 4 000 draw
+    // calls, and the frame rate fell 411 -> 173 FPS.
+    //
+    // Same lifetime model as the uniform and joint buffers: one slice per frame in flight,
+    // because a single buffer rewritten each frame races the GPU still reading last frame's.
+    VkPipeline instancedPipelines[SceneBucketCount] = {};
+    VkPipeline shadowInstancedPipeline = VK_NULL_HANDLE;
+    VkBuffer instanceBuffer = VK_NULL_HANDLE;
+    VkDeviceMemory instanceBufferMemory = VK_NULL_HANDLE;
+    void* instanceBufferMapped = nullptr;
+    VkDeviceSize instanceSliceSize = 0;
+    static constexpr uint32_t MaxInstancesPerFrame = 16384;
+
+    // One entry per run of draw-list items collapsed into a single draw. `count == 1`
+    // means "not batched" and takes the ordinary push-constant path, so nothing about the
+    // existing renderer changes for scenes that do not repeat a mesh.
+    struct InstanceBatch {
+        size_t firstItem = 0;
+        uint32_t count = 0;
+        uint32_t firstInstance = 0;
+    };
+    std::vector<InstanceBatch> instanceBatches;
+    int submittedDrawCalls = 0;
+
     // Camera state owned by this pass and uploaded through the scene uniform buffer.
     Camera camera{};
     const DrawList* drawList = nullptr;
@@ -101,6 +133,10 @@ private:
     void createShadowPipeline();
     void createUniformBuffer();
     void createJointResources();
+    void createInstanceBuffer();
+    // Groups this frame's draw list into instanced batches and uploads their per-instance
+    // data. Derived per frame from the draw list — no state survives the frame.
+    void buildInstanceBatches();
     void updateUniformBuffer();
     // Packs this frame's joint matrices into jointBuffer and fills jointOffsets.
     void uploadJointMatrices();

@@ -10,6 +10,7 @@
 #include "scene/Light.h"
 #include "scene/TransformMath.h"
 #include <algorithm>
+#include <charconv>
 #include <cctype>
 #include <cmath>
 #include <cstddef>
@@ -454,8 +455,33 @@ void writeIndent(std::ostream& output, int indentLevel) {
     }
 }
 
+// Number formatting is where a snapshot's time goes, and it is not close: a 250-entity
+// scene writes ~7 500 floats, and `operator<<(float)` costs ~350 ns each — 2.6 ms of a
+// 3.3 ms capture (SUGAR_BENCH `ostream_float_writes`). std::to_chars is the same digits
+// for ~20 ns, because it skips the locale/facet machinery an ostream must consult.
+//
+// `general` with 6 significant digits is exactly what the stream's default produced, so
+// every scene file and every golden test stays byte-identical — this is a speed change,
+// not a format change.
+void writeFloat(std::ostream& output, float value) {
+    char buffer[32];
+    const std::to_chars_result result =
+        std::to_chars(buffer, buffer + sizeof(buffer), value, std::chars_format::general, 6);
+    if (result.ec == std::errc()) {
+        output.write(buffer, result.ptr - buffer);
+    } else {
+        output << value; // unreachable for float in 32 bytes, but never silently truncate
+    }
+}
+
 void writeVec3(std::ostream& output, const glm::vec3& value) {
-    output << "[" << value.x << ", " << value.y << ", " << value.z << "]";
+    output << "[";
+    writeFloat(output, value.x);
+    output << ", ";
+    writeFloat(output, value.y);
+    output << ", ";
+    writeFloat(output, value.z);
+    output << "]";
 }
 
 // BlendMode <-> string, so the scene stays readable and stable across enum reordering.
@@ -478,7 +504,15 @@ BlendMode blendModeFromString(const std::string& value) {
 
 // Quaternion as [x, y, z, w] to match glTF's component order.
 void writeQuat(std::ostream& output, const glm::quat& value) {
-    output << "[" << value.x << ", " << value.y << ", " << value.z << ", " << value.w << "]";
+    output << "[";
+    writeFloat(output, value.x);
+    output << ", ";
+    writeFloat(output, value.y);
+    output << ", ";
+    writeFloat(output, value.z);
+    output << ", ";
+    writeFloat(output, value.w);
+    output << "]";
 }
 
 // Every asset-resolving helper below opens the same way: with no Vulkan upload
@@ -654,11 +688,11 @@ void writeEntityObject(std::ostream& output, const Registry& registry, Entity en
             writeVec3(out, body.velocity);
             out << ",\n";
             writeIndent(out, 4);
-            out << "\"mass\": " << body.mass << ",\n";
+            out << "\"mass\": "; writeFloat(out, body.mass); out << ",\n";
             writeIndent(out, 4);
-            out << "\"restitution\": " << body.restitution << ",\n";
+            out << "\"restitution\": "; writeFloat(out, body.restitution); out << ",\n";
             writeIndent(out, 4);
-            out << "\"friction\": " << body.friction << ",\n";
+            out << "\"friction\": "; writeFloat(out, body.friction); out << ",\n";
             writeIndent(out, 4);
             out << "\"useGravity\": " << (body.useGravity ? "true" : "false") << ",\n";
             writeIndent(out, 4);
@@ -683,7 +717,7 @@ void writeEntityObject(std::ostream& output, const Registry& registry, Entity en
             writeVec3(out, collider.halfExtents);
             out << ",\n";
             writeIndent(out, 4);
-            out << "\"radius\": " << collider.radius;
+            out << "\"radius\": "; writeFloat(out, collider.radius);
             // Optional filtering/trigger fields — emitted only when non-default so
             // existing scenes are byte-identical and stay back-compatible.
             if (collider.isTrigger) {
@@ -729,9 +763,9 @@ void writeEntityObject(std::ostream& output, const Registry& registry, Entity en
             writeIndent(out, 4);
             out << "\"clip\": \"" << escapeJsonString(clip ? clip->getResourceKey() : "") << "\",\n";
             writeIndent(out, 4);
-            out << "\"volume\": " << source.volume << ",\n";
+            out << "\"volume\": "; writeFloat(out, source.volume); out << ",\n";
             writeIndent(out, 4);
-            out << "\"pitch\": " << source.pitch << ",\n";
+            out << "\"pitch\": "; writeFloat(out, source.pitch); out << ",\n";
             writeIndent(out, 4);
             out << "\"loop\": " << (source.loop ? "true" : "false") << ",\n";
             writeIndent(out, 4);
@@ -817,9 +851,9 @@ void writeEntityObject(std::ostream& output, const Registry& registry, Entity en
             writeIndent(out, 4);
             out << "\"clip\": \"" << escapeJsonString(player.clip) << "\",\n";
             writeIndent(out, 4);
-            out << "\"time\": " << player.time << ",\n";
+            out << "\"time\": "; writeFloat(out, player.time); out << ",\n";
             writeIndent(out, 4);
-            out << "\"speed\": " << player.speed << ",\n";
+            out << "\"speed\": "; writeFloat(out, player.speed); out << ",\n";
             writeIndent(out, 4);
             out << "\"playing\": " << (player.playing ? "true" : "false") << ",\n";
             writeIndent(out, 4);
@@ -854,15 +888,15 @@ void writeEntityObject(std::ostream& output, const Registry& registry, Entity en
             writeIndent(out, 4);
             out << "\"state\": \"" << escapeJsonString(machine.currentState) << "\",\n";
             writeIndent(out, 4);
-            out << "\"phase\": " << machine.statePhase << ",\n";
+            out << "\"phase\": "; writeFloat(out, machine.statePhase); out << ",\n";
             writeIndent(out, 4);
             out << "\"target\": \"" << escapeJsonString(machine.transitionTarget) << "\",\n";
             writeIndent(out, 4);
-            out << "\"targetPhase\": " << machine.targetPhase << ",\n";
+            out << "\"targetPhase\": "; writeFloat(out, machine.targetPhase); out << ",\n";
             writeIndent(out, 4);
-            out << "\"transitionElapsed\": " << machine.transitionElapsed << ",\n";
+            out << "\"transitionElapsed\": "; writeFloat(out, machine.transitionElapsed); out << ",\n";
             writeIndent(out, 4);
-            out << "\"transitionDuration\": " << machine.transitionDuration << "\n";
+            out << "\"transitionDuration\": "; writeFloat(out, machine.transitionDuration); out << "\n";
             writeIndent(out, 3);
             out << "}";
         });
@@ -932,9 +966,9 @@ void writeEntityObject(std::ostream& output, const Registry& registry, Entity en
             // reinterpret every saved agent.
             out << "\"status\": \"" << navAgentStatusName(agent.status) << "\",\n";
             writeIndent(out, 4);
-            out << "\"speed\": " << agent.speed << ",\n";
+            out << "\"speed\": "; writeFloat(out, agent.speed); out << ",\n";
             writeIndent(out, 4);
-            out << "\"arrivalRadius\": " << agent.arrivalRadius << "\n";
+            out << "\"arrivalRadius\": "; writeFloat(out, agent.arrivalRadius); out << "\n";
             writeIndent(out, 3);
             out << "}";
         });
@@ -971,11 +1005,11 @@ void writeEntityObject(std::ostream& output, const Registry& registry, Entity en
             writeIndent(out, 3);
             out << "\"camera\": {\n";
             writeIndent(out, 4);
-            out << "\"fov\": " << cam.fovDegrees << ",\n";
+            out << "\"fov\": "; writeFloat(out, cam.fovDegrees); out << ",\n";
             writeIndent(out, 4);
-            out << "\"near\": " << cam.nearPlane << ",\n";
+            out << "\"near\": "; writeFloat(out, cam.nearPlane); out << ",\n";
             writeIndent(out, 4);
-            out << "\"far\": " << cam.farPlane << ",\n";
+            out << "\"far\": "; writeFloat(out, cam.farPlane); out << ",\n";
             writeIndent(out, 4);
             out << "\"active\": " << (cam.active ? "true" : "false") << "\n";
             writeIndent(out, 3);
@@ -1014,9 +1048,9 @@ void writeEntityObject(std::ostream& output, const Registry& registry, Entity en
             writeVec3(out, light.color);
             out << ",\n";
             writeIndent(out, 4);
-            out << "\"intensity\": " << light.intensity << ",\n";
+            out << "\"intensity\": "; writeFloat(out, light.intensity); out << ",\n";
             writeIndent(out, 4);
-            out << "\"range\": " << light.range << ",\n";
+            out << "\"range\": "; writeFloat(out, light.range); out << ",\n";
             writeIndent(out, 4);
             out << "\"castsShadow\": " << (light.castsShadow ? "true" : "false") << ",\n";
             writeIndent(out, 4);
@@ -1044,9 +1078,18 @@ void writeEntityObject(std::ostream& output, const Registry& registry, Entity en
                     // 15 significant digits, not the stream's default 6: game data holds
                     // whole numbers a game chose (a seed, a count, an id), and 6 digits
                     // would silently round 20260811 to 20260800 on the first save.
-                    const auto previous = out.precision(15);
-                    out << value.number;
-                    out.precision(previous);
+                    // Same to_chars fast path as writeFloat, for the same reason — a
+                    // particle pool writes six of these per entity per snapshot.
+                    char buffer[64];
+                    const std::to_chars_result result = std::to_chars(
+                        buffer, buffer + sizeof(buffer), value.number, std::chars_format::general, 15);
+                    if (result.ec == std::errc()) {
+                        out.write(buffer, result.ptr - buffer);
+                    } else {
+                        const auto previous = out.precision(15);
+                        out << value.number;
+                        out.precision(previous);
+                    }
                 }
                 out << (++index < values.size() ? ",\n" : "\n");
             }
@@ -1154,12 +1197,12 @@ void writeSceneJson(std::ostream& output, const Registry& registry, const std::v
         if (light.intensity != 1.0f) {
             output << ",\n";
             writeIndent(output, 3);
-            output << "\"intensity\": " << light.intensity;
+            output << "\"intensity\": "; writeFloat(output, light.intensity);
         }
         if (light.range != 0.0f) {
             output << ",\n";
             writeIndent(output, 3);
-            output << "\"range\": " << light.range;
+            output << "\"range\": "; writeFloat(output, light.range);
         }
         if (light.castsShadow) {
             output << ",\n";

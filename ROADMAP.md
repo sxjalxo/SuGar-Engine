@@ -189,7 +189,7 @@ speculation. Every forced change is recorded in the **M4 friction log** below.
   **#22 lights as components** with Directional/Point/Ambient, derived pose, ≤8 selection and
   range falloff (`docs/DESIGN_LIGHTING.md`), **#23 `UIElementStateComponent`** (a HUD needs
   classes and inline style, not only text), **#24 cursor capture** as a request the engine
-  grants only in Play. Gate **48 → 50/50**, Debug + Release.
+  grants only in Play. Gate **48 → 51/51**, Debug + Release (+`GameData`, `Lighting`, `NavLinks`).
   - **Navigation held up, with one instructive failure.** A first navmesh built from flat
     per-column quads plus vertical "bridges" had 10 318 of 27 310 triangles rejected as too
     steep — a navmesh welds by vertex, so every one-block step was a cliff. Rebuilt game-side as
@@ -209,11 +209,20 @@ speculation. Every forced change is recorded in the **M4 friction log** below.
     restarts. Cost: the snapshot policy now pauses time travel in this scene (13.3 ms > 4 ms) —
     a JSON snapshot per fixed step does not survive a particle pool.
 - Write-up: `E:\Sugar Engine - Games\Level 3\Report.md`.
-- Open, reproduced, not fixed: **HUD anchored to the bottom is clipped under Windows display
-  scaling** (at 1.25× the crosshair lands at 63 %/68 % instead of 50 %/50 % — the runtime-UI
-  context and the drawn image disagree about the extent); no navigation off-mesh links; no
-  instanced particle path; snapshot cost at particle-pool scale. Also still open from the first
-  arc: greedy face-merge, per-block colour beyond the atlas.
+- **"HUD clipped under display scaling" was NOT an engine bug** — it was the screenshot
+  method. On a 125 % display a DPI-unaware capture process gets a *logical* 1536x792 rect and
+  `PrintWindow` then copies only that corner of the physical 1920x991 window; sizing the bitmap
+  from `GetClientRect` compounded it, since `PrintWindow` draws the whole window (title bar
+  included) and pushes the content down. Made the capture per-monitor-DPI-aware and
+  window-rect-sized: crosshair sits at exactly 50 %/50 %, and the hotbar, health bar and status
+  panel are all fully on screen in the editor **and** in the packaged standalone. Instrumenting
+  the extents (`swapChainExtent` / `viewportExtent` / ImGui display size, all consistent at
+  1920x991) is what ruled the engine out — the same instrument-don't-guess loop the earlier
+  measurement work used. Game-side, `#hotbar` gained an explicit height so an absolutely
+  positioned row anchored by `bottom` cannot depend on content height.
+- Open, not fixed (engine limitations, not defects — features when a game forces them): no
+  navigation off-mesh links; no instanced particle path; snapshot cost at particle-pool scale.
+  Also still open from the first arc: greedy face-merge, per-block colour beyond the atlas.
 
 ---
 
@@ -579,6 +588,50 @@ look stops at the desktop edge without a captured cursor. *Change:* Core `Input:
 — the game *requests*, the engine grants it only while in Play and always releases on Stop, so a
 game cannot trap the cursor in the editor; GLFW is applied engine-side (Rule 15). *Verdict:* fixed.
 *Ref:* `core/Input`, `SuGarApp::mainLoop`.
+
+**Minecraft (L3) — #25 navigation had no off-mesh links.** *Forced:* a mob below a two-block
+ledge or across a trench plans and gets `Unreachable`, correctly — a navmesh welds by vertex, so
+two surfaces that share no corner are separate islands. *Change:* designed first (addendum in
+`docs/DESIGN_NAVIGATION.md`), then `NavMesh::links` — a `NavLink{start, end, cost, bidirectional}`
+whose **endpoint polygons are derived** by `buildAdjacency` (the same argument `neighbors` makes:
+an asset must not carry a stale resolution). A* expands links as one more edge kind, after the
+shared ones and in index order, so determinism is untouched; the funnel splits its corridor at a
+link and emits the two endpoints as waypoints (Detour's treatment). No new component, no new agent
+status. *Verdict:* fixed, `NavLinks` self-test (unreachable → reachable, one-way, determinism,
+corridor link steps). **Measured in the game and reported honestly: this terrain barely uses them** —
+13 links on a 96² world, 0 of 120 sampled routes crossing one, because what fragments the walkable
+surface here is *water* (33 components, spawn stuck in a 1 582-polygon pocket), not ledges. The
+capability is real and tested; the game's next step is a swim rule, not more engine work.
+
+**Minecraft (L3) — #26 snapshot capture was dominated by number formatting.** *Found:* the
+particle pool pushed a 245-entity scene to 13.3 ms/step, past the 4 ms budget, and the policy
+paused time travel. *Measured first* (new `SUGAR_BENCH` metrics `snapshot_save_gamedata`,
+`ostream_float_writes`): **2.63 ms of a 3.32 ms capture was `operator<<(float)`** — ~350 ns per
+number, for 7 500 numbers. *Change:* `std::to_chars` with `general`/6 significant digits (and /15
+for game-data numbers) — the same digits the stream produced, so **every scene file and the golden
+test stay byte-identical**; this is a speed change, not a format change. *Verdict:* fixed. Save
+3.32 → **1.99 ms** (plain) and 4.45 → **2.60 ms** (with game data); in-game capture 13.3 → **7.7 ms**.
+A binary/delta `ISnapshotStorage` backend is still **not** forced — the text writer was simply
+paying 350 ns a number.
+
+**Minecraft (L3) — #27 a pooled particle was a draw call → instanced draws.** *Forced + measured:*
+particle counts 96 / 1 000 / 4 000 gave 411 / 397 / **173** FPS — a pooled particle costs a draw
+call whether it is alive or not. *Change:* consecutive draw-list items that agree on mesh, texture,
+material and blend mode — and are unskinned — collapse into ONE `vkCmdDrawIndexed`, with model
+matrix and base colour arriving from a per-frame **instance vertex buffer**. Two new pipelines
+(`basic_instanced.vert`, `shadow_instanced.vert`; the shadow pass had to batch too or the win would
+be halved), base colour moved from a push constant to a varying so one fragment shader serves both
+paths, and a batch of one takes the original path unchanged. *Verdict:* fixed. 4 000 particles
+173 → **232 FPS**; 10 000 particles run at 88 FPS. The editor's "Draw calls" now reports **submitted**
+draws rather than item count, because with batching those stopped being the same number.
+
+**Minecraft (L3) — #28 RmlUi textures were freed while in flight.** *Found by the validation layer*
+while measuring #27: *"vkFreeDescriptorSets(): pDescriptorSets[0] can't be called on VkDescriptorSet
+… that is currently in use by VkCommandBuffer …"* — RmlUi drops a cached shadow/layer texture on
+every re-layout, which for a HUD whose text changes is every frame. *Change:* retire textures the
+way the renderer already retires geometry (`retiredTextures` + `collectRetiredTextures`, freed after
+the frames-in-flight margin) — one policy for both, not two. *Verdict:* fixed; validation output is
+clean over a 28 s run.
 
 **Minecraft (L3) — measurement tooling.** *Forced (soft):* the per-block vs chunk decision needed
 numbers, and the windowed app has no capturable FPS. *Change:* opt-in `SUGAR_FPSLOG=1` prints

@@ -103,6 +103,21 @@ BasicTrianglePass::~BasicTrianglePass() {
         uniformBufferMemory = VK_NULL_HANDLE;
     }
 
+    if (instanceBufferMapped != nullptr) {
+        vkUnmapMemory(device, instanceBufferMemory);
+        instanceBufferMapped = nullptr;
+    }
+
+    if (instanceBuffer != VK_NULL_HANDLE) {
+        vkDestroyBuffer(device, instanceBuffer, nullptr);
+        instanceBuffer = VK_NULL_HANDLE;
+    }
+
+    if (instanceBufferMemory != VK_NULL_HANDLE) {
+        vkFreeMemory(device, instanceBufferMemory, nullptr);
+        instanceBufferMemory = VK_NULL_HANDLE;
+    }
+
     for (auto& row : scenePipelines) {
         for (VkPipeline& pipeline : row) {
             if (pipeline != VK_NULL_HANDLE) {
@@ -110,6 +125,18 @@ BasicTrianglePass::~BasicTrianglePass() {
                 pipeline = VK_NULL_HANDLE;
             }
         }
+    }
+
+    for (VkPipeline& pipeline : instancedPipelines) {
+        if (pipeline != VK_NULL_HANDLE) {
+            vkDestroyPipeline(device, pipeline, nullptr);
+            pipeline = VK_NULL_HANDLE;
+        }
+    }
+
+    if (shadowInstancedPipeline != VK_NULL_HANDLE) {
+        vkDestroyPipeline(device, shadowInstancedPipeline, nullptr);
+        shadowInstancedPipeline = VK_NULL_HANDLE;
     }
 
     if (shadowPipeline != VK_NULL_HANDLE) {
@@ -171,6 +198,7 @@ void BasicTrianglePass::setup() {
     createGraphicsPipeline();
     createShadowPipeline();
     createUniformBuffer();
+    createInstanceBuffer();
 }
 
 void BasicTrianglePass::execute(VkCommandBuffer cmd, uint32_t imageIndex) {
@@ -182,6 +210,8 @@ void BasicTrianglePass::execute(VkCommandBuffer cmd, uint32_t imageIndex) {
     // Once per frame, not once per pass: the shadow and scene passes must skin
     // identically, so they read the same uploaded matrices.
     uploadJointMatrices();
+    buildInstanceBatches();
+    submittedDrawCalls = 0;
     renderShadowPass(cmd, imageIndex);
     renderScenePass(cmd, imageIndex);
 }
@@ -220,7 +250,8 @@ void BasicTrianglePass::renderShadowPass(VkCommandBuffer cmd, uint32_t imageInde
     AssetHandle lastMesh = INVALID_HANDLE;
     VkPipeline lastPipeline = VK_NULL_HANDLE;
 
-    for (size_t i = 0; i < drawList->items.size(); i++) {
+    for (const InstanceBatch& batch : instanceBatches) {
+        const size_t i = batch.firstItem;
         const auto& item = drawList->items[i];
         if (!item.mesh || item.material.albedo == INVALID_HANDLE) {
             continue;
@@ -228,10 +259,13 @@ void BasicTrianglePass::renderShadowPass(VkCommandBuffer cmd, uint32_t imageInde
 
         const uint32_t jointOffset = i < jointOffsets.size() ? jointOffsets[i] : NO_JOINT_OFFSET;
         const bool skinned = jointOffset != NO_JOINT_OFFSET;
+        // A batch of one is the pre-instancing path, unchanged.
+        const bool instanced = batch.count > 1;
 
         // Both pipelines share one layout, so switching between them leaves set 0
         // and the push constants bound — no rebinding, no invalidation.
-        const VkPipeline wantedPipeline = skinned ? skinnedShadowPipeline : shadowPipeline;
+        const VkPipeline wantedPipeline =
+            instanced ? shadowInstancedPipeline : (skinned ? skinnedShadowPipeline : shadowPipeline);
         if (wantedPipeline != lastPipeline) {
             vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, wantedPipeline);
             lastPipeline = wantedPipeline;
@@ -268,12 +302,16 @@ void BasicTrianglePass::renderShadowPass(VkCommandBuffer cmd, uint32_t imageInde
             lastTexture = item.material.albedo;
         }
 
-        if (item.meshHandle != lastMesh) {
-            VkBuffer vertexBuffers[] = {item.mesh->vertexBuffer};
-            VkDeviceSize offsets[] = {0};
-            vkCmdBindVertexBuffers(cmd, 0, 1, vertexBuffers, offsets);
+        if (item.meshHandle != lastMesh || instanced) {
+            // The instanced pipeline expects binding 1 as well; rebinding both keeps the
+            // two paths from having to reason about each other's leftover state.
+            VkBuffer vertexBuffers[] = {item.mesh->vertexBuffer, instanceBuffer};
+            const VkDeviceSize instanceOffset =
+                static_cast<VkDeviceSize>(renderer->getCurrentFrame()) * instanceSliceSize;
+            VkDeviceSize offsets[] = {0, instanceOffset};
+            vkCmdBindVertexBuffers(cmd, 0, instanced ? 2 : 1, vertexBuffers, offsets);
             vkCmdBindIndexBuffer(cmd, item.mesh->indexBuffer, 0, VK_INDEX_TYPE_UINT32);
-            lastMesh = item.meshHandle;
+            lastMesh = instanced ? INVALID_HANDLE : item.meshHandle;
         }
 
         ObjectPushConstants pushConstants{};
@@ -288,7 +326,9 @@ void BasicTrianglePass::renderShadowPass(VkCommandBuffer cmd, uint32_t imageInde
             &pushConstants
         );
 
-        vkCmdDrawIndexed(cmd, static_cast<uint32_t>(item.mesh->indices.size()), 1, 0, 0, 0);
+        vkCmdDrawIndexed(cmd, static_cast<uint32_t>(item.mesh->indices.size()), batch.count, 0, 0,
+                         batch.firstInstance);
+        ++submittedDrawCalls;
     }
 
     vkCmdEndRenderPass(cmd);
@@ -335,7 +375,8 @@ void BasicTrianglePass::renderScenePass(VkCommandBuffer cmd, uint32_t imageIndex
     AssetHandle lastMesh = INVALID_HANDLE;
     VkPipeline lastPipeline = VK_NULL_HANDLE;
 
-    for (size_t i = 0; i < drawList->items.size(); i++) {
+    for (const InstanceBatch& batch : instanceBatches) {
+        const size_t i = batch.firstItem;
         const auto& item = drawList->items[i];
         if (!item.mesh || item.material.albedo == INVALID_HANDLE) {
             continue;
@@ -343,12 +384,15 @@ void BasicTrianglePass::renderScenePass(VkCommandBuffer cmd, uint32_t imageIndex
 
         const uint32_t jointOffset = i < jointOffsets.size() ? jointOffsets[i] : NO_JOINT_OFFSET;
         const bool skinned = jointOffset != NO_JOINT_OFFSET;
+        const bool instanced = batch.count > 1;
 
         // Shared pipeline layout: switching keeps set 0 and the push constants. The
         // blend bucket comes from the material; the draw list is already ordered so all
         // opaque/masked precede all translucent/additive (and the blended tail is sorted
         // back-to-front), so this bind pattern stays coherent.
-        const VkPipeline wantedPipeline = scenePipelines[skinned ? 1 : 0][blendBucket(item.material.blendMode)];
+        const int bucket = blendBucket(item.material.blendMode);
+        const VkPipeline wantedPipeline =
+            instanced ? instancedPipelines[bucket] : scenePipelines[skinned ? 1 : 0][bucket];
         if (wantedPipeline != lastPipeline) {
             vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, wantedPipeline);
             lastPipeline = wantedPipeline;
@@ -383,12 +427,16 @@ void BasicTrianglePass::renderScenePass(VkCommandBuffer cmd, uint32_t imageIndex
             lastTexture = item.material.albedo;
         }
 
-        if (item.meshHandle != lastMesh) {
-            VkBuffer vertexBuffers[] = { item.mesh->vertexBuffer };
-            VkDeviceSize offsets[] = { 0 };
-            vkCmdBindVertexBuffers(cmd, 0, 1, vertexBuffers, offsets);
+        if (item.meshHandle != lastMesh || instanced) {
+            VkBuffer vertexBuffers[] = { item.mesh->vertexBuffer, instanceBuffer };
+            const VkDeviceSize instanceOffset =
+                static_cast<VkDeviceSize>(renderer->getCurrentFrame()) * instanceSliceSize;
+            VkDeviceSize offsets[] = { 0, instanceOffset };
+            vkCmdBindVertexBuffers(cmd, 0, instanced ? 2 : 1, vertexBuffers, offsets);
             vkCmdBindIndexBuffer(cmd, item.mesh->indexBuffer, 0, VK_INDEX_TYPE_UINT32);
-            lastMesh = item.meshHandle;
+            // An instanced bind leaves binding 1 attached; force the next ordinary draw to
+            // rebind rather than inherit it.
+            lastMesh = instanced ? INVALID_HANDLE : item.meshHandle;
         }
 
         ObjectPushConstants pushConstants{};
@@ -408,7 +456,9 @@ void BasicTrianglePass::renderScenePass(VkCommandBuffer cmd, uint32_t imageIndex
             &pushConstants
         );
 
-        vkCmdDrawIndexed(cmd, static_cast<uint32_t>(item.mesh->indices.size()), 1, 0, 0, 0);
+        vkCmdDrawIndexed(cmd, static_cast<uint32_t>(item.mesh->indices.size()), batch.count, 0, 0,
+                         batch.firstInstance);
+        ++submittedDrawCalls;
     }
 
     vkCmdEndRenderPass(cmd);
@@ -705,6 +755,19 @@ void BasicTrianglePass::createGraphicsPipeline() {
     skinnedVertStageInfo.module = skinnedVertShaderModule;
     const VkPipelineShaderStageCreateInfo skinnedStages[] = {skinnedVertStageInfo, fragShaderStageInfo};
 
+    // Instanced variant: a second vertex binding fed per instance, and a vertex shader
+    // that reads the model matrix and base colour from it instead of push constants.
+    // Everything else — blend state, depth, layout, fragment stage — is shared, so an
+    // instanced draw is lit and blended by identical code.
+    auto instancedVertShaderCode = readFile("build/shaders/basic_instanced.vert.spv");
+    VkShaderModule instancedVertShaderModule = createShaderModule(app->getDevice(), instancedVertShaderCode);
+    VkPipelineShaderStageCreateInfo instancedVertStageInfo = vertShaderStageInfo;
+    instancedVertStageInfo.module = instancedVertShaderModule;
+    const VkPipelineShaderStageCreateInfo instancedStages[] = {instancedVertStageInfo, fragShaderStageInfo};
+    const auto instancedAttributes = InstanceData::getAttributeDescriptions();
+    const VkVertexInputBindingDescription instancedBindings[] = {
+        Vertex::getBindingDescription(), InstanceData::getBindingDescription()};
+
     for (int bucket = 0; bucket < SceneBucketCount; ++bucket) {
         colorBlendAttachment.blendEnable = buckets[bucket].blendEnable;
         colorBlendAttachment.srcColorBlendFactor = buckets[bucket].srcColor;
@@ -740,11 +803,25 @@ void BasicTrianglePass::createGraphicsPipeline() {
                                       &scenePipelines[1][bucket]) != VK_SUCCESS) {
             throw std::runtime_error("failed to create skinned scene graphics pipeline!");
         }
+
+        // Instanced: two bindings (mesh + per-instance data).
+        vertexInputInfo.vertexBindingDescriptionCount = 2;
+        vertexInputInfo.pVertexBindingDescriptions = instancedBindings;
+        vertexInputInfo.vertexAttributeDescriptionCount = static_cast<uint32_t>(instancedAttributes.size());
+        vertexInputInfo.pVertexAttributeDescriptions = instancedAttributes.data();
+        pipelineInfo.pStages = instancedStages;
+        if (vkCreateGraphicsPipelines(app->getDevice(), VK_NULL_HANDLE, 1, &pipelineInfo, nullptr,
+                                      &instancedPipelines[bucket]) != VK_SUCCESS) {
+            throw std::runtime_error("failed to create instanced scene graphics pipeline!");
+        }
+        vertexInputInfo.vertexBindingDescriptionCount = 1;
+        vertexInputInfo.pVertexBindingDescriptions = &bindingDescription;
     }
 
     vkDestroyShaderModule(app->getDevice(), vertShaderModule, nullptr);
     vkDestroyShaderModule(app->getDevice(), fragShaderModule, nullptr);
     vkDestroyShaderModule(app->getDevice(), skinnedVertShaderModule, nullptr);
+    vkDestroyShaderModule(app->getDevice(), instancedVertShaderModule, nullptr);
 }
 
 void BasicTrianglePass::createShadowPipeline() {
@@ -879,9 +956,40 @@ void BasicTrianglePass::createShadowPipeline() {
         throw std::runtime_error("failed to create skinned shadow graphics pipeline!");
     }
 
+    // Instanced shadow variant. Without it, batching the scene pass would only be half a
+    // win: every instanced object still has to be rasterized into the shadow map, and
+    // those were draw calls too.
+    auto instancedVertShaderCode = readFile("build/shaders/shadow_instanced.vert.spv");
+    VkShaderModule instancedVertShaderModule =
+        createShaderModule(app->getDevice(), instancedVertShaderCode);
+    const auto instancedAttributes = InstanceData::getAttributeDescriptions();
+    const std::array<VkVertexInputAttributeDescription, 6> instancedShadowAttributes = {
+        positionAttribute,
+        instancedAttributes[3], instancedAttributes[4], instancedAttributes[5],
+        instancedAttributes[6], instancedAttributes[7]
+    };
+    const VkVertexInputBindingDescription instancedBindings[] = {
+        Vertex::getBindingDescription(), InstanceData::getBindingDescription()};
+    vertexInputInfo.vertexBindingDescriptionCount = 2;
+    vertexInputInfo.pVertexBindingDescriptions = instancedBindings;
+    vertexInputInfo.vertexAttributeDescriptionCount =
+        static_cast<uint32_t>(instancedShadowAttributes.size());
+    vertexInputInfo.pVertexAttributeDescriptions = instancedShadowAttributes.data();
+
+    VkPipelineShaderStageCreateInfo instancedVertStageInfo = vertShaderStageInfo;
+    instancedVertStageInfo.module = instancedVertShaderModule;
+    VkPipelineShaderStageCreateInfo instancedStages[] = {instancedVertStageInfo, fragShaderStageInfo};
+    pipelineInfo.pStages = instancedStages;
+
+    if (vkCreateGraphicsPipelines(app->getDevice(), VK_NULL_HANDLE, 1, &pipelineInfo, nullptr,
+                                  &shadowInstancedPipeline) != VK_SUCCESS) {
+        throw std::runtime_error("failed to create instanced shadow graphics pipeline!");
+    }
+
     vkDestroyShaderModule(app->getDevice(), vertShaderModule, nullptr);
     vkDestroyShaderModule(app->getDevice(), fragShaderModule, nullptr);
     vkDestroyShaderModule(app->getDevice(), skinnedVertShaderModule, nullptr);
+    vkDestroyShaderModule(app->getDevice(), instancedVertShaderModule, nullptr);
 }
 
 void BasicTrianglePass::createJointResources() {
@@ -1079,6 +1187,108 @@ void BasicTrianglePass::createUniformBuffer() {
     // Persistently mapped: rewritten every frame, so mapping per frame is pure
     // overhead. Host-coherent, so no explicit flush.
     vkMapMemory(device, uniformBufferMemory, 0, bufferSize, 0, &uniformBufferMapped);
+}
+
+void BasicTrianglePass::createInstanceBuffer() {
+    VkDevice device = app->getDevice();
+
+    // A vertex buffer, not a uniform one, so no dynamic-offset alignment applies — but it
+    // is still sliced per frame in flight for the same reason the UBO is: the GPU may
+    // still be reading last frame's copy.
+    instanceSliceSize = static_cast<VkDeviceSize>(sizeof(InstanceData)) * MaxInstancesPerFrame;
+    const VkDeviceSize bufferSize =
+        instanceSliceSize * static_cast<VkDeviceSize>(Renderer::framesInFlight());
+
+    VkBufferCreateInfo bufferInfo{};
+    bufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+    bufferInfo.size = bufferSize;
+    bufferInfo.usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;
+    bufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+
+    if (vkCreateBuffer(device, &bufferInfo, nullptr, &instanceBuffer) != VK_SUCCESS) {
+        throw std::runtime_error("failed to create instance buffer!");
+    }
+
+    VkMemoryRequirements memRequirements;
+    vkGetBufferMemoryRequirements(device, instanceBuffer, &memRequirements);
+
+    VkMemoryAllocateInfo allocInfo{};
+    allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+    allocInfo.allocationSize = memRequirements.size;
+    allocInfo.memoryTypeIndex = findMemoryType(
+        app->getPhysicalDevice(),
+        memRequirements.memoryTypeBits,
+        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+
+    if (vkAllocateMemory(device, &allocInfo, nullptr, &instanceBufferMemory) != VK_SUCCESS) {
+        throw std::runtime_error("failed to allocate instance buffer memory!");
+    }
+
+    vkBindBufferMemory(device, instanceBuffer, instanceBufferMemory, 0);
+    vkMapMemory(device, instanceBufferMemory, 0, bufferSize, 0, &instanceBufferMapped);
+}
+
+// Runs of consecutive draw-list items that a single draw call can cover. The draw list is
+// already sorted by material and mesh (DrawList.cpp), so "consecutive" is exactly the
+// grouping the sort produced — no second sort, no per-frame allocation beyond the batch
+// list itself.
+void BasicTrianglePass::buildInstanceBatches() {
+    instanceBatches.clear();
+    if (drawList == nullptr || instanceBufferMapped == nullptr) {
+        return;
+    }
+
+    auto* instances = reinterpret_cast<InstanceData*>(
+        static_cast<char*>(instanceBufferMapped) +
+        static_cast<VkDeviceSize>(renderer->getCurrentFrame()) * instanceSliceSize);
+    uint32_t written = 0;
+
+    const auto batchable = [&](size_t index) {
+        const auto& item = drawList->items[index];
+        const bool skinned = index < jointOffsets.size() && jointOffsets[index] != NO_JOINT_OFFSET;
+        return item.mesh && item.material.albedo != INVALID_HANDLE && !skinned;
+    };
+    const auto sameBatch = [&](const RenderItem& a, const RenderItem& b) {
+        return a.meshHandle == b.meshHandle && a.material.albedo == b.material.albedo &&
+               a.material.blendMode == b.material.blendMode &&
+               a.material.metallic == b.material.metallic &&
+               a.material.roughness == b.material.roughness && a.material.ao == b.material.ao;
+    };
+
+    size_t index = 0;
+    while (index < drawList->items.size()) {
+        if (!batchable(index)) {
+            instanceBatches.push_back({index, 1, 0});
+            ++index;
+            continue;
+        }
+        size_t end = index + 1;
+        while (end < drawList->items.size() && batchable(end) &&
+               sameBatch(drawList->items[index], drawList->items[end])) {
+            ++end;
+        }
+
+        const uint32_t count = static_cast<uint32_t>(end - index);
+        // One-item "batches" and anything past the buffer take the ordinary path: a draw
+        // call each, exactly as before instancing existed.
+        if (count < 2 || written + count > MaxInstancesPerFrame) {
+            for (size_t single = index; single < end; ++single) {
+                instanceBatches.push_back({single, 1, 0});
+            }
+            index = end;
+            continue;
+        }
+
+        InstanceBatch batch{index, count, written};
+        for (size_t member = index; member < end; ++member) {
+            InstanceData data{};
+            data.model = drawList->items[member].model;
+            data.baseColor = glm::vec4(drawList->items[member].material.baseColor, 1.0f);
+            instances[written++] = data;
+        }
+        instanceBatches.push_back(batch);
+        index = end;
+    }
 }
 
 void BasicTrianglePass::updateUniformBuffer() {

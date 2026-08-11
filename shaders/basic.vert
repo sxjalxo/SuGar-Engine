@@ -10,6 +10,9 @@ layout(location = 0) out vec3 fragPos;
 layout(location = 1) out vec3 fragNormal;
 layout(location = 2) out vec2 fragUV;
 layout(location = 3) out vec4 fragPosLightSpace;
+// Base colour travels as a varying so the fragment shader reads it the same way
+// whether it came from a push constant (here) or a per-instance attribute.
+layout(location = 4) out vec4 fragBaseColor;
 
 layout(binding = 0) uniform UniformBufferObject
 {
@@ -42,4 +45,5 @@ void main()
     fragNormal = normalize(normalMatrix * inNormal);
     fragUV = inUV;
     fragPosLightSpace = ubo.lightSpaceMatrix * worldPosition;
+    fragBaseColor = pushConstants.baseColor;
 }

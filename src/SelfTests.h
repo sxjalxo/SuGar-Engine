@@ -1906,6 +1906,94 @@ inline bool nearlyEqualXZ(const glm::vec3& a, const glm::vec3& b, float toleranc
     return std::fabs(a.x - b.x) < tolerance && std::fabs(a.z - b.z) < tolerance;
 }
 
+// --- NavLinks: off-mesh connections (M4 L3) --------------------------------
+// The game's forcing case, reduced: two walkable surfaces that share no vertex — a mob
+// below a two-block ledge, or across a trench. On the mesh alone there is no route and
+// `Unreachable` is the *correct* answer; a link is what makes the crossing expressible.
+inline bool testNavLinks() {
+    // Two separate quads: A at y=0 spanning x[0,4], B at y=2 spanning x[6,10].
+    const auto makeQuad = [](float x0, float x1, float y, float z0, float z1, NavMesh& out) {
+        const int base = static_cast<int>(out.vertices.size());
+        out.vertices.push_back(glm::vec3(x0, y, z0));
+        out.vertices.push_back(glm::vec3(x0, y, z1));
+        out.vertices.push_back(glm::vec3(x1, y, z1));
+        out.vertices.push_back(glm::vec3(x1, y, z0));
+        const int first = static_cast<int>(out.indices.size());
+        for (int corner = 0; corner < 4; ++corner) {
+            out.indices.push_back(base + corner);
+        }
+        out.polygons.push_back(NavPolygon{ first, 4 });
+    };
+
+    NavMesh mesh;
+    makeQuad(0.0f, 4.0f, 0.0f, 0.0f, 4.0f, mesh);
+    makeQuad(6.0f, 10.0f, 2.0f, 0.0f, 4.0f, mesh);
+    mesh.buildAdjacency();
+
+    bool ok = mesh.valid() && mesh.polygonCount() == 2;
+
+    const glm::vec3 onA(2.0f, 0.0f, 2.0f);
+    const glm::vec3 onB(8.0f, 2.0f, 2.0f);
+
+    std::vector<glm::vec3> waypoints;
+    ok &= NavPath::findPath(mesh, onA, onB, waypoints) == NavPath::Result::Unreachable;
+
+    // The link, resolved by buildAdjacency (derived, never authored).
+    NavLink link;
+    link.start = glm::vec3(4.0f, 0.0f, 2.0f);
+    link.end = glm::vec3(6.0f, 2.0f, 2.0f);
+    mesh.links.push_back(link);
+    mesh.buildAdjacency();
+    ok &= mesh.links.front().startPolygon == 0 && mesh.links.front().endPolygon == 1;
+
+    ok &= NavPath::findPath(mesh, onA, onB, waypoints) == NavPath::Result::Success;
+    // The crossing shows up as waypoints: the far endpoint must be walked to, and the
+    // route must end at the goal.
+    bool sawLinkExit = false;
+    for (const glm::vec3& waypoint : waypoints) {
+        sawLinkExit |= glm::distance(waypoint, link.end) < 1e-3f;
+    }
+    ok &= sawLinkExit;
+    ok &= !waypoints.empty() && glm::distance(waypoints.back(), onB) < 1e-3f;
+
+    // Determinism: the same query twice is byte-identical, links included.
+    std::vector<glm::vec3> again;
+    ok &= NavPath::findPath(mesh, onA, onB, again) == NavPath::Result::Success;
+    ok &= again.size() == waypoints.size();
+    for (std::size_t i = 0; i < again.size() && i < waypoints.size(); ++i) {
+        ok &= again[i] == waypoints[i];
+    }
+
+    // The corridor reports which step used the link, which is what lets the funnel split
+    // (and what a jump animation would eventually read).
+    glm::vec3 from = onA;
+    glm::vec3 to = onB;
+    std::vector<int> corridor;
+    std::vector<int> linkSteps;
+    ok &= NavPath::findCorridor(mesh, from, to, corridor, &linkSteps) == NavPath::Result::Success;
+    ok &= corridor.size() == 2 && linkSteps.size() == 1 && linkSteps.front() == 0;
+
+    // One-way: a drop you cannot climb back up. Forward still plans; reverse does not.
+    mesh.links.front().bidirectional = false;
+    mesh.buildAdjacency();
+    ok &= NavPath::findPath(mesh, onA, onB, waypoints) == NavPath::Result::Success;
+    ok &= NavPath::findPath(mesh, onB, onA, waypoints) == NavPath::Result::Unreachable;
+
+    // A link whose endpoint resolves to nothing (empty mesh side) is inert rather than
+    // dangling — the case an authored link outliving its geometry produces.
+    NavMesh detached;
+    makeQuad(0.0f, 4.0f, 0.0f, 0.0f, 4.0f, detached);
+    NavLink dangling;
+    dangling.start = glm::vec3(2.0f, 0.0f, 2.0f);
+    dangling.end = glm::vec3(50.0f, 0.0f, 50.0f); // snaps back to the only polygon
+    detached.links.push_back(dangling);
+    detached.buildAdjacency();
+    ok &= NavPath::findPath(detached, onA, glm::vec3(3.0f, 0.0f, 3.0f), waypoints) ==
+          NavPath::Result::Success;
+
+    return ok;
+}
+
 inline bool testNavigation() {
     bool ok = true;
     const float step = 1.0f / 60.0f;
@@ -4685,6 +4773,7 @@ inline std::pair<int, int> run() {
         { "SkinImport",       testSkinImport },
         { "AnimationGraph",   testAnimationGraph },
         { "Navigation",       testNavigation },
+        { "NavLinks",         testNavLinks },
         { "NavMeshBake",      testNavMeshBake },
         { "NavAvoidance",     testNavAvoidance },
         { "ViewportOverlay",  testViewportOverlay },

@@ -28,6 +28,36 @@ struct NavPolygon {
     int count = 0;      // corner count (>= 3)
 };
 
+// An off-mesh connection: a traversable edge between two points that share no polygon
+// edge — a jump across a trench, a drop off a ledge, a ladder (M4 L3, see the addendum in
+// docs/DESIGN_NAVIGATION.md).
+//
+// A link is **mesh data**, not a second graph: it lives on the NavMesh, the search treats
+// it as one more kind of edge, and the funnel splits its corridor around it. The endpoints
+// are authored by whoever built the mesh (the *game* knows a one-block gap is jumpable;
+// the engine would have to guess); the polygons they land in are **derived** and resolved
+// by buildAdjacency, for exactly the reason `neighbors` is — an asset that carried its own
+// resolved indices could carry stale ones.
+struct NavLink {
+    glm::vec3 start{0.0f};
+    glm::vec3 end{0.0f};
+
+    // What crossing costs the search. Zero charges the 3D distance between the endpoints;
+    // a larger value makes the planner prefer walking around, which is how a game says
+    // "climbing this is expensive" without a second cost model.
+    float cost = 0.0f;
+
+    // False makes it one-way (`start` → `end`). A drop off a cliff is one-way: you can
+    // fall down it and not climb back up.
+    bool bidirectional = true;
+
+    // Derived by buildAdjacency; -1 when an endpoint is not on the mesh (a link authored
+    // against geometry that later changed simply stops being traversable, rather than
+    // pointing at whatever polygon now occupies that index).
+    int startPolygon = -1;
+    int endPolygon = -1;
+};
+
 struct NavMesh {
     // Shared corner positions. `y` is carried through every query so agents follow
     // slopes; the queries themselves are 2D (XZ), see below.
@@ -48,8 +78,13 @@ struct NavMesh {
     // wearing an asset costume.
     std::vector<int> neighbors;
 
-    // Matches every pair of polygons sharing an undirected vertex pair. Must be
-    // called after any change to polygons/indices; loading paths call it for you.
+    // Off-mesh connections. Authored (by the bake's caller); their polygon indices are
+    // resolved by buildAdjacency.
+    std::vector<NavLink> links;
+
+    // Matches every pair of polygons sharing an undirected vertex pair, and resolves each
+    // link's endpoints to the polygons that contain them. Must be called after any change
+    // to polygons/indices/links; loading paths call it for you.
     void buildAdjacency();
 
     bool empty() const { return polygons.empty(); }

@@ -1621,7 +1621,7 @@ void Renderer::buildEditorUi() {
     ImGui::Text("Docking is enabled.");
     const int renderItems = drawList != nullptr ? static_cast<int>(drawList->items.size()) : 0;
     ImGui::Text("Scene items: %d", renderItems);
-    ImGui::Text("Draw calls: %d", renderItems * 2);
+    ImGui::Text("Draw calls: %d", activePass != nullptr ? activePass->getSubmittedDrawCalls() : 0);
     ImGui::End();
 
     drawPlayControls();

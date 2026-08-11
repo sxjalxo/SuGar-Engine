@@ -103,8 +103,12 @@ namespace NavPath {
 Result findCorridor(const NavMesh& mesh,
                     glm::vec3& start,
                     glm::vec3& goal,
-                    std::vector<int>& outCorridor) {
+                    std::vector<int>& outCorridor,
+                    std::vector<int>* outLinkSteps) {
     outCorridor.clear();
+    if (outLinkSteps != nullptr) {
+        outLinkSteps->clear();
+    }
 
     if (mesh.empty()) {
         return Result::EmptyNavMesh;
@@ -136,6 +140,9 @@ Result findCorridor(const NavMesh& mesh,
     const std::size_t polygonCount = mesh.polygons.size();
     std::vector<float> cost(polygonCount, kInfinity);
     std::vector<int> cameFrom(polygonCount, -1);
+    // Which link was crossed to reach this polygon, or -1 for an ordinary shared edge.
+    // Parallel to cameFrom, so unwinding the corridor unwinds the link usage with it.
+    std::vector<int> cameByLink(polygonCount, -1);
     std::vector<glm::vec3> entryPoint(polygonCount, glm::vec3(0.0f));
     std::vector<bool> closed(polygonCount, false);
 
@@ -186,8 +193,51 @@ Result findCorridor(const NavMesh& mesh,
 
             cost[static_cast<std::size_t>(neighbor)] = tentative;
             cameFrom[static_cast<std::size_t>(neighbor)] = node.polygon;
+            cameByLink[static_cast<std::size_t>(neighbor)] = -1;
             entryPoint[static_cast<std::size_t>(neighbor)] = crossing;
             open.push({ tentative + glm::distance(crossing, goal), neighbor });
+        }
+
+        // Off-mesh links leaving this polygon — one more kind of edge, expanded after the
+        // shared ones and in index order, so the frontier's total order is untouched and
+        // two runs still return the same corridor.
+        for (std::size_t linkIndex = 0; linkIndex < mesh.links.size(); ++linkIndex) {
+            const NavLink& link = mesh.links[linkIndex];
+            if (link.startPolygon < 0 || link.endPolygon < 0) {
+                continue; // an endpoint resolved to nothing: not traversable
+            }
+
+            int fromPolygon = -1;
+            glm::vec3 enter(0.0f);
+            glm::vec3 exit(0.0f);
+            if (link.startPolygon == node.polygon) {
+                fromPolygon = link.endPolygon;
+                enter = link.start;
+                exit = link.end;
+            } else if (link.bidirectional && link.endPolygon == node.polygon) {
+                fromPolygon = link.startPolygon;
+                enter = link.end;
+                exit = link.start;
+            } else {
+                continue;
+            }
+            if (fromPolygon == node.polygon || closed[static_cast<std::size_t>(fromPolygon)]) {
+                continue;
+            }
+
+            // Walk to the link's near endpoint, then pay the crossing: zero means charge
+            // the distance, a set cost means the game decided what climbing is worth.
+            const float crossingCost = link.cost > 0.0f ? link.cost : glm::distance(enter, exit);
+            const float tentative = cost[current] + glm::distance(entryPoint[current], enter) + crossingCost;
+            if (tentative >= cost[static_cast<std::size_t>(fromPolygon)]) {
+                continue;
+            }
+
+            cost[static_cast<std::size_t>(fromPolygon)] = tentative;
+            cameFrom[static_cast<std::size_t>(fromPolygon)] = node.polygon;
+            cameByLink[static_cast<std::size_t>(fromPolygon)] = static_cast<int>(linkIndex);
+            entryPoint[static_cast<std::size_t>(fromPolygon)] = exit;
+            open.push({ tentative + glm::distance(exit, goal), fromPolygon });
         }
     }
 
@@ -195,13 +245,18 @@ Result findCorridor(const NavMesh& mesh,
         return Result::Unreachable;
     }
 
+    std::vector<int> reversedLinks;
     for (int polygon = goalPolygon; polygon != -1; polygon = cameFrom[static_cast<std::size_t>(polygon)]) {
         outCorridor.push_back(polygon);
         if (polygon == startPolygon) {
             break;
         }
+        reversedLinks.push_back(cameByLink[static_cast<std::size_t>(polygon)]);
     }
     std::reverse(outCorridor.begin(), outCorridor.end());
+    if (outLinkSteps != nullptr) {
+        outLinkSteps->assign(reversedLinks.rbegin(), reversedLinks.rend());
+    }
     return Result::Success;
 }
 
@@ -307,6 +362,61 @@ void stringPull(const NavMesh& mesh,
     }
 }
 
+void stringPullWithLinks(const NavMesh& mesh,
+                         const std::vector<int>& corridor,
+                         const std::vector<int>& linkSteps,
+                         const glm::vec3& start,
+                         const glm::vec3& goal,
+                         std::vector<glm::vec3>& outWaypoints) {
+    outWaypoints.clear();
+
+    // No link in this corridor: the ordinary funnel is exactly right, and taking the
+    // split path would only risk differing on a case that has one obvious answer.
+    const bool usesLink = std::any_of(linkSteps.begin(), linkSteps.end(),
+                                      [](int step) { return step >= 0; });
+    if (!usesLink) {
+        stringPull(mesh, corridor, start, goal, outWaypoints);
+        return;
+    }
+
+    // Otherwise pull each edge-connected run on its own. The funnel is only valid across
+    // shared portals; a link is not one, so it terminates the run — and its two endpoints
+    // become waypoints, which is precisely "walk to the ledge, then cross".
+    glm::vec3 runStart = start;
+    std::size_t runBegin = 0;
+    std::vector<glm::vec3> runWaypoints;
+
+    for (std::size_t step = 0; step <= linkSteps.size(); ++step) {
+        const bool lastStep = step == linkSteps.size();
+        const int linkIndex = lastStep ? -1 : linkSteps[step];
+        if (!lastStep && linkIndex < 0) {
+            continue; // ordinary edge: the run continues
+        }
+
+        const std::vector<int> run(corridor.begin() + static_cast<std::ptrdiff_t>(runBegin),
+                                   corridor.begin() + static_cast<std::ptrdiff_t>(step) + 1);
+        if (lastStep) {
+            stringPull(mesh, run, runStart, goal, runWaypoints);
+            outWaypoints.insert(outWaypoints.end(), runWaypoints.begin(), runWaypoints.end());
+            return;
+        }
+
+        const NavLink& link = mesh.links[static_cast<std::size_t>(linkIndex)];
+        // Which end of the link this crossing enters by: the corridor tells us which
+        // polygon we are leaving, and a bidirectional link is traversed either way.
+        const bool forward = link.startPolygon == corridor[step];
+        const glm::vec3 enter = forward ? link.start : link.end;
+        const glm::vec3 exit = forward ? link.end : link.start;
+
+        stringPull(mesh, run, runStart, enter, runWaypoints);
+        outWaypoints.insert(outWaypoints.end(), runWaypoints.begin(), runWaypoints.end());
+        outWaypoints.push_back(exit);
+
+        runStart = exit;
+        runBegin = step + 1;
+    }
+}
+
 Result findPath(const NavMesh& mesh,
                 const glm::vec3& start,
                 const glm::vec3& goal,
@@ -316,13 +426,14 @@ Result findPath(const NavMesh& mesh,
     glm::vec3 snappedStart = start;
     glm::vec3 snappedGoal = goal;
     std::vector<int> corridor;
+    std::vector<int> linkSteps;
 
-    const Result result = findCorridor(mesh, snappedStart, snappedGoal, corridor);
+    const Result result = findCorridor(mesh, snappedStart, snappedGoal, corridor, &linkSteps);
     if (result != Result::Success) {
         return result;
     }
 
-    stringPull(mesh, corridor, snappedStart, snappedGoal, outWaypoints);
+    stringPullWithLinks(mesh, corridor, linkSteps, snappedStart, snappedGoal, outWaypoints);
     return Result::Success;
 }
 

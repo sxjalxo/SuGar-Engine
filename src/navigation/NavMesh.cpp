@@ -74,6 +74,17 @@ void NavMesh::buildAdjacency() {
             seen.erase(it);
         }
     }
+
+    // Off-mesh links: resolve each endpoint to the polygon under it. Snapped rather than
+    // required to be exactly inside, because a link endpoint is authored against the
+    // *world* (the lip of a ledge, the far side of a gap) and landing a hair off the mesh
+    // is normal — the same reason a destination is snapped before planning. An endpoint
+    // with no polygon anywhere near it leaves -1 and the link is simply not traversable.
+    for (NavLink& link : links) {
+        glm::vec3 projected(0.0f);
+        link.startPolygon = findNearestPolygon(link.start, projected);
+        link.endPolygon = findNearestPolygon(link.end, projected);
+    }
 }
 
 bool NavMesh::valid() const {

@@ -47,10 +47,16 @@ enum class Result {
 //
 // `outCorridor` is the polygon sequence from start to goal inclusive; it holds a
 // single polygon when both ends land in the same one.
+// `outLinkSteps`, when given, is parallel to the corridor *transitions*: entry i is the
+// index of the NavLink used to get from `outCorridor[i]` to `outCorridor[i + 1]`, or -1
+// when that step crossed an ordinary shared edge. Optional so every existing caller is
+// unchanged; string-pulling needs it because the funnel is only valid across shared
+// portals (see the off-mesh-link addendum in docs/DESIGN_NAVIGATION.md).
 Result findCorridor(const NavMesh& mesh,
                     glm::vec3& start,
                     glm::vec3& goal,
-                    std::vector<int>& outCorridor);
+                    std::vector<int>& outCorridor,
+                    std::vector<int>* outLinkSteps = nullptr);
 
 // The simple stupid funnel algorithm: string-pulls `corridor` into the shortest
 // path through its portals. `start` and `goal` must already be on the mesh (this is
@@ -65,6 +71,18 @@ void stringPull(const NavMesh& mesh,
                 const glm::vec3& start,
                 const glm::vec3& goal,
                 std::vector<glm::vec3>& outWaypoints);
+
+// String-pull a corridor that may cross off-mesh links. The funnel assumes every
+// transition is a shared portal, so a corridor that uses links is pulled in **runs**: each
+// contiguous stretch of edge-connected polygons is funnelled on its own, and the link's
+// two endpoints are emitted as waypoints between runs. `linkSteps` comes from
+// findCorridor's optional out-parameter; passing all -1 is identical to the overload above.
+void stringPullWithLinks(const NavMesh& mesh,
+                         const std::vector<int>& corridor,
+                         const std::vector<int>& linkSteps,
+                         const glm::vec3& start,
+                         const glm::vec3& goal,
+                         std::vector<glm::vec3>& outWaypoints);
 
 // findCorridor + stringPull. The ordinary entry point; the two halves stay public
 // for tests and for 18D.
