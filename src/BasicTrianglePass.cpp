@@ -1094,14 +1094,47 @@ void BasicTrianglePass::updateUniformBuffer() {
     glm::vec3 lightTarget = {0.0f, 0.0f, 0.0f};
 
     if (drawList != nullptr) {
-        ubo.lightCount = static_cast<int>(std::min<size_t>(drawList->lights.size(), MAX_LIGHTS));
-        for (int i = 0; i < ubo.lightCount; i++) {
-            ubo.lightPositions[i] = glm::vec4(drawList->lights[static_cast<size_t>(i)].position, 1.0f);
-            ubo.lightColors[i] = glm::vec4(drawList->lights[static_cast<size_t>(i)].color, 1.0f);
+        // Ambient is a light type, so it is summed out of the list rather than uploaded
+        // per-light: it has no position and contributes the same term everywhere.
+        glm::vec3 ambient(0.0f);
+        bool sawAmbient = false;
+        int uploaded = 0;
+        int shadowCaster = -1;
+        for (const Light& light : drawList->lights) {
+            if (light.type == LightType::Ambient) {
+                ambient += light.color * light.intensity;
+                sawAmbient = true;
+                continue;
+            }
+            if (uploaded >= MAX_LIGHTS) {
+                continue;
+            }
+            if (light.type == LightType::Directional) {
+                // w = 0: the shader reads xyz as the direction TOWARD the light, which is
+                // the opposite of the direction the light travels.
+                ubo.lightPositions[uploaded] = glm::vec4(-glm::normalize(light.direction), 0.0f);
+            } else {
+                // range 0 means "unlimited" (every pre-seam scene light): upload a range
+                // large enough that the falloff term stays 1 across any real scene.
+                const float range = light.range > 0.0f ? light.range : 1.0e9f;
+                ubo.lightPositions[uploaded] = glm::vec4(light.position, range);
+            }
+            ubo.lightColors[uploaded] = glm::vec4(light.color * light.intensity, 1.0f);
+            if (shadowCaster < 0 && light.castsShadow) {
+                shadowCaster = uploaded;
+            }
+            uploaded++;
         }
+        ubo.lightCount = uploaded;
+        // No ambient light in the scene keeps the pre-lighting-seam constant, so every
+        // existing scene renders exactly as it did.
+        ubo.ambient = glm::vec4(sawAmbient ? ambient : glm::vec3(0.12f), 1.0f);
 
-        if (!drawList->lights.empty()) {
-            lightPosition = drawList->lights.front().position;
+        // The shadow pass indexes light 0. Swap the chosen caster into that slot rather
+        // than teaching the shader a second index — one shadow map, one convention.
+        if (shadowCaster > 0) {
+            std::swap(ubo.lightPositions[0], ubo.lightPositions[shadowCaster]);
+            std::swap(ubo.lightColors[0], ubo.lightColors[shadowCaster]);
         }
 
         if (!drawList->items.empty()) {
@@ -1110,6 +1143,21 @@ void BasicTrianglePass::updateUniformBuffer() {
                 lightTarget += glm::vec3(item.model[3]);
             }
             lightTarget /= static_cast<float>(drawList->items.size());
+        }
+
+        // Where the shadow pass looks from. A directional light has no position, so one
+        // is synthesised behind the scene along its direction — which is what the
+        // fit-to-scene frustum below wants anyway (it re-derives the distance).
+        const Light* caster = nullptr;
+        for (const Light& light : drawList->lights) {
+            if (light.type == LightType::Ambient) continue;
+            if (caster == nullptr) caster = &light;
+            if (light.castsShadow) { caster = &light; break; }
+        }
+        if (caster != nullptr) {
+            lightPosition = caster->type == LightType::Directional
+                                ? lightTarget - glm::normalize(caster->direction) * 50.0f
+                                : caster->position;
         }
     }
 

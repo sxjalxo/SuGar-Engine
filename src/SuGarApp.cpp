@@ -5,6 +5,7 @@
 #include "animation/AnimationSystem.h"
 #include "navigation/NavigationSystem.h"
 #include "assets/AssetCooker.h"
+#include "assets/AssetDatabase.h"
 #include "assets/AssetManifest.h"
 #include "assets/AssetReimport.h"
 #include "assets/Packager.h"
@@ -247,6 +248,23 @@ void SuGarApp::run() {
         if (std::filesystem::exists(scenePath)) {
             spec.scenes.push_back(scenePath);
         }
+        // A game acquires assets by KEY at runtime (AssetGateway) — a voxel game's block
+        // atlas is referenced by no scene at all, because the chunks that use it do not
+        // exist until the world generates. The scene-reachability walk cannot see those,
+        // so packaging a game shipped a manifest with zero textures in it and the
+        // standalone had nothing to load. For an external game the content set is the
+        // game's own assets folder: everything it scanned ships. (Unreal's "additional
+        // asset directories to cook" and Unity's Resources folder answer the same
+        // question; the engine's demo package stays scene-reachability-only.)
+        if (gameEnv != nullptr) {
+            for (const AssetEntry& entry : database.getAssets()) {
+                if (entry.type == AssetType::Texture || entry.type == AssetType::Model ||
+                    entry.type == AssetType::Audio) {
+                    spec.extraAssetKeys.push_back(entry.key);
+                }
+            }
+        }
+
         // Phase 21: ship the runtime too, so the package is a runnable standalone rather
         // than assets alone. This is what Phase 20 deferred to the build pipeline.
         spec.binaries = Packager::collectRuntimeBinaries();
@@ -1051,9 +1069,9 @@ void SuGarApp::setupSystemSchedule() {
     systemSchedule.add(System{
         "Script",
         maskOf(ComponentType::Script, ComponentType::Transform, ComponentType::RigidBody,
-               ComponentType::Collider, ComponentType::AudioSource),
+               ComponentType::Collider, ComponentType::AudioSource, ComponentType::GameData),
         maskOf(ComponentType::Script, ComponentType::Transform, ComponentType::RigidBody,
-               ComponentType::AudioSource),
+               ComponentType::AudioSource, ComponentType::GameData),
         [this](float dt) {
             // Sorted-snapshot iteration + spawn/destroy safety live in Core's
             // ScriptSystem::run so they are headless-testable (see testScriptSystem).
@@ -1419,6 +1437,18 @@ void SuGarApp::processInput(float deltaTime) {
             onSceneReplaced();
         } else {
             std::cerr << "failed to load scene.json\n";
+        }
+    }
+
+    // First-person cursor capture. The game *requests* it through Core Input; the engine
+    // grants it only while actually playing, so stopping (F6) always hands the cursor
+    // back and a game can never trap the user in the editor.
+    {
+        const bool wantCapture = Input::cursorCaptured() && engineState == EngineState::Play;
+        if (wantCapture != cursorCaptureApplied) {
+            cursorCaptureApplied = wantCapture;
+            glfwSetInputMode(window, GLFW_CURSOR,
+                             wantCapture ? GLFW_CURSOR_DISABLED : GLFW_CURSOR_NORMAL);
         }
     }
 

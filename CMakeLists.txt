@@ -98,6 +98,7 @@ add_library(SuGarCore SHARED
     src/ecs/ComponentAccess.h
     src/ecs/ComponentStorage.h
     src/ecs/Components.h
+    src/ecs/GameData.h
     src/ecs/Registry.h
     src/ecs/SystemSchedule.h
     src/core/Input.cpp
@@ -169,6 +170,8 @@ add_library(SuGarCore SHARED
     src/assets/AssetManifest.cpp
     src/rendering/Material.h
     src/rendering/CameraComponent.h
+    src/rendering/LightComponent.h
+    src/scene/Light.h
 )
 
 target_include_directories(SuGarCore PUBLIC

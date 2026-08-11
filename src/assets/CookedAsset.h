@@ -37,13 +37,22 @@ enum class CookedKind : uint32_t {
 // "this file's bytes mean something different now", and bumping it without bumping the
 // cache counter would leave readable-but-wrong artifacts on disk -- so in practice they
 // move together, and readCooked() checks both.
-constexpr uint32_t FormatVersion = 1;
+constexpr uint32_t FormatVersion = 2; // 2: cooked textures carry their sampler filter
+
+// How a texture is sampled. Baked into the artifact rather than resolved at load time
+// because a packaged runtime has no source tree and therefore no .meta to consult --
+// every import decision has to survive into the cooked bytes (docs/DESIGN_PACKAGING.md).
+enum class TextureFilter : uint32_t {
+    Linear = 0,  // the default; smooth magnification
+    Nearest = 1, // pixel-art / texture atlases: crisp texels, no bleed between tiles
+};
 
 // A decoded image, the cooked form of any source PNG/JPG/TGA/...: tightly packed RGBA8,
 // which is exactly what Texture::createFromPixels wants.
 struct CookedTexture {
     uint32_t width = 0;
     uint32_t height = 0;
+    TextureFilter filter = TextureFilter::Linear;
     std::vector<uint8_t> pixels; // width * height * 4
 };
 

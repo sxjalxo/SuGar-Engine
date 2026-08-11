@@ -51,6 +51,35 @@ These are delegated to well-established libraries.
 
 # Rendering
 
+## Lighting
+
+### Responsibility
+
+Which lights reach a surface, and how a game controls them.
+
+### Scope
+
+Owns:
+
+- `LightComponent` on an entity — `Directional` (sun/moon), `Point` (torch, with a range),
+  `Ambient` (sky term). **Position and direction are derived from the entity's world
+  transform**, never authored on the component (Rule 21b; the `CameraComponent` precedent).
+- The scene-level `lights` array, unchanged and still supported; both forms reduce to one
+  render-list `Light`.
+- Per-frame selection of at most `MAX_LIGHTS` (8): the shadow-casting directional light
+  first, then the point lights nearest the camera. Derived, not state.
+- Range-limited falloff (`clamp(1 − d/range)²`); `range 0` means unlimited, which is what
+  every light authored before this seam expected.
+
+Not owned (not forced by any game yet):
+
+- More than one shadow caster, shadow cascades, per-light bias
+- Clustered / deferred lighting, light cookies, area lights, baked GI
+
+See `docs/DESIGN_LIGHTING.md`.
+
+---
+
 ## Vulkan
 
 ### Responsibility
@@ -222,6 +251,16 @@ value) — must live in ECS components (or be snapshot-serializable), so the UI 
 correct after time travel / hot reload / snapshot restore. RmlUi's derived state —
 computed layout, style cache — may be rebuilt and need not be serialized. RmlUi must
 never become a second, hidden home for authoritative gameplay state.
+
+The ECS→document channels are deliberately few, and each is a *projection*, not markup:
+
+- `UILabelComponent{element, text}` — what an element **says**.
+- `UIElementStateComponent{element, classes, style}` — how it currently **looks**: the
+  classes it carries and inline declarations for continuous values (a health bar's width).
+  The view syncs an element to exactly the requested set, removing what it applied before,
+  and never touches classes written in the document. Forced by M4 L3's hotbar / health bar
+  / inventory panel; the alternative was gameplay code generating RML strings, which drags
+  styling out of the RCSS and back into C++.
 
 ## FreeType
 
@@ -658,8 +697,17 @@ Owns:
 - Components
 - Hierarchy
 - Systems
+- **Game-defined per-entity state** (`GameDataComponent`): a string-keyed map of numbers
+  and strings the engine stores, serializes, snapshots and inspects but never *reads*.
+  Keys belong to the game. It exists because a game module links only Core and cannot add
+  a component type, while `Behavior`'s contract requires per-entity state to live in
+  components — see `docs/DESIGN_GAME_DATA.md`.
 
 Never replaced by an external ECS library.
+
+Not owned (deliberately): a reflection system or game-registered component *types*. The
+untyped map is the narrow build (Rule 8); nothing has yet needed types, only somewhere to
+put per-entity values.
 
 ---
 

@@ -65,6 +65,13 @@ struct AssetMeta {
 namespace AssetSettings {
 constexpr const char* ModelScale = "scale";   // float, default 1.0 -- scales vertex positions
 constexpr const char* TextureFlipY = "flipY"; // bool,  default false -- flips row order
+// "linear" (default) or "nearest". How the sampler magnifies/minifies this texture, and
+// an import setting rather than a material property for the reason Unity (Filter Mode)
+// and Unreal (Texture Filter) both place it there: it is a property of the image, not of
+// how one surface uses it, and every user of a pixel-art texture wants the same answer.
+// A blurred atlas is not only a look: linear filtering bleeds neighbouring atlas tiles
+// into each other, which no UV inset can fully hide.
+constexpr const char* TextureFilter = "filter";
 constexpr const char* AudioGain = "gain";     // float, default 1.0 -- scales samples
 } // namespace AssetSettings
 

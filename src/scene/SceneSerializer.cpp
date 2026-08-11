@@ -385,6 +385,32 @@ glm::vec3 parseVec3(const JsonValue& value, const std::string& name) {
     };
 }
 
+// One entry of the scene-level `lights` array. Position and colour are required (every
+// scene ever written has them); everything the lighting seam added is optional and falls
+// back to the pre-seam behaviour — a point light, full intensity, unlimited range.
+Light parseSceneLight(const JsonValue& value) {
+    const auto& data = requireObject(value, "light");
+    Light light{};
+    light.position = parseVec3(requireObjectField(data, "pos"), "light.pos");
+    light.color = parseVec3(requireObjectField(data, "color"), "light.color");
+    if (const JsonValue* field = findObjectField(data, "type")) {
+        light.type = lightTypeFromName(getStringValue(*field, "light.type"));
+    }
+    if (const JsonValue* field = findObjectField(data, "direction")) {
+        light.direction = parseVec3(*field, "light.direction");
+    }
+    if (const JsonValue* field = findObjectField(data, "intensity")) {
+        light.intensity = getFloatValue(*field, "light.intensity");
+    }
+    if (const JsonValue* field = findObjectField(data, "range")) {
+        light.range = getFloatValue(*field, "light.range");
+    }
+    if (const JsonValue* field = findObjectField(data, "castsShadow")) {
+        light.castsShadow = getBoolValue(*field, "light.castsShadow");
+    }
+    return light;
+}
+
 // Rotations are stored as a quaternion [x, y, z, w] (glTF order). Legacy scenes
 // wrote a 3-component Euler vector here; those still load and convert exactly.
 glm::quat parseRotation(const JsonValue& value, const std::string& name) {
@@ -957,6 +983,78 @@ void writeEntityObject(std::ostream& output, const Registry& registry, Entity en
         });
     }
 
+    // Optional: UI presentation state for one document element.
+    if (registry.uiElementStates.has(entity)) {
+        fields.push_back([&](std::ostream& out) {
+            const auto& state = registry.uiElementStates.get(entity);
+            writeIndent(out, 3);
+            out << "\"uielementstate\": {\n";
+            writeIndent(out, 4);
+            out << "\"element\": \"" << escapeJsonString(state.element) << "\",\n";
+            writeIndent(out, 4);
+            out << "\"classes\": \"" << escapeJsonString(state.classes) << "\",\n";
+            writeIndent(out, 4);
+            out << "\"style\": \"" << escapeJsonString(state.style) << "\"\n";
+            writeIndent(out, 3);
+            out << "}";
+        });
+    }
+
+    // Optional: a light on this entity (docs/DESIGN_LIGHTING.md). Position and direction
+    // are absent by design — both derive from the entity's transform every frame.
+    if (registry.lights.has(entity)) {
+        fields.push_back([&](std::ostream& out) {
+            const auto& light = registry.lights.get(entity);
+            writeIndent(out, 3);
+            out << "\"light\": {\n";
+            writeIndent(out, 4);
+            out << "\"type\": \"" << lightTypeName(light.type) << "\",\n";
+            writeIndent(out, 4);
+            out << "\"color\": ";
+            writeVec3(out, light.color);
+            out << ",\n";
+            writeIndent(out, 4);
+            out << "\"intensity\": " << light.intensity << ",\n";
+            writeIndent(out, 4);
+            out << "\"range\": " << light.range << ",\n";
+            writeIndent(out, 4);
+            out << "\"castsShadow\": " << (light.castsShadow ? "true" : "false") << ",\n";
+            writeIndent(out, 4);
+            out << "\"active\": " << (light.active ? "true" : "false") << "\n";
+            writeIndent(out, 3);
+            out << "}";
+        });
+    }
+
+    // Optional: game-defined per-entity state (docs/DESIGN_GAME_DATA.md). The engine
+    // writes the pairs and never interprets them — keys belong to the game. std::map
+    // ordering makes the output a function of the state, not of hash layout.
+    if (registry.gameData.has(entity) && !registry.gameData.get(entity).values.empty()) {
+        fields.push_back([&](std::ostream& out) {
+            const auto& values = registry.gameData.get(entity).values;
+            writeIndent(out, 3);
+            out << "\"gameData\": {\n";
+            size_t index = 0;
+            for (const auto& [key, value] : values) {
+                writeIndent(out, 4);
+                out << "\"" << escapeJsonString(key) << "\": ";
+                if (value.type == GameValue::Type::String) {
+                    out << "\"" << escapeJsonString(value.text) << "\"";
+                } else {
+                    // 15 significant digits, not the stream's default 6: game data holds
+                    // whole numbers a game chose (a seed, a count, an id), and 6 digits
+                    // would silently round 20260811 to 20260800 on the first save.
+                    const auto previous = out.precision(15);
+                    out << value.number;
+                    out.precision(previous);
+                }
+                out << (++index < values.size() ? ",\n" : "\n");
+            }
+            writeIndent(out, 3);
+            out << "}";
+        });
+    }
+
     // Closes the material object — the last mandatory field, so it takes a comma
     // only when an optional actually follows it.
     writeIndent(output, 3);
@@ -1039,6 +1137,35 @@ void writeSceneJson(std::ostream& output, const Registry& registry, const std::v
         writeIndent(output, 3);
         output << "\"color\": ";
         writeVec3(output, light.color);
+        // Type/intensity/range/shadow are written only when they differ from the
+        // pre-lighting-seam defaults, so every scene authored before lights grew fields
+        // round-trips to exactly the bytes it had.
+        if (light.type != LightType::Point) {
+            output << ",\n";
+            writeIndent(output, 3);
+            output << "\"type\": \"" << lightTypeName(light.type) << "\"";
+            if (light.type == LightType::Directional) {
+                output << ",\n";
+                writeIndent(output, 3);
+                output << "\"direction\": ";
+                writeVec3(output, light.direction);
+            }
+        }
+        if (light.intensity != 1.0f) {
+            output << ",\n";
+            writeIndent(output, 3);
+            output << "\"intensity\": " << light.intensity;
+        }
+        if (light.range != 0.0f) {
+            output << ",\n";
+            writeIndent(output, 3);
+            output << "\"range\": " << light.range;
+        }
+        if (light.castsShadow) {
+            output << ",\n";
+            writeIndent(output, 3);
+            output << "\"castsShadow\": true";
+        }
         output << "\n";
         writeIndent(output, 2);
         output << (i + 1 < lights.size() ? "},\n" : "}\n");
@@ -1092,6 +1219,12 @@ struct PendingEntityData {
     NavObstacleComponent navObstacle{};
     bool hasCamera = false;
     CameraComponent camera{};
+    bool hasGameData = false;
+    GameDataComponent gameData{};
+    bool hasLight = false;
+    LightComponent light{};
+    bool hasUIElementState = false;
+    UIElementStateComponent uiElementState{};
 };
 
 // Parses one object entry from the JSON. `sceneVersion` selects modern vs. the
@@ -1381,6 +1514,61 @@ PendingEntityData parseEntityObject(const JsonValue& objectValue, int sceneVersi
         pendingEntity.navObstacle.radius = getFloatValue(*obstacleValue, "object.navobstacle");
     }
 
+    if (const JsonValue* stateValue = findObjectField(objectData, "uielementstate")) {
+        const auto& stateData = requireObject(*stateValue, "object.uielementstate");
+        pendingEntity.hasUIElementState = true;
+        if (const JsonValue* v = findObjectField(stateData, "element")) {
+            pendingEntity.uiElementState.element = getStringValue(*v, "uielementstate.element");
+        }
+        if (const JsonValue* v = findObjectField(stateData, "classes")) {
+            pendingEntity.uiElementState.classes = getStringValue(*v, "uielementstate.classes");
+        }
+        if (const JsonValue* v = findObjectField(stateData, "style")) {
+            pendingEntity.uiElementState.style = getStringValue(*v, "uielementstate.style");
+        }
+    }
+
+    if (const JsonValue* lightValue = findObjectField(objectData, "light")) {
+        const auto& lightData = requireObject(*lightValue, "object.light");
+        pendingEntity.hasLight = true;
+        if (const JsonValue* v = findObjectField(lightData, "type")) {
+            pendingEntity.light.type = lightTypeFromName(getStringValue(*v, "light.type"));
+        }
+        if (const JsonValue* v = findObjectField(lightData, "color")) {
+            pendingEntity.light.color = parseVec3(*v, "light.color");
+        }
+        if (const JsonValue* v = findObjectField(lightData, "intensity")) {
+            pendingEntity.light.intensity = getFloatValue(*v, "light.intensity");
+        }
+        if (const JsonValue* v = findObjectField(lightData, "range")) {
+            pendingEntity.light.range = getFloatValue(*v, "light.range");
+        }
+        if (const JsonValue* v = findObjectField(lightData, "castsShadow")) {
+            pendingEntity.light.castsShadow = getBoolValue(*v, "light.castsShadow");
+        }
+        if (const JsonValue* v = findObjectField(lightData, "active")) {
+            pendingEntity.light.active = getBoolValue(*v, "light.active");
+        }
+    }
+
+    // Game data: whatever keys the game wrote. Values are numbers or strings; anything
+    // else in the block is rejected rather than coerced, because a game reading a key it
+    // wrote as a number and getting a silent 0 back is worse than a load error (Rule 1).
+    if (const JsonValue* dataValue = findObjectField(objectData, "gameData")) {
+        const auto& dataObject = requireObject(*dataValue, "object.gameData");
+        pendingEntity.hasGameData = true;
+        for (const auto& [key, value] : dataObject) {
+            if (value.type == JsonValue::Type::String) {
+                pendingEntity.gameData.setString(key, value.string);
+            } else if (value.type == JsonValue::Type::Number) {
+                pendingEntity.gameData.setNumber(key, value.number);
+            } else {
+                throw std::runtime_error("gameData value '" + key +
+                                         "' must be a number or a string.");
+            }
+        }
+    }
+
     if (const JsonValue* camValue = findObjectField(objectData, "camera")) {
         const auto& camData = requireObject(*camValue, "object.camera");
         pendingEntity.hasCamera = true;
@@ -1520,6 +1708,18 @@ std::vector<Entity> createEntitiesFromObjects(Registry& registry, const std::vec
 
         if (pendingEntity.hasCamera) {
             registry.cameras.add(entity, pendingEntity.camera);
+        }
+
+        if (pendingEntity.hasGameData) {
+            registry.gameData.add(entity, pendingEntity.gameData);
+        }
+
+        if (pendingEntity.hasLight) {
+            registry.lights.add(entity, pendingEntity.light);
+        }
+
+        if (pendingEntity.hasUIElementState) {
+            registry.uiElementStates.add(entity, pendingEntity.uiElementState);
         }
     }
 
@@ -1807,6 +2007,36 @@ void patchEntity(Registry& registry, Entity entity, const PendingEntityData& dat
     } else if (registry.cameras.has(entity)) {
         registry.cameras.remove(entity);
     }
+
+    if (data.hasGameData) {
+        if (registry.gameData.has(entity)) {
+            registry.gameData.get(entity) = data.gameData;
+        } else {
+            registry.gameData.add(entity, data.gameData);
+        }
+    } else if (registry.gameData.has(entity)) {
+        registry.gameData.remove(entity);
+    }
+
+    if (data.hasLight) {
+        if (registry.lights.has(entity)) {
+            registry.lights.get(entity) = data.light;
+        } else {
+            registry.lights.add(entity, data.light);
+        }
+    } else if (registry.lights.has(entity)) {
+        registry.lights.remove(entity);
+    }
+
+    if (data.hasUIElementState) {
+        if (registry.uiElementStates.has(entity)) {
+            registry.uiElementStates.get(entity) = data.uiElementState;
+        } else {
+            registry.uiElementStates.add(entity, data.uiElementState);
+        }
+    } else if (registry.uiElementStates.has(entity)) {
+        registry.uiElementStates.remove(entity);
+    }
 }
 
 // In-place restore (Phase 14A). Parses the snapshot, checks it matches the live
@@ -1854,11 +2084,7 @@ bool patchSceneFromText(Registry& registry, std::vector<Light>& lights, const st
         std::vector<Light> pendingLights;
         pendingLights.reserve(lightValues.size());
         for (const JsonValue& lightValue : lightValues) {
-            const auto& lightData = requireObject(lightValue, "light");
-            Light light{};
-            light.position = parseVec3(requireObjectField(lightData, "pos"), "light.pos");
-            light.color = parseVec3(requireObjectField(lightData, "color"), "light.color");
-            pendingLights.push_back(light);
+            pendingLights.push_back(parseSceneLight(lightValue));
         }
 
         for (size_t i = 0; i < liveEntities.size(); i++) {
@@ -1911,11 +2137,7 @@ bool loadSceneFromText(Registry& registry, std::vector<Light>& lights, const std
         std::vector<Light> pendingLights;
         pendingLights.reserve(lightValues.size());
         for (const JsonValue& lightValue : lightValues) {
-            const auto& lightData = requireObject(lightValue, "light");
-            Light light{};
-            light.position = parseVec3(requireObjectField(lightData, "pos"), "light.pos");
-            light.color = parseVec3(requireObjectField(lightData, "color"), "light.color");
-            pendingLights.push_back(light);
+            pendingLights.push_back(parseSceneLight(lightValue));
         }
 
         registry.reset();

@@ -11,9 +11,11 @@
 #include "ecs/ComponentStorage.h"
 #include "ecs/Components.h"
 #include "ecs/EntityManager.h"
+#include "ecs/GameData.h"
 #include "navigation/NavComponents.h"
 #include "physics/PhysicsComponents.h"
 #include "rendering/CameraComponent.h"
+#include "rendering/LightComponent.h"
 #include "ui/UIComponents.h"
 
 // Component type -> ComponentType bit, so ComponentStorage can report access
@@ -50,6 +52,9 @@ SUGAR_TRACK_COMPONENT(NavAgentComponent, NavAgent);
 SUGAR_TRACK_COMPONENT(NavMeshSourceComponent, NavMeshSource);
 SUGAR_TRACK_COMPONENT(NavObstacleComponent, NavObstacle);
 SUGAR_TRACK_COMPONENT(CameraComponent, Camera);
+SUGAR_TRACK_COMPONENT(GameDataComponent, GameData);
+SUGAR_TRACK_COMPONENT(LightComponent, Light);
+SUGAR_TRACK_COMPONENT(UIElementStateComponent, UIElementState);
 
 #undef SUGAR_TRACK_COMPONENT
 
@@ -102,6 +107,9 @@ public:
         navMeshSources.remove(entity);
         navObstacles.remove(entity);
         cameras.remove(entity);
+        gameData.remove(entity);
+        lights.remove(entity);
+        uiElementStates.remove(entity);
         entityManager.destroyEntity(entity);
     }
 
@@ -200,6 +208,9 @@ public:
         navMeshSources.clear();
         navObstacles.clear();
         cameras.clear();
+        gameData.clear();
+        lights.clear();
+        uiElementStates.clear();
         entityManager.reset();
     }
 
@@ -226,6 +237,13 @@ public:
     ComponentStorage<NavMeshSourceComponent> navMeshSources;
     ComponentStorage<NavObstacleComponent> navObstacles;
     ComponentStorage<CameraComponent> cameras;
+    // Game-defined per-entity state. The engine stores/serializes it and never reads a
+    // value — see docs/DESIGN_GAME_DATA.md.
+    ComponentStorage<GameDataComponent> gameData;
+    // Lights on entities; pose derived from the transform (docs/DESIGN_LIGHTING.md).
+    ComponentStorage<LightComponent> lights;
+    // Per-element UI presentation state (classes / inline style).
+    ComponentStorage<UIElementStateComponent> uiElementStates;
 
     // Injected by the Engine layer to release GPU/asset handles when an entity is
     // destroyed. Keeps the ECS (Core layer) free of any ResourceManager / Vulkan
@@ -276,6 +294,16 @@ private:
 
     EntityManager entityManager;
 };
+
+// Game data for `entity`, adding an empty component the first time. Gameplay code writes
+// a handful of keys on entities it spawned; making every call site write the
+// has()/add()/get() dance would guarantee someone forgets one and silently loses state.
+inline GameDataComponent& ensureGameData(Registry& registry, Entity entity) {
+    if (!registry.gameData.has(entity)) {
+        registry.gameData.add(entity, {});
+    }
+    return registry.gameData.get(entity);
+}
 
 inline glm::mat4 getWorldMatrix(Entity entity, const Registry& registry) {
     const auto& transform = registry.transforms.get(entity).transform;

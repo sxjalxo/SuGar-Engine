@@ -91,8 +91,16 @@ rewrite, and a binary snapshot backend are **all not forced**: the representatio
 Along the way a review-driven pass fixed **16 confirmed defects** (shadow-matrix NaN on a
 straight-down light, a `std::sort` UB on non-finite draw positions, non-finite scene floats, an
 entity id-gap OOM, audio voice-steal/out-of-bounds, cross-system determinism, a hot-reload
-use-after-free, `SaveData` size caps, …) and added a `SUGAR_FPSLOG` measurement overlay. The gate
-is **48/48**.
+use-after-free, `SaveData` size caps, …) and added a `SUGAR_FPSLOG` measurement overlay.
+
+Level 3 then became a **full game** — biome terrain, mobs on a navmesh, a day-night cycle with
+placed torch lights, block-break particles, a Minecraft-style HUD, persistent world edits and a
+packaged standalone at **471 FPS** — which forced five more seams, each designed before it was
+built: a **per-texture sampler filter** as an import setting, **`GameDataComponent`** (game-defined
+per-entity state — the ECS gap mobs made unworkable), **lights as components** (directional / point
+/ ambient, pose derived from the transform, range falloff, eight lights), **`UIElementStateComponent`**
+(a HUD needs classes and inline style, not only text), and **cursor capture** as a request the
+engine grants only in Play. The gate is **50/50**.
 
 > Positioning: *"A Vulkan engine designed for instant iteration and debuggable
 > systems — not just rendering power."* Open-source, dev-led, aimed at indie devs.
@@ -435,7 +443,7 @@ and exits nonzero if any fail, so it drops straight into CI:
 
 ```powershell
 $env:SUGAR_VALIDATE = "1"; build\Release\SuGarEngine.exe; $env:SUGAR_VALIDATE = ""
-# ... [validate] === 48/48 checks passed, 0 failure(s) ===
+# ... [validate] === 50/50 checks passed, 0 failure(s) ===
 ```
 
 Benchmarks are intentionally excluded — they're measurements, not pass/fail gates
@@ -611,7 +619,10 @@ Milestone summary:
   (`AssetGateway`), and the **runtime-mesh seam** (`createMesh` → derived `runtime://` meshes) —
   and a chunk-as-entity representation whose measurements (25 600 draws → 100, 1.2 → 445 FPS)
   proved GPU instancing, an ECS storage rewrite, and a binary snapshot backend are all *not*
-  forced. Gate **48/48**, Debug + Release.
+  forced. Its second arc — the full game (biomes, mobs + engine navigation, day-night lighting,
+  particles, HUD, persistence, packaging) — forced five more: a per-texture sampler filter,
+  `GameDataComponent`, lights as components, `UIElementStateComponent`, and cursor capture.
+  Gate **50/50**, Debug + Release.
 
 ---
 

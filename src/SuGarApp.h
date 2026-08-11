@@ -153,6 +153,9 @@ private:
     // Built lazily on first update; run() executes them in deterministic order.
     SystemScheduler systemSchedule;
     bool systemScheduleReady = false;
+    // Mirrors the GLFW cursor mode currently applied, so the input mode is only set when
+    // it actually changes rather than every frame.
+    bool cursorCaptureApplied = false;
 
     // Time-travel ring: snapshots behind an ISnapshotStorage (encoding-agnostic),
     // a scrub cursor (-1 = live), and bookmarks keyed by stable frame number.

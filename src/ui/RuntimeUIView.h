@@ -14,6 +14,7 @@
 #include <memory>
 
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 namespace Rml {
@@ -76,6 +77,8 @@ private:
     void syncTextFromEcs(const Registry* registry);
     // Pushes read-only UILabelComponent text into its bound element (score/HUD readouts).
     void syncLabelsFromEcs(const Registry* registry);
+    // Applies UIElementStateComponent: the classes and inline style an element carries.
+    void syncElementStatesFromEcs(const Registry* registry);
 
     std::unique_ptr<RmlVulkanRenderer> renderer;
     std::unique_ptr<IntentEmitter> openListener;
@@ -88,6 +91,12 @@ private:
     std::string lastFocus = "\xff";  // mirrors FocusComponent, applied to the document
     std::string lastText = "\xff";   // mirrors TextInputComponent.buffer
     std::string lastLabels = "\xff"; // mirrors UILabelComponent.text
+    std::string lastElementStates = "\xff"; // mirrors UIElementStateComponent
+    // What this view last applied per element, so a class or property the game stopped
+    // asking for is removed rather than sticking to the document forever. Derived
+    // bookkeeping, never state: rebuilt from the components every time they change.
+    std::unordered_map<std::string, std::vector<std::string>> appliedClasses;
+    std::unordered_map<std::string, std::vector<std::string>> appliedProperties;
     // Focusable element ids in document order (the tab ring). A view concern: the
     // *order* comes from the DOM, but the focused *value* lives in ECS.
     std::vector<std::string> focusables;

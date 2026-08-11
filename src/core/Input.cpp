@@ -11,6 +11,7 @@ glm::vec2 Input::lastMousePos = {0.0f, 0.0f};
 glm::vec2 Input::mouseDelta = {0.0f, 0.0f};
 MouseRay Input::mouseRay;
 bool Input::firstMouse = true;
+bool Input::cursorCaptureRequested = false;
 std::string Input::frameText;
 
 void Input::init() {
@@ -108,6 +109,14 @@ void Input::setMouseRay(const MouseRay& ray) {
 
 MouseRay Input::getMouseRay() {
     return mouseRay;
+}
+
+void Input::setCursorCaptured(bool captured) {
+    cursorCaptureRequested = captured;
+}
+
+bool Input::cursorCaptured() {
+    return cursorCaptureRequested;
 }
 
 bool Input::getMouseWorldOnPlane(const glm::vec3& planePoint,

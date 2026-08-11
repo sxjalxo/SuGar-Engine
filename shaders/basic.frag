@@ -1,6 +1,6 @@
 #version 450
 
-const int MAX_LIGHTS = 4;
+const int MAX_LIGHTS = 8;
 
 layout(binding = 1) uniform sampler2D texSampler;
 layout(binding = 2) uniform sampler2D shadowMap;
@@ -11,8 +11,12 @@ layout(binding = 0) uniform UniformBufferObject
     mat4 proj;
     mat4 lightSpaceMatrix;
     vec4 viewPos;
+    // xyz = position (point) or direction toward the light (directional, w == 0).
+    // w   = 0 for directional, otherwise the point light's range.
     vec4 lightPositions[MAX_LIGHTS];
+    // rgb = colour already multiplied by intensity.
     vec4 lightColors[MAX_LIGHTS];
+    vec4 ambient;
     int lightCount;
 } ubo;
 
@@ -75,13 +79,31 @@ void main() {
     float metallic = clamp(pushConstants.metallic, 0.0, 1.0);
     float roughness = clamp(pushConstants.roughness, 0.04, 1.0);
     float ao = clamp(pushConstants.ao, 0.0, 1.0);
-    vec3 ambient = 0.12 * ao * albedo;
+    vec3 ambient = ubo.ambient.rgb * ao * albedo;
     vec3 lighting = vec3(0.0);
     vec3 baseReflectivity = mix(vec3(0.04), albedo, metallic);
 
     int activeLightCount = min(ubo.lightCount, MAX_LIGHTS);
     for (int i = 0; i < activeLightCount; i++) {
-        vec3 lightDir = normalize(ubo.lightPositions[i].xyz - fragPos);
+        // w == 0 is a directional light: xyz already points toward it and it does not
+        // fall off. Otherwise xyz is a world position and w is the range it fades over —
+        // range-limited rather than inverse-square, so a torch's reach is what the
+        // author set (docs/DESIGN_LIGHTING.md).
+        bool directional = ubo.lightPositions[i].w == 0.0;
+        vec3 toLight = directional ? ubo.lightPositions[i].xyz
+                                   : ubo.lightPositions[i].xyz - fragPos;
+        float distance = directional ? 0.0 : length(toLight);
+        vec3 lightDir = directional ? normalize(toLight)
+                                    : toLight / max(distance, 0.0001);
+        float attenuation = 1.0;
+        if (!directional) {
+            float falloff = clamp(1.0 - distance / ubo.lightPositions[i].w, 0.0, 1.0);
+            attenuation = falloff * falloff;
+        }
+        if (attenuation <= 0.0) {
+            continue;
+        }
+
         vec3 halfVector = normalize(viewDir + lightDir);
         float diffuseStrength = max(dot(normal, lightDir), 0.0);
         float halfwayStrength = max(dot(normal, halfVector), 0.0);
@@ -91,7 +113,7 @@ void main() {
 
         vec3 diffuse = (1.0 - metallic) * albedo * diffuseStrength;
         vec3 specular = baseReflectivity * specularStrength * diffuseStrength;
-        lighting += (1.0 - shadow) * (diffuse + specular) * ubo.lightColors[i].rgb;
+        lighting += attenuation * (1.0 - shadow) * (diffuse + specular) * ubo.lightColors[i].rgb;
     }
 
     vec3 color = ambient + lighting;

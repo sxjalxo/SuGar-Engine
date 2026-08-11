@@ -182,9 +182,38 @@ speculation. Every forced change is recorded in the **M4 friction log** below.
 - Also driven: the review-driven fix pass (16 confirmed defects — shadow-NaN, DrawList sort UB,
   scene non-finite floats, entity id-gap OOM, audio voice-steal/OOB, determinism, hot-reload
   use-after-free, `SaveData` caps, …) and a `SUGAR_FPSLOG` measurement overlay.
+- **Second arc — the full game** (biomes, mobs, UI, lighting, particles, packaging), which is
+  what put M4's remaining target features under load. Forced **five** more seams, each designed
+  first: **#20** per-texture sampler filter as an import setting (the block atlas),
+  **#21 `GameDataComponent`** — the A3 gap, forced by mobs (`docs/DESIGN_GAME_DATA.md`),
+  **#22 lights as components** with Directional/Point/Ambient, derived pose, ≤8 selection and
+  range falloff (`docs/DESIGN_LIGHTING.md`), **#23 `UIElementStateComponent`** (a HUD needs
+  classes and inline style, not only text), **#24 cursor capture** as a request the engine
+  grants only in Play. Gate **48 → 50/50**, Debug + Release.
+  - **Navigation held up, with one instructive failure.** A first navmesh built from flat
+    per-column quads plus vertical "bridges" had 10 318 of 27 310 triangles rejected as too
+    steep — a navmesh welds by vertex, so every one-block step was a cliff. Rebuilt game-side as
+    a smoothed heightfield: 9 879 of 9 880 triangles accepted; at 128 wide, 13 767 polygons in
+    **73.5 ms** (Release). 24 agents all `following`; hostile mobs kill the player. **Off-mesh
+    links (step-up / jump) are the real gap** — recorded, unforced.
+  - **Particles need no engine system yet:** a 96-entity pool of cube meshes with velocity and
+    lifetime in game data does break bursts and torch embers at 443 FPS. The price is one draw
+    call per pooled particle — the argument for instancing, when a game needs thousands.
+  - **Packaging bug found only by shipping:** the package walk starts from scenes, and a game
+    that acquires assets *by key* at runtime (chunks are created after load) shipped **zero**
+    cooked assets. An external game now packages everything its asset folder scanned;
+    `verify: OK`, and the standalone runs the full game at **471 FPS**.
+  - **Serialization split two ways:** per-entity gameplay state in `GameDataComponent` (so it
+    snapshots), the world's *edits* in the game's own `SaveData` (terrain is `f(seed, dim)` and
+    is regenerated, so a save is hundreds of bytes rather than 750 KB). Verified across
+    restarts. Cost: the snapshot policy now pauses time travel in this scene (13.3 ms > 4 ms) —
+    a JSON snapshot per fixed step does not survive a particle pool.
 - Write-up: `E:\Sugar Engine - Games\Level 3\Report.md`.
-- Remaining (measurement-gated, not built): greedy face-merge, per-block colour, voxel-edit
-  persistence (a game-data component — A3-adjacent), cursor capture for continuous mouse-look.
+- Open, reproduced, not fixed: **HUD anchored to the bottom is clipped under Windows display
+  scaling** (at 1.25× the crosshair lands at 63 %/68 % instead of 50 %/50 % — the runtime-UI
+  context and the drawn image disagree about the extent); no navigation off-mesh links; no
+  instanced particle path; snapshot cost at particle-pool scale. Also still open from the first
+  arc: greedy face-merge, per-block colour beyond the atlas.
 
 ---
 
@@ -497,6 +526,59 @@ load, so the first chunk's material threw `texture descriptor set was not create
 `Renderer::drawFrame` now detects a draw-list texture with no descriptor and rebuilds the sets
 (device-idle-safe), so any runtime-spawned renderable works without the game or app knowing.
 *Verdict:* fixed. *Ref:* `Renderer::drawFrame`, `collectDrawListTextures`.
+
+**Minecraft (L3) — #20 an atlas cannot be sampled crisply (no per-texture filter).** *Forced:*
+block textures live in one atlas so a chunk stays one draw; the global `VK_FILTER_LINEAR` sampler
+both blurred the pixel art and **bled neighbouring atlas tiles into each other**, which no UV inset
+fully hides. *Change:* `filter: nearest|linear` as an **import setting** (`AssetSettings::
+TextureFilter`), baked into the cooked artifact (`CookedTexture::filter`, format version 1→2,
+`AssetHash::CookerVersion` 1→2) because a packaged runtime has no `.meta` to read; `Texture::
+createFromPixels` takes `pointFilter`. Same placement Unity (Filter Mode) and Unreal (Texture
+Filter) use — a property of the image, not of one material. *Verdict:* fixed, +test case in
+`AssetImport`. *Ref:* `AssetCooker::cookTexture`, `CookedAsset`, `ResourceManager::loadTexture`.
+
+**Minecraft (L3) — #21 a game cannot define a component (the A3 gap) → `GameDataComponent`.**
+*Forced:* mobs. One `Behavior` instance ticks every entity that names it, so a per-mob health /
+cooldown / kind has nowhere to live; the player's velocity and hotbar slot had already been
+smuggled into module globals, which do not survive snapshot restore. *Change:* designed first in
+**`docs/DESIGN_GAME_DATA.md`**, then one engine-owned component whose *contents* the game owns —
+`GameDataComponent{ map<string, number|string> }`, serialized as a plain JSON object, snapshotted
+free (a snapshot *is* the serializer), shown and edited in the Inspector. The engine never reads a
+value. Reflection / game-registered types stay unbuilt (Rule 8: nothing needed *types*, it needed a
+place to put six floats). *Verdict:* fixed; the whole L3 game now keeps its state there. Gate
+49/49 (+`GameData`). *Ref:* `src/ecs/GameData.h`, `ensureGameData`, `SceneSerializer`.
+
+**Minecraft (L3) — #22 lights were unreachable, positional-only, and capped at 4 → lights as
+components.** *Forced:* a day-night cycle and placed torches. Lights were a scene-level
+`std::vector<Light>` in the engine layer (a Core-only behaviour cannot touch it), every light was a
+point light with **no falloff**, ambient was a `0.12` constant compiled into the shader, and
+`MAX_LIGHTS` was 4. *Change:* designed first in **`docs/DESIGN_LIGHTING.md`** — Core
+`LightComponent{type,color,intensity,range,castsShadow,active}` with **position and direction
+derived from the entity's world transform** (the CameraComponent precedent, Rule 21b);
+`LightType{Directional,Point,Ambient}`; the draw list gathers scene lights + light entities and
+selects ≤ `MAX_LIGHTS` (shadow-casting directional first, then points nearest the camera);
+`MAX_LIGHTS` 4→8; the shader gained the `w == 0` directional convention, `clamp(1-d/range)²`
+falloff and a UBO ambient term; the shadow pass synthesises a caster position for a directional
+light. Range 0 means unlimited, so every pre-seam scene lights exactly as before (the golden
+serializer test still passes byte-for-byte). *Verdict:* fixed; the game now runs a sun, a moon, a
+sky term and per-torch point lights from a behaviour. Gate 50/50 (+`Lighting`). *Ref:*
+`rendering/LightComponent.h`, `scene/Light.h`, `DrawList.cpp`, `BasicTrianglePass.cpp`,
+`shaders/basic.frag`.
+
+**Minecraft (L3) — #23 a HUD can only set text → `UIElementStateComponent`.** *Forced:* a hotbar's
+selected slot, a health bar's fill and an inventory panel's visibility. `UILabelComponent` writes
+inner text and nothing else, so the alternatives were generating RML markup from gameplay code
+(styling leaks out of the RCSS) or a bespoke engine widget per HUD. *Change:* a second UI
+component — `{element, classes, style}` — the view syncs the element to exactly those classes and
+inline declarations, removing ones it applied before and no longer sees (classes written in the
+document itself are untouched). Same split as HTML's `class`/`style`. *Verdict:* fixed; the L3 HUD
+is pure RCSS plus state. *Ref:* `ui/UIComponents.h`, `RuntimeUIView::syncElementStatesFromEcs`.
+
+**Minecraft (L3) — #24 first-person look ran out of screen (no cursor capture).** *Forced:* mouse
+look stops at the desktop edge without a captured cursor. *Change:* Core `Input::setCursorCaptured`
+— the game *requests*, the engine grants it only while in Play and always releases on Stop, so a
+game cannot trap the cursor in the editor; GLFW is applied engine-side (Rule 15). *Verdict:* fixed.
+*Ref:* `core/Input`, `SuGarApp::mainLoop`.
 
 **Minecraft (L3) — measurement tooling.** *Forced (soft):* the per-block vs chunk decision needed
 numbers, and the windowed app has no capturable FPS. *Change:* opt-in `SUGAR_FPSLOG=1` prints

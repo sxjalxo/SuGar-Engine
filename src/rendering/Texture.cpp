@@ -308,7 +308,8 @@ void Texture::createFromPixels(
     VkQueue graphicsQueue,
     const std::vector<uint8_t>& pixels,
     uint32_t textureWidth,
-    uint32_t textureHeight
+    uint32_t textureHeight,
+    bool pointFilter
 ) {
     if (pixels.empty() || textureWidth == 0 || textureHeight == 0) {
         throw std::runtime_error("texture upload requires non-empty pixel data!");
@@ -386,8 +387,9 @@ void Texture::createFromPixels(
 
         VkSamplerCreateInfo samplerInfo{};
         samplerInfo.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
-        samplerInfo.magFilter = VK_FILTER_LINEAR;
-        samplerInfo.minFilter = VK_FILTER_LINEAR;
+        const VkFilter filter = pointFilter ? VK_FILTER_NEAREST : VK_FILTER_LINEAR;
+        samplerInfo.magFilter = filter;
+        samplerInfo.minFilter = filter;
         samplerInfo.addressModeU = VK_SAMPLER_ADDRESS_MODE_REPEAT;
         samplerInfo.addressModeV = VK_SAMPLER_ADDRESS_MODE_REPEAT;
         samplerInfo.addressModeW = VK_SAMPLER_ADDRESS_MODE_REPEAT;

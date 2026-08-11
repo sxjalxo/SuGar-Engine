@@ -51,6 +51,15 @@ public:
                                      const glm::vec3& planeNormal,
                                      glm::vec3& outPoint);
 
+    // First-person mouse look: the game *asks* for the cursor to be captured (hidden and
+    // unbounded, so looking never runs out of screen); the engine decides whether to
+    // honour it and applies the platform call. A request, not a command — the editor
+    // refuses while not in Play, and always releases on Stop, so a game cannot trap the
+    // cursor. Core only stores the flag (Rule 15: no GLFW here), the same
+    // Core-stores/Engine-applies split as the mouse ray and SaveData.
+    static void setCursorCaptured(bool captured);
+    static bool cursorCaptured();
+
     // Text typed this frame (UTF-8), from the character callback. Cleared each
     // beginFrame, so it is strictly "what was typed since the last frame".
     static void pushText(const std::string& utf8);
@@ -65,5 +74,6 @@ private:
     static glm::vec2 mouseDelta;
     static MouseRay mouseRay;
     static bool firstMouse;
+    static bool cursorCaptureRequested;
     static std::string frameText;
 };

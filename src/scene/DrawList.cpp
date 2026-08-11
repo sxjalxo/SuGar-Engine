@@ -4,6 +4,7 @@
 #include "animation/Skinning.h"
 #include "assets/ResourceManager.h"
 #include "ecs/Registry.h"
+#include "rendering/UniformBufferObject.h"
 #include <algorithm>
 #include <cmath>
 #include <limits>
@@ -97,5 +98,57 @@ void buildDrawListFromECS(const Registry& registry, const std::vector<Light>& li
         }
     );
 
+    // Lights: the scene-level array (authored in the scene file, the editor's default
+    // lighting) plus every active LightComponent entity, whose position and direction are
+    // DERIVED from its world transform — never stored twice (docs/DESIGN_LIGHTING.md).
     out.lights = lights;
+    for (Entity entity : orderedEntities) {
+        if (!registry.lights.has(entity)) {
+            continue;
+        }
+        const LightComponent& source = registry.lights.get(entity);
+        if (!source.active || source.intensity <= 0.0f) {
+            continue;
+        }
+        const glm::mat4 world = getWorldMatrix(entity, registry);
+        Light light;
+        light.type = source.type;
+        light.color = source.color;
+        light.intensity = source.intensity;
+        light.range = source.range;
+        light.castsShadow = source.castsShadow;
+        light.position = glm::vec3(world[3]);
+        light.direction = glm::normalize(glm::vec3(world * glm::vec4(0.0f, 0.0f, -1.0f, 0.0f)));
+        if (!std::isfinite(light.direction.x) || !std::isfinite(light.direction.y) ||
+            !std::isfinite(light.direction.z)) {
+            light.direction = glm::vec3(0.0f, -1.0f, 0.0f); // degenerate scale: point down
+        }
+        out.lights.push_back(light);
+    }
+
+    // Selection. A forward single-pass shader costs every light on every fragment, so the
+    // renderer takes at most MAX_LIGHTS of them: the shadow-casting directional light
+    // first (the shadow pass indexes light 0), then the rest by *influence at the camera* —
+    // ambient and directional lights reach everywhere, points fall off with distance.
+    // Derived per frame from the camera and the light set, so it is not state (Rule 21b).
+    if (out.lights.size() > static_cast<size_t>(MAX_LIGHTS)) {
+        std::stable_sort(out.lights.begin(), out.lights.end(),
+                         [&](const Light& a, const Light& b) {
+                             const auto rank = [&](const Light& light) {
+                                 if (light.type == LightType::Directional && light.castsShadow) return 0;
+                                 if (light.type != LightType::Point) return 1;
+                                 return 2;
+                             };
+                             const int ra = rank(a), rb = rank(b);
+                             if (ra != rb) {
+                                 return ra < rb;
+                             }
+                             if (ra != 2) {
+                                 return false; // keep declaration order among non-points
+                             }
+                             return glm::distance(a.position, cameraPosition) <
+                                    glm::distance(b.position, cameraPosition);
+                         });
+        out.lights.resize(static_cast<size_t>(MAX_LIGHTS));
+    }
 }

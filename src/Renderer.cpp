@@ -2864,6 +2864,61 @@ void Renderer::drawInspectorPanel() {
         }
     }
 
+    // M4 L3 — a light on this entity (docs/DESIGN_LIGHTING.md). No position/direction
+    // fields: both come from the transform above, which is the whole point of the seam.
+    if (registry->lights.has(selectedEntity)) {
+        ImGui::Separator();
+        ImGui::TextUnformatted("Light");
+        auto& light = registry->lights.get(selectedEntity);
+        int typeIndex = static_cast<int>(light.type);
+        const char* typeNames[] = {"Directional", "Point", "Ambient"};
+        if (ImGui::Combo("Type##light", &typeIndex, typeNames, IM_ARRAYSIZE(typeNames))) {
+            light.type = static_cast<LightType>(typeIndex);
+        }
+        ImGui::ColorEdit3("Color##light", &light.color.x);
+        ImGui::DragFloat("Intensity##light", &light.intensity, 0.05f, 0.0f, 50.0f);
+        if (light.type == LightType::Point) {
+            ImGui::DragFloat("Range##light", &light.range, 0.25f, 0.0f, 500.0f);
+            ImGui::TextDisabled("Range 0 = unlimited.");
+        }
+        ImGui::Checkbox("Casts Shadow##light", &light.castsShadow);
+        ImGui::SameLine();
+        ImGui::Checkbox("Active##light", &light.active);
+        if (light.type != LightType::Ambient) {
+            ImGui::TextDisabled(light.type == LightType::Directional
+                                    ? "Direction = entity rotation * -Z."
+                                    : "Position = entity world transform.");
+        }
+    }
+
+    // M4 L3 — game-defined per-entity state (docs/DESIGN_GAME_DATA.md). The editor is a
+    // *viewer* of the game's keys: it never invents one, and it shows exactly what the
+    // running game put there — which is what makes "why is this mob not moving?" a
+    // question you answer by looking rather than by adding a log line.
+    if (registry->gameData.has(selectedEntity)) {
+        ImGui::Separator();
+        ImGui::TextUnformatted("Game Data");
+        auto& data = registry->gameData.get(selectedEntity);
+        if (data.values.empty()) {
+            ImGui::TextDisabled("(no keys)");
+        }
+        for (auto& [key, value] : data.values) {
+            const std::string label = key + "##gamedata";
+            if (value.type == GameValue::Type::Number) {
+                float shown = static_cast<float>(value.number);
+                if (ImGui::DragFloat(label.c_str(), &shown, 0.1f)) {
+                    value.number = static_cast<double>(shown);
+                }
+            } else {
+                char buffer[256];
+                std::snprintf(buffer, sizeof(buffer), "%s", value.text.c_str());
+                if (ImGui::InputText(label.c_str(), buffer, sizeof(buffer))) {
+                    value.text = buffer;
+                }
+            }
+        }
+    }
+
     // Phase 18D — a transient obstacle agents steer around without replanning.
     if (registry->navObstacles.has(selectedEntity)) {
         ImGui::Separator();

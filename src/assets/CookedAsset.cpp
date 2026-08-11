@@ -260,6 +260,7 @@ bool CookedAsset::writeTexture(
     payload.reserve(texture.pixels.size() + 8);
     putU32(payload, texture.width);
     putU32(payload, texture.height);
+    putU32(payload, static_cast<uint32_t>(texture.filter));
     payload.insert(payload.end(), texture.pixels.begin(), texture.pixels.end());
 
     return writeFile(path, CookedKind::Texture, payload, errorMessage);
@@ -274,6 +275,11 @@ bool CookedAsset::readTexture(const std::string& path, CookedTexture& out, std::
     Reader reader{ payload, 0 };
     out.width = reader.u32();
     out.height = reader.u32();
+    const uint32_t filter = reader.u32();
+    // An unknown filter value reads as Linear rather than failing the load: the field is
+    // a rendering hint, and a newer cooker's extra mode should degrade, not brick a scene.
+    out.filter = filter == static_cast<uint32_t>(TextureFilter::Nearest) ? TextureFilter::Nearest
+                                                                        : TextureFilter::Linear;
     // Overflow-safe: width*height*4 as size_t can wrap on a hostile header and let a tiny
     // payload masquerade as a huge texture, then overread at GPU upload. Compute in u64.
     const uint64_t pixelCount = static_cast<uint64_t>(out.width) * static_cast<uint64_t>(out.height);

@@ -43,6 +43,9 @@ enum class ComponentType : uint32_t {
     NavMeshSource,
     NavObstacle,
     Camera,
+    GameData,
+    Light,
+    UIElementState,
     Count
 };
 

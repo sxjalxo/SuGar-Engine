@@ -36,6 +36,7 @@ bool loadCookedTexture(
     std::vector<uint8_t>& pixels,
     uint32_t& width,
     uint32_t& height,
+    bool& pointFilter,
     std::string& errorMessage
 ) {
     const std::string cooked = AssetCooker::ensureCooked(key, errorMessage);
@@ -51,6 +52,7 @@ bool loadCookedTexture(
     pixels = std::move(texture.pixels);
     width = texture.width;
     height = texture.height;
+    pointFilter = texture.filter == CookedAsset::TextureFilter::Nearest;
     return true;
 }
 
@@ -161,9 +163,10 @@ AssetHandle ResourceManager::loadTexture(const std::string& path) {
         std::vector<uint8_t> pixels;
         uint32_t width = 0;
         uint32_t height = 0;
+        bool pointFilter = false;
         std::string errorMessage;
 
-        if (!loadCookedTexture(cacheKey, pixels, width, height, errorMessage)) {
+        if (!loadCookedTexture(cacheKey, pixels, width, height, pointFilter, errorMessage)) {
             throw std::runtime_error(errorMessage);
         }
 
@@ -174,7 +177,8 @@ AssetHandle ResourceManager::loadTexture(const std::string& path) {
             graphicsQueue,
             pixels,
             width,
-            height
+            height,
+            pointFilter
         );
     }
 
@@ -322,15 +326,17 @@ bool ResourceManager::reloadAsset(const std::string& path) {
             std::vector<uint8_t> pixels;
             uint32_t width = 0;
             uint32_t height = 0;
+            bool pointFilter = false;
             std::string errorMessage;
 
             retryTransientLoad([&]() {
                 pixels.clear();
                 width = 0;
                 height = 0;
+                pointFilter = false;
                 errorMessage.clear();
 
-                if (!loadCookedTexture(cacheKey, pixels, width, height, errorMessage)) {
+                if (!loadCookedTexture(cacheKey, pixels, width, height, pointFilter, errorMessage)) {
                     throw std::runtime_error(errorMessage);
                 }
             });
@@ -342,7 +348,8 @@ bool ResourceManager::reloadAsset(const std::string& path) {
                 graphicsQueue,
                 pixels,
                 width,
-                height
+                height,
+                pointFilter
             );
         }
 

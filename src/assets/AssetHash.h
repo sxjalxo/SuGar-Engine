@@ -18,7 +18,7 @@ namespace AssetHash {
 // Bump on ANY change to a cooked format, to what is hashed, or to how it is hashed.
 // A single integer folded into every cook key is what makes "delete the cache" never a
 // step a developer has to know about.
-constexpr uint32_t CookerVersion = 1;
+constexpr uint32_t CookerVersion = 2; // 2: cooked textures carry their sampler filter
 
 uint64_t hashBytes(const void* data, size_t size);
 uint64_t hashString(const std::string& value);

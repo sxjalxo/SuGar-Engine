@@ -204,6 +204,12 @@ bool cookTexture(
     const size_t pixelBytes = static_cast<size_t>(width) * static_cast<size_t>(height) * 4;
     out.width = static_cast<uint32_t>(width);
     out.height = static_cast<uint32_t>(height);
+    // Sampling is decided here, at import, and travels in the artifact — a packaged
+    // runtime has no .meta to read (docs/DESIGN_PACKAGING.md). Unknown spellings fall
+    // back to linear: a hand-edited .meta typo must not stop the asset from cooking.
+    out.filter = meta.get(AssetSettings::TextureFilter) == "nearest"
+                     ? CookedAsset::TextureFilter::Nearest
+                     : CookedAsset::TextureFilter::Linear;
     out.pixels.resize(pixelBytes);
     std::memcpy(out.pixels.data(), data, pixelBytes);
     stbi_image_free(data);

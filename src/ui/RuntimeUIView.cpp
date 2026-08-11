@@ -5,6 +5,9 @@
 
 #include "ecs/Registry.h"
 
+#include <algorithm>
+#include <cctype>
+
 #include <RmlUi/Core/EventListener.h>
 
 // Bridges an RmlUi callback to the intent queue. This is the *only* thing a UI
@@ -348,6 +351,102 @@ void RuntimeUIView::syncLabelsFromEcs(const Registry* registry) {
     }
 }
 
+namespace {
+
+// "a  b   c" -> {"a","b","c"}; also used for style declarations split on ';'.
+std::vector<std::string> splitTokens(const std::string& text, char separator) {
+    std::vector<std::string> tokens;
+    std::string current;
+    for (const char character : text) {
+        if (character == separator || (separator == ' ' && std::isspace(static_cast<unsigned char>(character)))) {
+            if (!current.empty()) {
+                tokens.push_back(current);
+                current.clear();
+            }
+            continue;
+        }
+        current += character;
+    }
+    if (!current.empty()) {
+        tokens.push_back(current);
+    }
+    return tokens;
+}
+
+std::string trimmed(const std::string& text) {
+    size_t begin = 0;
+    size_t end = text.size();
+    while (begin < end && std::isspace(static_cast<unsigned char>(text[begin]))) begin++;
+    while (end > begin && std::isspace(static_cast<unsigned char>(text[end - 1]))) end--;
+    return text.substr(begin, end - begin);
+}
+
+} // namespace
+
+void RuntimeUIView::syncElementStatesFromEcs(const Registry* registry) {
+    if (registry == nullptr || document == nullptr) {
+        return;
+    }
+
+    // Same change-detection shape as the labels: RmlUi re-lays-out on every set, so the
+    // document is only touched when the model actually moved.
+    std::string signature;
+    for (const auto& [entity, state] : registry->uiElementStates.getAll()) {
+        (void)entity;
+        signature += state.element + "\x01" + state.classes + "\x01" + state.style + "\x02";
+    }
+    if (signature == lastElementStates) {
+        return;
+    }
+    lastElementStates = signature;
+
+    for (const auto& [entity, state] : registry->uiElementStates.getAll()) {
+        (void)entity;
+        Rml::Element* element = document->GetElementById(state.element);
+        if (element == nullptr) {
+            continue;
+        }
+
+        // Classes: apply the requested set, then drop the ones this view applied before
+        // and no longer sees. Only *our* classes are touched, so classes written in the
+        // .rml document itself survive.
+        const std::vector<std::string> wanted = splitTokens(state.classes, ' ');
+        std::vector<std::string>& previous = appliedClasses[state.element];
+        for (const std::string& className : previous) {
+            if (std::find(wanted.begin(), wanted.end(), className) == wanted.end()) {
+                element->SetClass(className, false);
+            }
+        }
+        for (const std::string& className : wanted) {
+            element->SetClass(className, true);
+        }
+        previous = wanted;
+
+        // Inline style, same removal rule: "width: 60%; color: #fff".
+        std::vector<std::string> properties;
+        for (const std::string& declaration : splitTokens(state.style, ';')) {
+            const size_t colon = declaration.find(':');
+            if (colon == std::string::npos) {
+                continue;
+            }
+            const std::string name = trimmed(declaration.substr(0, colon));
+            const std::string value = trimmed(declaration.substr(colon + 1));
+            if (name.empty() || value.empty()) {
+                continue;
+            }
+            element->SetProperty(name, value);
+            properties.push_back(name);
+        }
+        std::vector<std::string>& previousProperties = appliedProperties[state.element];
+        for (const std::string& name : previousProperties) {
+            if (std::find(properties.begin(), properties.end(), name) == properties.end()) {
+                element->RemoveProperty(name);
+            }
+        }
+        previousProperties = properties;
+    }
+}
+
 void RuntimeUIView::render(VkCommandBuffer cmd, VkExtent2D extent, VkFramebuffer framebuffer,
                            VkRenderPass layerPass, VkImage sceneImage, const Registry* registry) {
     if (!renderer || !renderer->isReady()) {
@@ -361,6 +460,7 @@ void RuntimeUIView::render(VkCommandBuffer cmd, VkExtent2D extent, VkFramebuffer
         syncFromEcs(registry); // ECS is the model; the document is a projection of it
         syncTextFromEcs(registry);
         syncLabelsFromEcs(registry);
+        syncElementStatesFromEcs(registry);
         context->SetDimensions(Rml::Vector2i(static_cast<int>(extent.width), static_cast<int>(extent.height)));
         context->Update();
         context->Render();

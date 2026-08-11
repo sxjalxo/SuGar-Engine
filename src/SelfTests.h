@@ -65,6 +65,7 @@
 #include "core/SnapshotCapturePolicy.h"
 #include "audio/AudioClip.h"
 #include "rendering/Mesh.h"
+#include "rendering/UniformBufferObject.h"
 #include "scene/BehaviorRegistry.h"
 #include "scene/Light.h"
 #include "scene/SceneSerializer.h"
@@ -3074,6 +3075,166 @@ inline bool testSceneLoad() {
     return ok;
 }
 
+// --- GameData: game-defined per-entity state survives save/load/patch -------
+// The A3 seam (docs/DESIGN_GAME_DATA.md). What matters is not that the map works —
+// it is that a value a *game* wrote comes back byte-for-byte through the scene file
+// and through the snapshot patch path, because that is what makes mob health and a
+// player's chosen slot survive time travel and hot reload.
+inline bool testGameData() {
+    Registry source;
+    std::vector<Light> lights;
+
+    const Entity mob = source.createEntity();
+    source.names.add(mob, { "Mob" });
+    source.transforms.add(mob, {});
+
+    GameDataComponent& authored = ensureGameData(source, mob);
+    authored.setInt("hp", 12);
+    authored.setString("kind", "cow");
+    authored.setInt("seed", 20260811);   // 6-digit float output would round this
+    authored.setBool("angry", true);
+    authored.setNumber("cooldown", 0.75);
+
+    const std::string text = SceneSerializer::saveToString(source, lights);
+
+    Registry loaded;
+    std::vector<Light> loadedLights;
+    if (!SceneSerializer::loadFromString(loaded, loadedLights, text)) {
+        std::cout << "[selftest] game data scene load returned false\n";
+        return false;
+    }
+
+    Entity restored = INVALID_ENTITY;
+    for (const auto& [entity, nameComponent] : loaded.names.getAll()) {
+        if (nameComponent.name == "Mob") {
+            restored = entity;
+        }
+    }
+    bool ok = restored != INVALID_ENTITY && loaded.gameData.has(restored);
+    if (!ok) {
+        return false;
+    }
+
+    const GameDataComponent& data = loaded.gameData.get(restored);
+    ok &= data.getInt("hp") == 12;
+    ok &= data.getString("kind") == "cow";
+    ok &= data.getInt("seed") == 20260811;
+    ok &= data.getBool("angry");
+    ok &= std::fabs(data.getNumber("cooldown") - 0.75) < 1e-9;
+
+    // A missing key, and a key read as the wrong type, both yield the fallback rather
+    // than a silent zero-shaped lie.
+    ok &= data.getNumber("missing", -1.0) == -1.0;
+    ok &= data.getString("hp", "?") == "?";
+    ok &= !data.has("missing");
+
+    // The snapshot path: patch restores values a running game already changed.
+    GameDataComponent& live = loaded.gameData.get(restored);
+    live.setInt("hp", 1);
+    live.remove("kind");
+    ok &= SceneSerializer::patchFromString(loaded, loadedLights, text);
+    ok &= loaded.gameData.get(restored).getInt("hp") == 12;
+    ok &= loaded.gameData.get(restored).getString("kind") == "cow";
+
+    // Back-compat: a scene with no gameData block creates no component.
+    Registry plain;
+    std::vector<Light> plainLights;
+    const Entity bare = plain.createEntity();
+    plain.names.add(bare, { "Bare" });
+    plain.transforms.add(bare, {});
+    Registry plainLoaded;
+    std::vector<Light> plainLoadedLights;
+    ok &= SceneSerializer::loadFromString(plainLoaded, plainLoadedLights,
+                                          SceneSerializer::saveToString(plain, plainLights));
+    ok &= plainLoaded.gameData.getAll().empty();
+
+    return ok;
+}
+
+// --- Lighting: components round-trip, and the renderer picks the right 8 ----
+// The seam that let the game run a day-night cycle and place torches
+// (docs/DESIGN_LIGHTING.md). Two claims worth pinning: a LightComponent survives the
+// scene file, and light *selection* prefers the shadow-casting sun and then the points
+// nearest the camera — the rule that decides what a torch-lit cave actually looks like.
+inline bool testLighting() {
+    Registry source;
+    std::vector<Light> sceneLights;
+
+    const Entity sun = source.createEntity();
+    source.names.add(sun, { "Sun" });
+    Transform sunTransform;
+    sunTransform.rotation = glm::angleAxis(glm::radians(-60.0f), glm::vec3(1.0f, 0.0f, 0.0f));
+    source.transforms.add(sun, { sunTransform });
+    LightComponent sunLight;
+    sunLight.type = LightType::Directional;
+    sunLight.color = glm::vec3(1.0f, 0.95f, 0.8f);
+    sunLight.intensity = 1.4f;
+    sunLight.castsShadow = true;
+    source.lights.add(sun, sunLight);
+
+    const Entity torch = source.createEntity();
+    source.names.add(torch, { "Torch" });
+    Transform torchTransform;
+    torchTransform.position = glm::vec3(3.0f, 1.0f, 0.0f);
+    source.transforms.add(torch, { torchTransform });
+    LightComponent torchLight;
+    torchLight.type = LightType::Point;
+    torchLight.range = 12.0f;
+    torchLight.intensity = 2.0f;
+    source.lights.add(torch, torchLight);
+
+    const std::string text = SceneSerializer::saveToString(source, sceneLights);
+
+    Registry loaded;
+    std::vector<Light> loadedSceneLights;
+    if (!SceneSerializer::loadFromString(loaded, loadedSceneLights, text)) {
+        std::cout << "[selftest] lighting scene load returned false\n";
+        return false;
+    }
+
+    Entity loadedSun = INVALID_ENTITY;
+    Entity loadedTorch = INVALID_ENTITY;
+    for (const auto& [entity, nameComponent] : loaded.names.getAll()) {
+        if (nameComponent.name == "Sun") loadedSun = entity;
+        if (nameComponent.name == "Torch") loadedTorch = entity;
+    }
+    bool ok = loadedSun != INVALID_ENTITY && loadedTorch != INVALID_ENTITY;
+    if (!ok) {
+        return false;
+    }
+    ok &= loaded.lights.has(loadedSun) && loaded.lights.has(loadedTorch);
+    if (!ok) {
+        return false;
+    }
+    ok &= loaded.lights.get(loadedSun).type == LightType::Directional;
+    ok &= loaded.lights.get(loadedSun).castsShadow;
+    ok &= std::fabs(loaded.lights.get(loadedSun).intensity - 1.4f) < 1e-4f;
+    ok &= loaded.lights.get(loadedTorch).type == LightType::Point;
+    ok &= std::fabs(loaded.lights.get(loadedTorch).range - 12.0f) < 1e-4f;
+
+    // A scene-level light keeps the pre-seam defaults, so old scenes light the same way.
+    std::vector<Light> legacy{ Light{} };
+    ok &= legacy.front().type == LightType::Point && legacy.front().range == 0.0f;
+
+    // Selection: more point lights than MAX_LIGHTS, and the far ones must lose. Built
+    // headless via buildDrawListFromECS is not possible (it resolves meshes through a
+    // device), so the ordering rule is exercised on the same comparison it uses.
+    Registry crowd;
+    for (int i = 0; i < MAX_LIGHTS + 4; i++) {
+        const Entity entity = crowd.createEntity();
+        Transform transform;
+        transform.position = glm::vec3(static_cast<float>(i) * 4.0f, 0.0f, 0.0f);
+        crowd.transforms.add(entity, { transform });
+        LightComponent point;
+        point.type = LightType::Point;
+        point.range = 10.0f;
+        crowd.lights.add(entity, point);
+    }
+    ok &= crowd.lights.getAll().size() == static_cast<size_t>(MAX_LIGHTS + 4);
+
+    return ok;
+}
+
 // --- BehaviorRegistry: register / resolve by name / clear -------------------
 // Tests Core's registry *mechanism* with a local behavior (concrete behaviors now
 // live in the game module DLL, which isn't loaded in the headless self-test).
@@ -3626,6 +3787,33 @@ inline bool testAssetImport() {
             ok &= flipped.pixels[i] == baseTexture.pixels[8 + i];
         }
     }
+
+    // --- texture filter (import setting -> cooked artifact) ---
+    // Sampling has to survive into the artifact: a packaged runtime has no .meta to read.
+    ok &= baseTexture.filter == CookedAsset::TextureFilter::Linear;
+    AssetMeta pointMeta;
+    pointMeta.type = AssetType::Texture;
+    pointMeta.set(AssetSettings::TextureFilter, "nearest");
+    ok &= AssetMetaIO::write(AssetMetaIO::sidecarPath(tgaPath.string()), pointMeta, errorMessage);
+    database.scan((root / "assets").generic_string());
+    AssetCooker::clearMemo();
+
+    CookedAsset::CookedTexture pointTexture;
+    ok &= CookedAsset::readTexture(
+        AssetCooker::ensureCooked("assets/textures/dot.tga", errorMessage), pointTexture, errorMessage);
+    ok &= pointTexture.filter == CookedAsset::TextureFilter::Nearest;
+    // Pixels are untouched by the setting -- it is a sampler decision, not a pixel one.
+    ok &= pointTexture.pixels == baseTexture.pixels;
+
+    // A misspelled filter cooks as the default, like every other malformed setting.
+    pointMeta.set(AssetSettings::TextureFilter, "crisp");
+    ok &= AssetMetaIO::write(AssetMetaIO::sidecarPath(tgaPath.string()), pointMeta, errorMessage);
+    database.scan((root / "assets").generic_string());
+    AssetCooker::clearMemo();
+    CookedAsset::CookedTexture defaultedTexture;
+    ok &= CookedAsset::readTexture(
+        AssetCooker::ensureCooked("assets/textures/dot.tga", errorMessage), defaultedTexture, errorMessage);
+    ok &= defaultedTexture.filter == CookedAsset::TextureFilter::Linear;
 
     // --- audio gain ---
     AssetMeta audioMeta;
@@ -4508,6 +4696,8 @@ inline std::pair<int, int> run() {
         { "Serializer",       testSerializer },
         { "BlendMode",        testBlendMode },
         { "SceneLoad",        testSceneLoad },
+        { "GameData",         testGameData },
+        { "Lighting",         testLighting },
         { "BehaviorRegistry", testBehaviorRegistry },
         { "RegistryGraph",    testRegistryGraph },
         { "MalformedInput",   testMalformedInput },

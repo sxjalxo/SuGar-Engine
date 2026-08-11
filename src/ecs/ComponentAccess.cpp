@@ -25,6 +25,9 @@ const char* componentTypeName(ComponentType type) {
         case ComponentType::NavMeshSource:  return "NavMeshSource";
         case ComponentType::NavObstacle:    return "NavObstacle";
         case ComponentType::Camera:         return "Camera";
+        case ComponentType::GameData:       return "GameData";
+        case ComponentType::Light:          return "Light";
+        case ComponentType::UIElementState: return "UIElementState";
         case ComponentType::Count:          break;
     }
     return "<unknown>";

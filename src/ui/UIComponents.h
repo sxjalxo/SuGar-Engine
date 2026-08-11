@@ -57,3 +57,28 @@ struct UILabelComponent {
     ElementId element;
     std::string text;
 };
+
+// Presentation state for one document element: which CSS classes it carries and any
+// inline style overrides. The other half of UILabelComponent — that one answers "what
+// does this element say", this one answers "how does it currently look".
+//
+// M4 L3 forced it: a hotbar's selected slot, a health bar's fill width and an inventory
+// panel's visibility are all *state the game owns* that no amount of text-setting can
+// express. Without it a game either hardcodes markup strings into gameplay code (styling
+// leaks out of the RCSS) or the engine grows a bespoke widget per HUD.
+//
+//   classes - space-separated, e.g. "slot selected". The view syncs the element to
+//             exactly this set: classes it applied last frame and no longer sees are
+//             removed, so a game never has to "unset" anything.
+//   style   - inline declarations, e.g. "width: 62%; opacity: 0.5". Same shape as HTML's
+//             style attribute, and the escape hatch for continuous values a class cannot
+//             express. Properties dropped from the string are cleared.
+//
+// Authoritative (Rule 21b): "which slot is selected" is a decision the player made, not
+// something recomputable from the present, so it serializes and survives a snapshot like
+// any other gameplay state.
+struct UIElementStateComponent {
+    ElementId element;
+    std::string classes;
+    std::string style;
+};

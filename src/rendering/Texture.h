@@ -21,6 +21,9 @@ public:
         VkQueue graphicsQueue
     );
 
+    // `pointFilter` selects VK_FILTER_NEAREST for magnification and minification — the
+    // crisp sampling pixel art and texture atlases need. It comes from the asset's
+    // import setting (AssetSettings::TextureFilter), carried in the cooked artifact.
     void createFromPixels(
         VkDevice device,
         VkPhysicalDevice physicalDevice,
@@ -28,7 +31,8 @@ public:
         VkQueue graphicsQueue,
         const std::vector<uint8_t>& pixels,
         uint32_t width,
-        uint32_t height
+        uint32_t height,
+        bool pointFilter = false
     );
 
     void destroy(VkDevice device);
