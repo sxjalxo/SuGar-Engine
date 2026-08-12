@@ -12,6 +12,7 @@
 #include "assets/AssetHandle.h"
 #include "ecs/Entity.h"
 #include "editor/EditorCommand.h"
+#include "rendering/Texture.h"
 #include "scene/Transform.h"
 #include "ui/RuntimeUIView.h"
 
@@ -142,6 +143,8 @@ private:
     void createImGuiDescriptorPool();
     void initImGui();
     void shutdownImGui();
+    void createEditorLogo();
+    void destroyEditorLogo();
     void beginImGuiFrame();
     void buildEditorUi();
     void drawPlayControls();
@@ -324,5 +327,13 @@ private:
     RuntimeUIView runtimeUI; // player-facing UI (RmlUi); ImGui above is the editor
     UIIntentQueue* uiIntentQueue = nullptr;
     VkDescriptorSet viewportTextureDescriptor = VK_NULL_HANDLE;
+
+    // Editor branding: the full SuGar lockup, drawn with its own alpha over the theme's
+    // near-black window background, so nothing needs to be baked into the artwork.
+    Texture editorLogoTexture;
+    VkDescriptorSet editorLogoDescriptor = VK_NULL_HANDLE;
+    int editorLogoWidth = 0;
+    int editorLogoHeight = 0;
+
     bool imguiInitialized = false;
 };

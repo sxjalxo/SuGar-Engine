@@ -30,6 +30,7 @@
 #include "ecs/Registry.h"
 #include "ecs/SystemSchedule.h"
 #include "editor/EntityQuery.h"
+#include "navigation/NavMeshBuilder.h"
 #include "physics/PhysicsWorld.h"
 #include "scene/BehaviorRegistry.h"
 #include "scene/Light.h"
@@ -257,6 +258,46 @@ inline void run() {
         add("ostream_float_writes", formatMs, "ms",
             trimNum(formatMs) + " ms for " + std::to_string(entityCount * floatsPerEntity) +
                 " floats");
+    }
+
+    // Navmesh bake at streaming scale. A voxel game re-bakes its walkable surface every
+    // time the resident chunk set changes, so this is a per-chunk-boundary cost, not a
+    // load-time one: 112x112 columns is what a 7x7 chunk radius produces.
+    {
+        std::vector<NavTriangle> soup;
+        constexpr int kSide = 112;
+        soup.reserve(static_cast<std::size_t>(kSide) * kSide * 2u);
+        for (int z = 0; z < kSide; ++z) {
+            for (int x = 0; x < kSide; ++x) {
+                // A gently varying height keeps corners shared between cells (the case
+                // welding actually has to handle) instead of degenerating to one plane.
+                const auto height = [](int hx, int hz) {
+                    return static_cast<float>((hx * 7 + hz * 13) % 5) * 0.25f;
+                };
+                const glm::vec3 a(static_cast<float>(x), height(x, z), static_cast<float>(z));
+                const glm::vec3 b(static_cast<float>(x), height(x, z + 1), static_cast<float>(z + 1));
+                const glm::vec3 c(static_cast<float>(x + 1), height(x + 1, z + 1),
+                                  static_cast<float>(z + 1));
+                const glm::vec3 d(static_cast<float>(x + 1), height(x + 1, z), static_cast<float>(z));
+                soup.push_back({a, b, c});
+                soup.push_back({a, c, d});
+            }
+        }
+        NavBakeParams params;
+        params.maxSlopeDegrees = 50.0f;
+        params.weldEpsilon = 0.01f;
+        NavBakeStats bakeStats;
+        const double bakeMs = timeBest(3, [&] {
+            sink += static_cast<unsigned>(buildNavMesh(soup, params, &bakeStats).polygonCount());
+        });
+        add("navmesh_bake_112", bakeMs, "ms",
+            trimNum(bakeMs) + " ms for " + std::to_string(soup.size()) + " triangles");
+        // The split, so the next person deciding whether to make this incremental or
+        // asynchronous starts from where the time is rather than from where it feels.
+        add("navmesh_bake_weld", bakeStats.weldMs, "ms",
+            trimNum(bakeStats.weldMs) + " ms (welding + polygon assembly)");
+        add("navmesh_bake_adjacency", bakeStats.adjacencyMs, "ms",
+            trimNum(bakeStats.adjacencyMs) + " ms (edge matching + lookup grid + links)");
     }
 
     // In-place restore (Phase 14A) over the whole scene.

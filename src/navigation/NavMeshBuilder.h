@@ -83,6 +83,14 @@ struct NavBakeStats {
     // for the source geometry, which otherwise presents as "pathfinding is broken".
     int isolatedPolygons = 0;
 
+    // Where the bake's time went, in milliseconds. A streamed world re-bakes on every
+    // chunk boundary and on every burst of player edits, so "the bake costs 11 ms" is a
+    // number someone will have to act on — and acting on it needs the split, not the
+    // total. Zero on a build that was never timed.
+    double weldMs = 0.0;       // slope/area rejection + vertex welding + polygon assembly
+    double adjacencyMs = 0.0;  // edge matching, lookup grid, link endpoint resolution
+    double erodeMs = 0.0;      // agent-radius erosion (0 when agentRadius is 0)
+
     std::string describe() const;
 };
 

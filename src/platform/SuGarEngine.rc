@@ -1,0 +1,9 @@
+// Windows resource script: gives SuGarEngine.exe its shell icon (Explorer, taskbar,
+// Alt-Tab). The first icon in the file is the one Windows uses for the executable, so
+// IDI_SUGAR_ICON stays resource id 1.
+//
+// The .ico is the SuGar cube alone, without the wordmark: at 16x16 the name is unreadable
+// and only costs the cube pixels. The in-editor logo is the full lockup.
+#define IDI_SUGAR_ICON 1
+
+IDI_SUGAR_ICON ICON "../../assets/branding/sugar_icon.ico"

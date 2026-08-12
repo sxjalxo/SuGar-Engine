@@ -436,6 +436,20 @@ cmake --build build --config Debug --target SuGarEngine --parallel 1
 build\Debug\SuGarEngine.exe
 ```
 
+### Branding
+
+The artwork lives in `assets/branding/` and is used in three places:
+
+| File | Used by |
+| --- | --- |
+| `sugar_icon.ico` | the executable's shell icon, embedded through `src/platform/SuGarEngine.rc` |
+| `sugar_cube.png` | the window icon (`glfwSetWindowIcon`), in the editor and in a packaged game |
+| `sugar_logo.png` | the full lockup in the editor's **Editor** panel |
+
+The icon is the cube alone — a wordmark is unreadable at 16x16. The in-editor lockup keeps
+its alpha and blends over the theme background, so no background is baked into the art.
+Regenerate the derived files from a new master with `scripts/make_branding.py`.
+
 ### Validate (one command)
 
 `SUGAR_VALIDATE=1` runs every correctness gate — self-tests **and** stress tests —

@@ -137,4 +137,31 @@ struct NavMesh {
     // position). Snapping is the navigation system's job, not the caller's — the
     // alternative is every behavior in the game reimplementing it slightly wrong.
     int findNearestPolygon(const glm::vec3& point, glm::vec3& projected) const;
+
+    // --- Lookup acceleration ---------------------------------------------------------
+    // Both point queries above were linear scans over every polygon. That is fine for a
+    // hand-authored level and not fine for a streamed world: an 18 000-polygon navmesh
+    // measured 24 ms to resolve 39 off-mesh link endpoints at bake time, and the same
+    // scan runs twice per path request (start + destination snapping), so the cost lands
+    // on gameplay too.
+    //
+    // The fix is an XZ uniform grid of polygon indices. It is DERIVED, like `neighbors`:
+    // built by buildAdjacency from the polygons themselves, never stored in an asset,
+    // so it cannot disagree with the geometry it indexes. Query order stays deterministic
+    // — candidates are visited in ascending polygon index — so the documented tie-break
+    // (lowest index wins) survives.
+    struct LookupGrid {
+        float cellSize = 0.0f;
+        float minX = 0.0f, minZ = 0.0f;
+        int cols = 0, rows = 0;
+        std::vector<int> cellStart;  // cols*rows + 1 offsets into `cellPolygons`
+        std::vector<int> cellPolygons;
+
+        bool empty() const { return cols <= 0 || rows <= 0 || cellPolygons.empty(); }
+    };
+    LookupGrid lookupGrid;
+
+    // Rebuilds `lookupGrid`. Called by buildAdjacency; public so a mesh assembled by
+    // hand in a test can index itself without a full adjacency pass.
+    void buildLookupGrid();
 };

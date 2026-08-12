@@ -101,6 +101,7 @@ add_library(SuGarCore SHARED
     src/ecs/GameData.h
     src/ecs/Registry.h
     src/ecs/SystemSchedule.h
+    src/core/EnginePaths.h
     src/core/Input.cpp
     src/core/SaveData.cpp
     src/core/SnapshotCapturePolicy.h
@@ -275,6 +276,15 @@ add_executable(SuGarEngine
     src/rendering/Vertex.h
     src/rendering/UniformBufferObject.h
 )
+
+# The executable's shell icon (Explorer / taskbar / Alt-Tab) is a Windows resource, not
+# anything the engine can set at runtime. The window icon is set from the same artwork in
+# SuGarApp::initWindow, because GLFW owns that one.
+if(WIN32)
+    target_sources(SuGarEngine PRIVATE src/platform/SuGarEngine.rc)
+    set_source_files_properties(src/platform/SuGarEngine.rc PROPERTIES
+        OBJECT_DEPENDS ${CMAKE_SOURCE_DIR}/assets/branding/sugar_icon.ico)
+endif()
 
 target_link_libraries(SuGarEngine
     SuGarCore

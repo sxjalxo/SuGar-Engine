@@ -17,6 +17,7 @@
 #include "StressTests.h"
 #include "ui/RuntimeUIView.h"
 #include "ui/RuntimeUISystem.h"
+#include "core/EnginePaths.h"
 #include "core/Input.h"
 #include "core/InputActions.h"
 #include "core/SaveData.h"
@@ -29,6 +30,7 @@
 #include "scene/ScriptSystem.h"
 #include "scene/TransformMath.h"
 #include "imgui.h"
+#include "stb_image.h"
 #include <stdexcept>
 #include <iostream>
 #include <iomanip>
@@ -99,20 +101,27 @@ void DestroyDebugUtilsMessengerEXT(VkInstance instance, VkDebugUtilsMessengerEXT
 }
 
 static std::string resolveAssetPath(const std::string& relativePath) {
-    const std::vector<std::string> candidates = {
-        relativePath,
-        "../" + relativePath,
-        "../../" + relativePath
-    };
+    return EnginePaths::resolve(relativePath);
+}
 
-    for (const auto& candidate : candidates) {
-        std::ifstream file(candidate);
-        if (file.good()) {
-            return candidate;
-        }
+// The window icon (title bar, taskbar while running, Alt-Tab) is GLFW's, not the .exe
+// resource's, so it is set from the same cube artwork at startup. Missing artwork is not
+// an error: the window simply keeps the platform default.
+void SuGarApp::setWindowIcon() {
+    const std::string path = resolveAssetPath("assets/branding/sugar_cube.png");
+    int width = 0, height = 0, channels = 0;
+    stbi_uc* pixels = stbi_load(path.c_str(), &width, &height, &channels, STBI_rgb_alpha);
+    if (pixels == nullptr) {
+        std::cout << "[icon] no window icon at " << path << " (using the platform default)\n";
+        return;
     }
 
-    return relativePath;
+    GLFWimage icon{};
+    icon.width = width;
+    icon.height = height;
+    icon.pixels = pixels;
+    glfwSetWindowIcon(window, 1, &icon);
+    stbi_image_free(pixels);
 }
 
 static Entity findOrbitParentEntity(const Registry& registry) {
@@ -290,6 +299,15 @@ void SuGarApp::run() {
             if (std::filesystem::exists(font)) {
                 spec.extraFiles.push_back({ font, font });
             }
+            // Branding: the packaged window wears the same icon the editor does. Not a
+            // cooked asset — nothing references it from a scene, the engine loads it by
+            // this exact path.
+            for (const char* art : { "assets/branding/sugar_cube.png",
+                                     "assets/branding/sugar_logo.png" }) {
+                if (std::filesystem::exists(art)) {
+                    spec.extraFiles.push_back({ art, art });
+                }
+            }
             const std::string uiDir = gameEnv != nullptr ? (root + "/assets/ui") : "assets/ui";
             for (const auto& entry : std::filesystem::directory_iterator(uiDir, ec)) {
                 if (entry.is_regular_file()) {
@@ -375,6 +393,7 @@ void SuGarApp::initWindow() {
     glfwWindowHint(GLFW_RESIZABLE, GLFW_TRUE);
 
     window = glfwCreateWindow(WIDTH, HEIGHT, "SuGar Engine", nullptr, nullptr);
+    setWindowIcon();
     Input::init();
 
     glfwSetKeyCallback(window, [](GLFWwindow*, int key, int, int action, int) {

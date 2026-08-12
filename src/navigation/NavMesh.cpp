@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <limits>
 #include <unordered_map>
+#include <vector>
 
 namespace {
 
@@ -74,6 +75,11 @@ void NavMesh::buildAdjacency() {
             seen.erase(it);
         }
     }
+
+    // The lookup grid indexes the same polygons, so it is rebuilt here for the same
+    // reason the neighbour table is: derived from the geometry at the one place the
+    // geometry settles. Built BEFORE the link pass below, which queries it.
+    buildLookupGrid();
 
     // Off-mesh links: resolve each endpoint to the polygon under it. Snapped rather than
     // required to be exactly inside, because a link endpoint is authored against the
@@ -180,9 +186,114 @@ float NavMesh::heightAt(int polygon, const glm::vec3& point) const {
     return a.y - (normal.x * (point.x - a.x) + normal.z * (point.z - a.z)) / normal.y;
 }
 
+
+void NavMesh::buildLookupGrid() {
+    lookupGrid = LookupGrid{};
+    if (polygons.empty() || vertices.empty()) return;
+
+    // Cell size from the mean polygon extent: a voxel bake's polygons are all about one
+    // cell across, and a grid sized to the geometry keeps both the cells-per-polygon and
+    // the polygons-per-cell counts near one.
+    float minX = std::numeric_limits<float>::max(), minZ = std::numeric_limits<float>::max();
+    float maxX = std::numeric_limits<float>::lowest(), maxZ = std::numeric_limits<float>::lowest();
+    double extentSum = 0.0;
+    for (int p = 0; p < polygonCount(); ++p) {
+        const NavPolygon& polygon = polygons[static_cast<std::size_t>(p)];
+        float pMinX = std::numeric_limits<float>::max(), pMinZ = std::numeric_limits<float>::max();
+        float pMaxX = std::numeric_limits<float>::lowest(), pMaxZ = std::numeric_limits<float>::lowest();
+        for (int k = 0; k < polygon.count; ++k) {
+            const glm::vec3& c = corner(p, k);
+            pMinX = std::min(pMinX, c.x); pMaxX = std::max(pMaxX, c.x);
+            pMinZ = std::min(pMinZ, c.z); pMaxZ = std::max(pMaxZ, c.z);
+        }
+        minX = std::min(minX, pMinX); maxX = std::max(maxX, pMaxX);
+        minZ = std::min(minZ, pMinZ); maxZ = std::max(maxZ, pMaxZ);
+        extentSum += std::max(pMaxX - pMinX, pMaxZ - pMinZ);
+    }
+
+    const float meanExtent = static_cast<float>(extentSum / static_cast<double>(polygonCount()));
+    float cell = meanExtent > 1e-4f ? meanExtent : 1.0f;
+    // Bound the grid so a huge or pathological mesh cannot ask for a billion cells.
+    constexpr int kMaxCells = 1 << 20;
+    const float width = std::max(maxX - minX, 1e-3f), depth = std::max(maxZ - minZ, 1e-3f);
+    while (static_cast<double>(width / cell + 1.0) * static_cast<double>(depth / cell + 1.0) >
+           static_cast<double>(kMaxCells)) {
+        cell *= 2.0f;
+    }
+
+    LookupGrid grid;
+    grid.cellSize = cell;
+    grid.minX = minX;
+    grid.minZ = minZ;
+    grid.cols = static_cast<int>((maxX - minX) / cell) + 1;
+    grid.rows = static_cast<int>((maxZ - minZ) / cell) + 1;
+    if (grid.cols <= 0 || grid.rows <= 0) return;
+
+    // Counting sort: count per cell, prefix-sum, then fill. Polygons are visited in
+    // ascending index in both passes, so each cell's list comes out sorted — which is
+    // what keeps the "lowest index wins" tie-break identical to the old linear scan.
+    const auto cellRange = [&](int p, int& x0, int& z0, int& x1, int& z1) {
+        const NavPolygon& polygon = polygons[static_cast<std::size_t>(p)];
+        float pMinX = std::numeric_limits<float>::max(), pMinZ = std::numeric_limits<float>::max();
+        float pMaxX = std::numeric_limits<float>::lowest(), pMaxZ = std::numeric_limits<float>::lowest();
+        for (int k = 0; k < polygon.count; ++k) {
+            const glm::vec3& c = corner(p, k);
+            pMinX = std::min(pMinX, c.x); pMaxX = std::max(pMaxX, c.x);
+            pMinZ = std::min(pMinZ, c.z); pMaxZ = std::max(pMaxZ, c.z);
+        }
+        x0 = std::clamp(static_cast<int>((pMinX - grid.minX) / grid.cellSize), 0, grid.cols - 1);
+        x1 = std::clamp(static_cast<int>((pMaxX - grid.minX) / grid.cellSize), 0, grid.cols - 1);
+        z0 = std::clamp(static_cast<int>((pMinZ - grid.minZ) / grid.cellSize), 0, grid.rows - 1);
+        z1 = std::clamp(static_cast<int>((pMaxZ - grid.minZ) / grid.cellSize), 0, grid.rows - 1);
+    };
+
+    grid.cellStart.assign(static_cast<std::size_t>(grid.cols) * grid.rows + 1, 0);
+    for (int p = 0; p < polygonCount(); ++p) {
+        int x0 = 0, z0 = 0, x1 = 0, z1 = 0;
+        cellRange(p, x0, z0, x1, z1);
+        for (int z = z0; z <= z1; ++z)
+            for (int x = x0; x <= x1; ++x)
+                ++grid.cellStart[static_cast<std::size_t>(z) * grid.cols + x + 1];
+    }
+    for (std::size_t i = 1; i < grid.cellStart.size(); ++i) {
+        grid.cellStart[i] += grid.cellStart[i - 1];
+    }
+    std::vector<int> cursor(grid.cellStart.begin(), grid.cellStart.end() - 1);
+    grid.cellPolygons.assign(static_cast<std::size_t>(grid.cellStart.back()), -1);
+    for (int p = 0; p < polygonCount(); ++p) {
+        int x0 = 0, z0 = 0, x1 = 0, z1 = 0;
+        cellRange(p, x0, z0, x1, z1);
+        for (int z = z0; z <= z1; ++z)
+            for (int x = x0; x <= x1; ++x)
+                grid.cellPolygons[static_cast<std::size_t>(
+                    cursor[static_cast<std::size_t>(z) * grid.cols + x]++)] = p;
+    }
+
+    lookupGrid = std::move(grid);
+}
+
 int NavMesh::findContainingPolygon(const glm::vec3& point) const {
     int best = -1;
     float bestVerticalDistance = std::numeric_limits<float>::max();
+
+    // A point can only be inside a polygon whose bounds overlap its own cell, so the
+    // grid answers this exactly — no ring expansion needed.
+    if (!lookupGrid.empty()) {
+        const int cx = static_cast<int>((point.x - lookupGrid.minX) / lookupGrid.cellSize);
+        const int cz = static_cast<int>((point.z - lookupGrid.minZ) / lookupGrid.cellSize);
+        if (cx < 0 || cz < 0 || cx >= lookupGrid.cols || cz >= lookupGrid.rows) return -1;
+        const std::size_t cell = static_cast<std::size_t>(cz) * lookupGrid.cols + cx;
+        for (int i = lookupGrid.cellStart[cell]; i < lookupGrid.cellStart[cell + 1]; ++i) {
+            const int p = lookupGrid.cellPolygons[static_cast<std::size_t>(i)];
+            if (!containsXZ(p, point)) continue;
+            const float vertical = std::fabs(heightAt(p, point) - point.y);
+            if (vertical < bestVerticalDistance) {
+                bestVerticalDistance = vertical;
+                best = p;
+            }
+        }
+        return best;
+    }
 
     for (int p = 0; p < polygonCount(); ++p) {
         if (!containsXZ(p, point)) {
@@ -210,19 +321,67 @@ int NavMesh::findNearestPolygon(const glm::vec3& point, glm::vec3& projected) co
     glm::vec3 bestPoint(0.0f);
     float bestDistance = std::numeric_limits<float>::max();
 
-    for (int p = 0; p < polygonCount(); ++p) {
+    // Strict `<` everywhere below keeps the lowest polygon index on a tie, so the snap is
+    // deterministic when a point is equidistant from two polygons — a real case, since a
+    // point off the end of a shared edge is exactly that. The grid preserves it by
+    // visiting candidates in ascending index within each ring and by only *improving* on
+    // a tie, never replacing one.
+    const auto consider = [&](int p) {
         const NavPolygon& polygon = polygons[static_cast<std::size_t>(p)];
         for (int k = 0; k < polygon.count; ++k) {
             const glm::vec3 candidate = closestPointOnSegmentXZ(point, corner(p, k), corner(p, k + 1));
             const float distance = distanceSquaredXZ(point, candidate);
-            // Strict `<` keeps the lowest polygon index on a tie, so the snap is
-            // deterministic when a point is equidistant from two polygons — a real
-            // case, since a point off the end of a shared edge is exactly that.
             if (distance < bestDistance) {
                 bestDistance = distance;
                 bestPoint = candidate;
                 best = p;
             }
+        }
+    };
+
+    if (!lookupGrid.empty()) {
+        // Expanding ring search. A ring is only worth visiting while the *closest
+        // possible* point in it can still beat the best found so far, which is what makes
+        // stopping safe rather than merely plausible: a polygon two rings out can be
+        // nearer than one diagonally adjacent, and the radius test is what catches it.
+        const int cx = std::clamp(static_cast<int>((point.x - lookupGrid.minX) / lookupGrid.cellSize),
+                                  0, lookupGrid.cols - 1);
+        const int cz = std::clamp(static_cast<int>((point.z - lookupGrid.minZ) / lookupGrid.cellSize),
+                                  0, lookupGrid.rows - 1);
+        const int maxRing = std::max(lookupGrid.cols, lookupGrid.rows);
+        std::vector<int> ringCandidates;
+        for (int ring = 0; ring <= maxRing; ++ring) {
+            if (best >= 0) {
+                // Nearest point of this ring, measured from the query point's own cell.
+                const float ringDistance = static_cast<float>(ring - 1) * lookupGrid.cellSize;
+                if (ringDistance > 0.0f && ringDistance * ringDistance > bestDistance) break;
+            }
+            ringCandidates.clear();
+            const int x0 = cx - ring, x1 = cx + ring, z0 = cz - ring, z1 = cz + ring;
+            for (int z = z0; z <= z1; ++z) {
+                if (z < 0 || z >= lookupGrid.rows) continue;
+                for (int x = x0; x <= x1; ++x) {
+                    if (x < 0 || x >= lookupGrid.cols) continue;
+                    // Ring, not filled square: the interior was visited by earlier rings.
+                    if (ring > 0 && x != x0 && x != x1 && z != z0 && z != z1) continue;
+                    const std::size_t cell = static_cast<std::size_t>(z) * lookupGrid.cols + x;
+                    for (int i = lookupGrid.cellStart[cell]; i < lookupGrid.cellStart[cell + 1]; ++i) {
+                        ringCandidates.push_back(lookupGrid.cellPolygons[static_cast<std::size_t>(i)]);
+                    }
+                }
+            }
+            // A polygon spanning several cells appears more than once; sorting also puts
+            // the ring's candidates in ascending index order for the tie-break.
+            std::sort(ringCandidates.begin(), ringCandidates.end());
+            ringCandidates.erase(std::unique(ringCandidates.begin(), ringCandidates.end()),
+                                 ringCandidates.end());
+            for (const int p : ringCandidates) {
+                consider(p);
+            }
+        }
+    } else {
+        for (int p = 0; p < polygonCount(); ++p) {
+            consider(p);
         }
     }
 

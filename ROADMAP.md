@@ -663,6 +663,111 @@ occlusion (labels show through walls), per-label styling from the game, world-sp
 *Ref:* `ui/UIComponents.h`, `rendering/ScreenProjection.h`, `Renderer::updateWorldLabels`,
 `RuntimeUIView::syncWorldLabels`.
 
+**Minecraft (L3) — #30 the navmesh vertex welder cost 104 ms per bake.** *Found by chunk
+streaming:* the game moved to a 512×512 world with a player-centred 7×7 chunk residency, which makes
+the walkable surface change — and the navmesh rebake — every time the player crosses a chunk
+boundary. Measured on the game's own timeline: a rebake was **110–139 ms**, of which the game's
+triangle generation was 1.2–1.5 ms, its off-mesh links 0.9 ms, and engine `buildNavMesh` **104–115
+ms**. *Cause:* `VertexWelder` keyed its spatial hash on a **formatted `std::string`** (`to_string(x)
++ "," + …`) in a **`std::map`** — 27 string allocations and 27 red-black-tree walks per welded
+corner, ~75 000 corners per bake. The comment justified the ordered map as making the bake
+reproducible, but determinism never came from the container: the probe order is the fixed dx/dy/dz
+loop and each bucket is insertion-ordered. *Change:* key the buckets on the exact cell triple in an
+`unordered_map` with a splitmix64-per-axis hash. Same bake, same output. *Verdict:* fixed —
+`buildNavMesh` **104–115 ms → 9.7–11 ms** in the game, and the new `navmesh_bake_112` benchmark
+(25 088 triangles, the size a 7×7 chunk radius produces) reports **13.9 ms** in Release so the cost
+stays measured instead of remembered. Gate **52/52**. *Ref:* `navigation/NavMeshBuilder.cpp`,
+`Benchmarks.h`.
+
+**Minecraft (L3) — streaming lifetime probe (no defect found).** The point of chunk streaming was
+to put `AssetGateway::createMesh` under create → render → release → recreate pressure instead of the
+create-once path it had. Measured over 120 boundary crossings in the packaged standalone: **3 507
+chunk loads, 3 458 unloads, 7 659 runtime meshes created and 7 608 released**, with resident chunks
+pinned at 49, `liveMeshes` equal to the live chunk-entity count on *every* sample (51 or 56, the
+difference being chunks with water), entity count oscillating 267–314 with no trend, and 301 MB
+private bytes at the end. A Debug run with the validation layers over 371 loads / 777 mesh creates
+produced **zero validation messages** — no stale descriptor sets, no double frees, no leaked
+handles. Persistence was checked in the same loop: **2 107 edits, all 2 073 that fell in resident
+chunks intact** after their chunks had been evicted and regenerated, and still intact after a full
+process restart. *Verdict:* the runtime-mesh lifetime seam holds; what streaming exposed was the
+navmesh cost above. *Still open, measured not fixed:* a chunk crossing is a **~40 ms hitch**
+(streaming ~22 ms + rebake ~18 ms, worst 67 ms) because generation, meshing and the rebake are all
+synchronous. That is the honest case for an asynchronous generation seam — and it is not built,
+because the number should decide it, not the anticipation of it.
+
+**Minecraft (L3) — #31 navmesh point queries were linear scans.** *Found by the crossing
+breakdown:* after #30 the rebake was still 36 ms, and only 12.6 ms of it was accounted for
+(triangles 1.3, build 10.2, links 0.9). The missing **24 ms was `registerNavMesh`** — which calls
+`buildAdjacency`, which resolves every off-mesh link endpoint through `findNearestPolygon`. With
+**39 links and 18 000 polygons** that is 78 linear scans of the whole mesh, each testing every
+polygon edge. The same scan runs twice per *path request* (start + destination snapping), so the
+cost was on gameplay too, not only on the bake. *Change:* `NavMesh::lookupGrid`, an XZ uniform grid
+of polygon indices — **derived**, built by `buildAdjacency` beside the neighbour table, never
+stored in an asset, so it cannot go stale. `findContainingPolygon` reads one cell (a point can only
+be inside a polygon whose bounds cover its cell); `findNearestPolygon` walks expanding rings and
+stops only when the nearest possible point of the next ring cannot beat the best found — visiting
+candidates in ascending polygon index so the documented lowest-index tie-break is unchanged.
+*Verdict:* fixed — `register` **24.07 → 2.78 ms**, and the crossing total **60 → 40 ms**. New
+`NavLookupGrid` self-test asserts *equivalence*: 400 sampled points (inside, in a hole, far
+outside) must give the grid and the still-compiled scan fallback the same polygon and the same
+projected point. Gate **52 → 53/53**. *Ref:* `navigation/NavMesh.{h,cpp}`, `SelfTests.h`.
+
+**Minecraft (L3) — where a chunk crossing's 40 ms actually goes.** Instrumented per phase in the
+packaged standalone (7×7 residency, ~18 000 navmesh polygons, 26 crossings):
+
+| phase | avg ms | what it is |
+| --- | --- | --- |
+| runtime mesh upload | 16.8 | `AssetGateway::createMesh` for the ~7 new chunks (engine) |
+| navmesh build | 11.2 | `buildNavMesh` weld + adjacency (engine) |
+| evict | 3.1 | destroy entities, free voxels (engine + game) |
+| navmesh register | 2.8 | second adjacency + link resolve (engine) |
+| voxel meshing | 2.4 | culled meshing, CPU (game) |
+| navmesh triangles + links | 2.2 | walkable surface harvest (game) |
+| torch lights | 1.2 | derived light rebuild (game) |
+| **terrain generation** | **0.31** | noise + features + edit replay (game) |
+
+The result names the seam that a fix would need, and it is **not** asynchronous terrain generation:
+generation is 0.8% of the crossing. It is **GPU upload (42%) and navmesh rebuild (41%)**. Two
+questions follow, both deliberately left open until a workload forces them: whether runtime-mesh
+upload should be staged/batched across frames, and whether navigation should rebake synchronously
+with streaming at all (a tiled navmesh would rebuild only the chunks that changed). *Verdict:*
+measured, documented, not built.
+
+**Minecraft (L3) — #32 navigation did not notice the world changing.** *Forced:* building a wall
+is the game. *Reproduced* with a probe that asks the planner the same question three times
+(`SUGAR_VOXEL_NAVTEST=1`):
+
+```
+before wall:            Success       polys=17716
+after wall, no rebake:  Success       blocksPlaced=144   <- stale; mobs walk through it
+after debounced rebake: Unreachable   bakeMs=12.8
+cost of rebaking per block edit: 11.94 ms; 144 blocks would cost 1718 ms
+```
+
+Chunk streaming rebakes; a player edit did not, so anything a player built was invisible to
+navigation. *Classification:* the correctness half is a **game** bug (the game never told
+navigation), and the reason it could not simply fix it is an **engine capability gap** — a navmesh
+can only be replaced wholesale, so "one block changed" costs a full bake. *Change (game):*
+`markNavDirty` at the break/place sites plus `updateNavRebake`, a **debounce** — one bake 0.25 s
+after the last edit of a burst, since mining is a hold and a throttle would bake mid-burst and
+again at the end. *Change (engine): none* — the seam that would fix it properly is a **tiled
+navmesh** (bake per tile, stitch at borders, rebuild only dirty tiles — the shape Recast/Detour's
+`addTile`/`removeTile` and Unreal's dirty-area rebuild both take), and a 12 ms coalesced bake does
+not yet force it. *Verdict:* correctness fixed, cost documented, seam named and not built.
+
+**Minecraft (L3) — #33 the navmesh welder probed 27 cells when 8 suffice.** *Found by decomposing
+the bake* that #32 made a per-edit cost: weld **9.57 ms** of a 13.5 ms bake, adjacency 3.50 ms.
+*Cause:* the spatial hash used cells of exactly `weldEpsilon`, and at that size a corner can weld
+with one two cells away, so correctness needed the full 3×3×3 probe. *Change:* size cells at
+**2·epsilon**; then per axis only one neighbour can hold a point within epsilon (offset < ε reaches
+back, offset > cellSize − ε reaches forward, and both cannot hold at once), so a 2×2×2 probe is
+exact. *Verdict:* fixed — weld **9.57 → 3.37 ms**, whole bake **13.5 → 7.5 ms** (benchmark), and
+in the game the bake went **16.3 → 12.0 ms** and a chunk crossing **40 → 35.7 ms**. New
+`NavWeldProbe` self-test puts corner pairs *exactly on* cell boundaries at 0.5ε, 1ε and 4ε
+separation — the straddling case a too-small probe silently misses — and repeats them mid-cell.
+Gate **53 → 54/54**. *Ref:* `navigation/NavMeshBuilder.cpp`, `SelfTests.h`, `Benchmarks.h`
+(`navmesh_bake_weld` / `navmesh_bake_adjacency` now report the split).
+
 **Minecraft (L3) — measurement tooling.** *Forced (soft):* the per-block vs chunk decision needed
 numbers, and the windowed app has no capturable FPS. *Change:* opt-in `SUGAR_FPSLOG=1` prints
 FPS + drawn-entity + draw count to stderr each second (the L2-noted missing profiler overlay).

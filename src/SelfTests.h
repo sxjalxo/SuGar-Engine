@@ -1907,6 +1907,121 @@ inline bool nearlyEqualXZ(const glm::vec3& a, const glm::vec3& b, float toleranc
     return std::fabs(a.x - b.x) < tolerance && std::fabs(a.z - b.z) < tolerance;
 }
 
+
+// --- NavLookupGrid: the accelerated point queries answer exactly what the scan did ------
+// A streamed world bakes 18 000-polygon navmeshes and resolves link endpoints and path
+// destinations against them; both queries used to be linear scans (measured: 24 ms to
+// resolve 39 link endpoints). The grid is only a legitimate optimization if it is
+// INDISTINGUISHABLE from the scan, including the documented lowest-index tie-break, so
+// this test asserts equivalence rather than merely asserting plausible answers.
+inline bool testNavLookupGrid() {
+    NavMesh mesh;
+    // A 12x12 field of unit quads, with a hole punched in it so the nearest-polygon path
+    // (the ring search) is exercised and not only containment.
+    constexpr int kSide = 12;
+    for (int z = 0; z < kSide; ++z) {
+        for (int x = 0; x < kSide; ++x) {
+            if (x >= 4 && x < 8 && z >= 4 && z < 8) continue; // the hole
+            const auto fx = static_cast<float>(x), fz = static_cast<float>(z);
+            const float y = static_cast<float>((x * 3 + z * 5) % 4) * 0.1f; // gentle slope
+            const int base = static_cast<int>(mesh.vertices.size());
+            mesh.vertices.push_back(glm::vec3(fx, y, fz));
+            mesh.vertices.push_back(glm::vec3(fx, y, fz + 1.0f));
+            mesh.vertices.push_back(glm::vec3(fx + 1.0f, y, fz + 1.0f));
+            mesh.vertices.push_back(glm::vec3(fx + 1.0f, y, fz));
+            const int first = static_cast<int>(mesh.indices.size());
+            for (int corner = 0; corner < 4; ++corner) mesh.indices.push_back(base + corner);
+            mesh.polygons.push_back(NavPolygon{ first, 4 });
+        }
+    }
+    mesh.buildAdjacency();
+    bool ok = mesh.valid() && !mesh.lookupGrid.empty();
+
+    // The same mesh without the index: the reference implementation, still compiled in as
+    // the fallback path, so the comparison is against real code and not a copy of it.
+    NavMesh scanned = mesh;
+    scanned.lookupGrid = NavMesh::LookupGrid{};
+
+    int compared = 0;
+    for (int i = 0; i < 400 && ok; ++i) {
+        // Deterministic sweep across the field, the hole, and well outside the mesh.
+        const float t = static_cast<float>(i);
+        const glm::vec3 point(-3.0f + std::fmod(t * 0.43f, 18.0f), std::fmod(t * 0.17f, 2.0f),
+                              -3.0f + std::fmod(t * 0.71f, 18.0f));
+
+        ok &= mesh.findContainingPolygon(point) == scanned.findContainingPolygon(point);
+
+        glm::vec3 gridProjected(0.0f), scanProjected(0.0f);
+        const int gridPolygon = mesh.findNearestPolygon(point, gridProjected);
+        const int scanPolygon = scanned.findNearestPolygon(point, scanProjected);
+        ok &= gridPolygon == scanPolygon;
+        if (gridPolygon >= 0) {
+            ok &= glm::length(gridProjected - scanProjected) < 1e-5f;
+        }
+        ++compared;
+    }
+
+    // A point outside the grid's bounds must still snap (the ring search clamps into the
+    // grid) — the case a naive "return -1 when outside" would get wrong.
+    glm::vec3 projected(0.0f);
+    ok &= mesh.findNearestPolygon(glm::vec3(500.0f, 0.0f, 500.0f), projected) ==
+          scanned.findNearestPolygon(glm::vec3(500.0f, 0.0f, 500.0f), projected);
+
+    return ok && compared == 400;
+}
+
+
+// --- NavWeldProbe: welding is exact regardless of where cell boundaries fall ------------
+// The welder buckets corners into a spatial hash and probes the neighbourhood. Probing too
+// little is the silent failure the original code guarded against with a 27-cell probe: two
+// corners a hair apart but on opposite sides of a cell boundary stay separate, adjacency
+// then fails on exactly those edges, and a few portals in the level quietly do not exist.
+// Cells are now 2*epsilon so an 8-cell probe is provably enough; this test is what makes
+// "provably" checkable, by putting pairs of corners exactly where the boundaries are.
+inline bool testNavWeldProbe() {
+    constexpr float kEpsilon = 0.01f;
+    constexpr float kCell = 2.0f * kEpsilon;
+
+    // Two flat triangles that share NO corner except the pair under test: whether they
+    // weld is the difference between 5 unique vertices and 6. Winding is chosen so both
+    // survive the slope filter (the bake rejects downward-facing triangles).
+    const auto bakeVertexCount = [kEpsilon](float separation, float base) {
+        std::vector<NavTriangle> soup;
+        soup.push_back(NavTriangle{ glm::vec3(base, 0.0f, 0.0f), glm::vec3(base, 0.0f, 2.0f),
+                                    glm::vec3(base + 2.0f, 0.0f, 0.0f) });
+        soup.push_back(NavTriangle{ glm::vec3(base + separation, 0.0f, 0.0f),
+                                    glm::vec3(base + 2.0f, 0.0f, -3.0f),
+                                    glm::vec3(base, 0.0f, -3.0f) });
+        NavBakeParams params;
+        params.weldEpsilon = kEpsilon;
+        params.maxSlopeDegrees = 89.0f;
+        NavBakeStats stats;
+        buildNavMesh(soup, params, &stats);
+        return stats.vertices;
+    };
+
+    bool ok = true;
+    // `base` is chosen so the pair straddles a cell boundary: the first corner sits just
+    // inside a cell, the second just outside it. This is the case a too-small probe misses.
+    const float onBoundary = kCell * 5.0f - kEpsilon * 0.25f;
+
+    // Half an epsilon apart, straddling a boundary: MUST weld (5 distinct corners, not 6).
+    ok &= bakeVertexCount(kEpsilon * 0.5f, onBoundary) == 5;
+    // Well beyond epsilon, same straddle: must NOT weld.
+    ok &= bakeVertexCount(kEpsilon * 4.0f, onBoundary) == 6;
+    // And the same two cases away from any boundary, so the test would notice a welder
+    // that only ever works in the middle of a cell.
+    const float midCell = kCell * 5.0f + kCell * 0.5f;
+    ok &= bakeVertexCount(kEpsilon * 0.5f, midCell) == 5;
+    ok &= bakeVertexCount(kEpsilon * 4.0f, midCell) == 6;
+
+    // A corner pair exactly one epsilon apart is the boundary of the rule itself: the
+    // welder accepts <= epsilon, so it welds.
+    ok &= bakeVertexCount(kEpsilon, onBoundary) == 5;
+
+    return ok;
+}
+
 // --- NavLinks: off-mesh connections (M4 L3) --------------------------------
 // The game's forcing case, reduced: two walkable surfaces that share no vertex — a mob
 // below a two-block ledge, or across a trench. On the mesh alone there is no route and
@@ -4838,6 +4953,8 @@ inline std::pair<int, int> run() {
         { "AnimationGraph",   testAnimationGraph },
         { "Navigation",       testNavigation },
         { "NavLinks",         testNavLinks },
+        { "NavLookupGrid",    testNavLookupGrid },
+        { "NavWeldProbe",     testNavWeldProbe },
         { "NavMeshBake",      testNavMeshBake },
         { "NavAvoidance",     testNavAvoidance },
         { "ViewportOverlay",  testViewportOverlay },

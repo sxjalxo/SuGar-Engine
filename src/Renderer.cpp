@@ -30,7 +30,9 @@
 #include "scene/DrawList.h"
 #include "scene/SceneSerializer.h"
 #include "scene/TransformMath.h"
+#include "core/EnginePaths.h"
 #include "rendering/Texture.h"
+#include "stb_image.h"
 #include "rendering/UniformBufferObject.h"
 #include "imgui.h"
 #include "imgui_internal.h" // DockBuilder API for the default editor layout
@@ -1514,6 +1516,45 @@ void Renderer::initImGui() {
 
     glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_NORMAL);
     imguiInitialized = true;
+
+    createEditorLogo();
+}
+
+// Loads the branding artwork into a normal engine Texture and hands its view to ImGui.
+// Branding is not a scene asset: it is not cooked, not reference-counted and not part of
+// the asset database, so it does not go through ResourceManager.
+void Renderer::createEditorLogo() {
+    const std::string path = EnginePaths::resolve("assets/branding/sugar_logo.png");
+    int channels = 0;
+    stbi_uc* decoded = stbi_load(path.c_str(), &editorLogoWidth, &editorLogoHeight,
+                                 &channels, STBI_rgb_alpha);
+    if (decoded == nullptr) {
+        // Missing branding is cosmetic: the panel falls back to a text title.
+        std::cout << "[branding] no editor logo at " << path << "\n";
+        editorLogoWidth = editorLogoHeight = 0;
+        return;
+    }
+
+    const size_t byteCount =
+        static_cast<size_t>(editorLogoWidth) * static_cast<size_t>(editorLogoHeight) * 4u;
+    const std::vector<uint8_t> pixels(decoded, decoded + byteCount);
+    stbi_image_free(decoded);
+
+    editorLogoTexture.createFromPixels(app->getDevice(), app->getPhysicalDevice(),
+                                       app->getCommandPool(), app->getGraphicsQueue(), pixels,
+                                       static_cast<uint32_t>(editorLogoWidth),
+                                       static_cast<uint32_t>(editorLogoHeight));
+    editorLogoDescriptor = ImGui_ImplVulkan_AddTexture(editorLogoTexture.getImageView(),
+                                                      VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+}
+
+void Renderer::destroyEditorLogo() {
+    if (editorLogoDescriptor != VK_NULL_HANDLE) {
+        ImGui_ImplVulkan_RemoveTexture(editorLogoDescriptor);
+        editorLogoDescriptor = VK_NULL_HANDLE;
+    }
+    editorLogoTexture.destroy(app->getDevice());
+    editorLogoWidth = editorLogoHeight = 0;
 }
 
 void Renderer::shutdownImGui() {
@@ -1521,6 +1562,7 @@ void Renderer::shutdownImGui() {
         return;
     }
 
+    destroyEditorLogo();
     ImGui_ImplVulkan_Shutdown();
     ImGui_ImplGlfw_Shutdown();
     ImGui::DestroyContext();
@@ -1618,7 +1660,18 @@ void Renderer::buildEditorUi() {
     }
 
     ImGui::Begin("Editor");
-    ImGui::Text("SuGar Engine Editor");
+    if (editorLogoDescriptor != VK_NULL_HANDLE && editorLogoHeight > 0) {
+        // Fit the lockup to the panel (capped, so a wide panel does not blow it up), and
+        // let its own alpha blend over the theme background instead of baking one in.
+        const float available = ImGui::GetContentRegionAvail().x;
+        const float width = std::min(available, 560.0f);
+        const float aspect = static_cast<float>(editorLogoHeight) /
+                             static_cast<float>(editorLogoWidth);
+        ImGui::Image(reinterpret_cast<ImTextureID>(editorLogoDescriptor),
+                     ImVec2(width, width * aspect));
+    } else {
+        ImGui::Text("SuGar Engine Editor");
+    }
     ImGui::Text("Docking is enabled.");
     const int renderItems = drawList != nullptr ? static_cast<int>(drawList->items.size()) : 0;
     ImGui::Text("Scene items: %d", renderItems);

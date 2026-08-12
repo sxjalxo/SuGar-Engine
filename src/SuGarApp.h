@@ -170,6 +170,7 @@ private:
     bool packagedBuild = false;
 
     void initWindow();
+    void setWindowIcon();
     void initVulkan();
     void initAudio();
     // Time-travel internals.
