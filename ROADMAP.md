@@ -155,7 +155,17 @@ speculation. Every forced change is recorded in the **M4 friction log** below.
   layers/masks, trigger colliders, `PhysicsQuery::raycast`). Gate **40 → 47/47**.
 - Write-up: `E:\Sugar Engine - Games\Level 2\Report.md`.
 
-**Level 3 — The real game: voxel / Minecraft-like. IN PROGRESS.**
+**Level 3 — Core game mechanics, at real-game scale. IN PROGRESS.**
+
+L3 is not one game. It is the tier that asks whether the **core mechanics a game is built
+from** — world representation, persistence, navigation and AI, streaming, combat, UI,
+audio, animation — can each be built on the engine as it stands. A game is finished when it
+has answered that for its mechanics; the *tier* finishes when the mechanics stop producing
+new answers. First game: the voxel/Minecraft-like, **done**. Next: a combat arena, chosen by
+the platform audit below, because animation, audio and collision have never been driven by a
+game.
+
+**L3 game 1 — voxel / Minecraft-like. DONE.**
 - First slice runs: first-person, a chunked voxel world, gravity + game-side voxel collision,
   raycast break/place. Forced **three architectural seams** — each designed as a record first
   (`docs/DESIGN_RUNTIME_MESH.md`, the `AssetGateway` + `CameraComponent` designs), never
@@ -232,9 +242,79 @@ speculation. Every forced change is recorded in the **M4 friction log** below.
   1920x991) is what ruled the engine out — the same instrument-don't-guess loop the earlier
   measurement work used. Game-side, `#hotbar` gained an explicit height so an absolutely
   positioned row anchored by `bottom` cannot depend on content height.
-- Open, not fixed (engine limitations, not defects — features when a game forces them): no
-  navigation off-mesh links; no instanced particle path; snapshot cost at particle-pool scale.
-  Also still open from the first arc: greedy face-merge, per-block colour beyond the atlas.
+- **Third arc — streaming, and the shift from feature-testing to failure-hunting** (2026-08-12/13).
+  The world went from 128 voxels that all existed at once to **512x512 with a player-centred 7x7
+  chunk residency**, which is what turned the runtime-mesh seam from "create once" into a real
+  lifecycle. That plus four hostile workloads produced **seven engine defects (#30–#36)**, all
+  found by the game rather than by review:
+  - **#30** navmesh `VertexWelder` keyed its spatial hash on a formatted `std::string` in a
+    `std::map` — 104–115 ms of a 130 ms bake. Cell triple in an `unordered_map`: 9.7–11 ms.
+  - **#31** `findNearestPolygon` / `findContainingPolygon` were linear scans, so resolving 39
+    link endpoints against 18 000 polygons cost 24 ms *per bake* — and the same scan runs twice
+    per path request. Derived XZ `lookupGrid`: 2.78 ms.
+  - **#32** navigation never noticed player edits (streaming rebaked, a block edit did not), so
+    mobs walked through anything the player built. Fixed game-side with a debounced rebake; the
+    engine gap (tiled navmesh, dirty-tile rebuild) is named and **not** built.
+  - **#33** the welder probed 27 cells because its cells were exactly `weldEpsilon`; cells of
+    2·ε make an 8-cell probe provably exact. Weld 9.57 → 3.37 ms.
+  - **#34** runtime-mesh upload was 47 % of a chunk crossing. Decomposed first (`MeshUploadProfile`,
+    `SUGAR_UPLOADLOG=1`): 91 % was Vulkan object churn and queue stalls; the memcpy of 1.17 GB was
+    **1.6 %**. Reused staging buffer + `DeviceMemoryPool` suballocation: **1.05 → 0.27 ms/mesh**,
+    `vkAllocateMemory` **20 740 → 2**. The batched-submit/fence change was deliberately **not**
+    made — `createMesh` still means "renderable when it returns".
+  - **#35** `DrawList` gathered zero-scaled entities: 16 000 *parked* pooled particles cost ~17 ms
+    a frame drawing nothing. Skipping them: 60 → 126 FPS.
+  - **#36** `setDestination` reset `status` unconditionally, so an agent already following threw
+    its path away and ran A\* again every tick — 58 agents took a 243 FPS scene to **0.89**.
+    Fixed; the failed-replan **backoff** is a policy question and stays deferred.
+  - Net: a chunk crossing went **60 → 19.6 ms**. Gate **52 → 56/56**.
+- **What the streaming lifecycle proved (no defect):** 3 507 chunk loads / 7 659 runtime meshes
+  created and released with resident chunks pinned at 49 and live meshes equal to live chunk
+  entities on *every* sample; 96 long-distance teleports (4 395 loads) and 2 318 forced remeshes
+  with no drift; a Debug run under the validation layers over 5 093 mesh creates **clean**. The
+  `AssetGateway → ResourceManager → runtime mesh → entity destroy` chain holds under churn.
+- **Persistence proved too:** a deterministic serpentine over the whole world, verified by a
+  *second process* walking the identical path — 5 996/5 996 edits intact through eviction and
+  regeneration, and 197 272 edits (2.5 MB) load at 413 FPS. Eight hostile save files (truncated,
+  random bytes, empty, bad block id, wrong seed) never crashed; one real defect found —
+  out-of-range coordinates were accepted and `editKey` *aliased* them (y packed in 16 bits:
+  99 999 → 34 463), so a corrupt save moved an edit to a different voxel. Rejected at both doors.
+- **Off-mesh links validated end to end, engine unchanged:** a moat too wide to jump is
+  Unreachable without links and Success with exactly one link step, one path segment crosses open
+  water, and the agent actually swims it; a one-way drop is Success downhill, Unreachable uphill,
+  and Unreachable again with links removed. The swim rule is the *game's*. **Census: 0 of 120
+  ordinary routes use a link** — natural terrain does not need them, only the constructed island
+  does, which is the honest answer to whether the feature earns its place.
+- Open, not fixed (engine limitations, not defects — features when a game forces them): tiled
+  navmesh dirty-rebuild; failed-replan backoff; batched-submit upload; greedy face-merge; depth
+  occlusion for world labels. Each has a measurement attached and none has a workload demanding it.
+
+**L3 game 2 — combat arena. NEXT.** Third-person arena, 5–10 enemies, melee + ranged,
+projectiles, a boss, hit reactions, audio, save/load, packaged. Deliberately small and
+deliberately *orthogonal* to the voxel game: it is chosen not for what it adds to a game
+library but for which engine surface it drives. `docs/PLATFORM_AUDIT.md` found that
+**animation/skinning, audio and collision are implemented, self-tested, and have never been
+used by a game** — a projectile needs a collider, a hit needs a sound, a swing needs a clip.
+The question it answers is the one under all of M4: *can SuGar carry a materially different
+game without being rewritten for it?*
+
+### Level 4 — Advanced systems and quality (NOT STARTED)
+
+L4 begins when the *mechanics* questions are answered and the remaining ones are about
+**quality, scale and platform integration** rather than "can this be built at all":
+
+- rendering quality beyond the current forward path (post-processing, better materials/PBR,
+  GI or its approximations, shadow quality);
+- resolution and display integration — high-DPI and 4K, dynamic resolution, and vendor
+  features (FreeSync / G-Sync, DLSS / FSR, frame generation);
+- advanced optimization: GPU-driven culling, async upload/compute, multithreaded scene
+  submission, streaming budgets;
+- whatever the L3 games measured and deliberately deferred (tiled navmesh rebuild,
+  batched-submit upload, async chunk generation) if a workload finally forces it.
+
+The same rule holds across the boundary: **a game forces it, or it waits.** L4 items are
+allowed to be motivated by measurement rather than by a blocked game — a frame that is too
+slow at 4K is a real forcing function — but never by a feature list.
 
 ---
 
@@ -1940,10 +2020,20 @@ full phase-by-phase history is in git.
 - **Pre-freeze** — input-hardening pass (deserializer bounds checks; `MalformedInput` gate) +
   crash reporting (`CrashHandler`: minidump + text report).
 
-### M4 — Dogfood (active)
+### M4 — Dogfood (active, and not a phase with a near end)
+
+Games get built on the engine until it is a serious one. Each tier closes when its questions
+stop producing answers, not on a schedule.
+
 - **Level 1 (done)** — Pong, Breakout, Flappy Bird, Asteroids. 10 engine boundary features
   forced (all by Pong), zero architecture rewrites, gate held 38/38. Detail:
   `E:\Sugar Engine - Games\Level 1\Report.md`; forced changes in the **M4 friction log** above.
-- **Level 2 (in progress)** — top-down shooter done (forced #11 flat-colour material tint +
-  #12 mouse input; everything else reused the L1 surface; gate 38→39/39). Remaining: 2D
-  platformer, survivors-like.
+- **Level 2 (done)** — top-down shooter, an Asteroids content pass, a 2D platformer (forced
+  nothing) and a survivors-like (forced the snapshot-capture policy). Gate 40 → 47/47.
+- **Level 3 (in progress)** — *core game mechanics at real-game scale*, not a single game.
+  Game 1, the voxel/Minecraft-like: done, and it forced seven engine seams plus seven defects
+  (#16–#36), gate 47 → 56/56. Game 2: the combat arena, chosen by `docs/PLATFORM_AUDIT.md`
+  because animation, audio and collision have never been driven by a game.
+- **Level 4 (not started)** — advanced systems and quality: rendering beyond the forward path,
+  high-DPI/4K and dynamic resolution, vendor features (FreeSync/G-Sync, DLSS/FSR), GPU-driven
+  culling and async upload, plus the L3-deferred optimizations if a workload forces them.

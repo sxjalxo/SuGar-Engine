@@ -410,6 +410,38 @@ and `CameraComponent` designs; `docs/DESIGN_RUNTIME_MESH.md`). See the `ROADMAP.
   that authoritative data (e.g. voxel edits) is a *separate* future game-data seam, deliberately
   out of scope here.
 
+### M4 Level 3 additions (streaming arc — GPU memory and measurement)
+
+Forced by turning the voxel game into a *streaming* one. See friction log #30–#36 and
+`docs/PLATFORM_AUDIT.md`.
+
+- **`DeviceMemoryPool` (engine, `src/rendering/DeviceMemoryPool.{h,cpp}`).** Suballocates
+  device-local **buffer** memory from 32 MiB blocks (first fit, coalescing on release,
+  dedicated blocks past half a block). Forced by measurement: every runtime mesh owned two
+  whole `vkAllocateMemory` allocations, and a streaming run made 20 740 of them. *Scope, kept
+  narrow on purpose:* device-local buffers only — staging memory has a different lifetime (one
+  reused host-visible buffer) and images have different placement rules
+  (`bufferImageGranularity`), so neither goes through it. *Ownership is unchanged:* the pool
+  owns blocks and bookkeeping, a `Mesh` still owns its `VkBuffer`s and returns its placement on
+  destroy, `ResourceManager` remains the resource owner. The placement bookkeeping is separated
+  from Vulkan (`DeviceMemoryPool::detail`) so it is tested headless — that half is the half
+  that can be silently wrong.
+- **`MeshUploadProfile` (engine, `src/rendering/MeshUploadProfile.{h,cpp}`).** Splits a runtime
+  mesh upload into validate / translate / bufferCreate / mapCopy / command / submitWait /
+  destroy, plus allocation counts and the driver's `maxMemoryAllocationCount`. Always
+  accumulating (a few clock reads against a millisecond operation); printing is opt-in
+  (`SUGAR_UPLOADLOG=1`). Exists because "uploading is slow" is not actionable and the fix for a
+  queue stall is not the fix for an allocation storm.
+- **`NavMesh::lookupGrid` (Core).** A derived XZ uniform grid of polygon indices, rebuilt by
+  `buildAdjacency` beside the neighbour table, replacing the linear scans in
+  `findContainingPolygon` / `findNearestPolygon`. Derived, never stored in an asset — same rule
+  as adjacency, and for the same reason.
+- **Measurement surface.** `SUGAR_FPSLOG` reports `items` (what the scene asked to draw) and
+  `drawCalls` (what the GPU was told) **separately**, because instancing lives in the gap and a
+  run reporting only the first cannot tell whether batching happened. `Renderer::
+  submittedDrawCalls()` is the accessor. Benchmarks gained `navmesh_bake_112` plus its
+  weld/adjacency split, so a future change cannot hide which half moved.
+
 ## tinygltf
 
 ### Responsibility

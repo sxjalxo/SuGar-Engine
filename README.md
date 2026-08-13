@@ -47,7 +47,9 @@ build pipeline is done** (Phase 21): `scripts/build_release.ps1` runs `cmake --b
 then `SUGAR_PACKAGE`, producing a runnable, self-verified standalone with no GPU. **M3
 is complete** — build a typical indie game and ship it without extending the engine.
 
-**M4 (dogfood) is under way.** A game lives *outside* the engine repo — a `scene.json`,
+**M4 (dogfood) is under way, and is not a phase with a near end.** Games get built on the
+engine until it is a serious one; each tier stops when its questions stop producing answers,
+not on a schedule. A game lives *outside* the engine repo — a `scene.json`,
 its `assets/`, and a `Game.dll` of behaviours built against `SuGarCore` — and the engine
 boots it by directory: `SUGAR_GAME=<dir>` loads that scene + assets, loads the game's
 `Game.dll`, enters Play, and frames a 2D camera; `SUGAR_PACKAGE=1 SUGAR_GAME=<dir>` emits a
@@ -75,7 +77,10 @@ three small physics capabilities the games demonstrated a need for — **collisi
 **trigger (sensor) colliders**, and a **`PhysicsQuery::raycast`**. The `SUGAR_VALIDATE` gate rose
 **40 → 47/47** across all of it.
 
-**Level 3 is under way — the real game: a voxel / Minecraft-like.** The first slice runs:
+**Level 3 is under way — core game mechanics at real-game scale.** L3 is a *tier*, not a
+game: it asks whether each core mechanic a game is built from — world representation,
+persistence, navigation and AI, streaming, combat, UI, audio, animation — can be built on the
+engine as it stands. **Its first game, a voxel / Minecraft-like, is done.** The first slice runs:
 first-person, a chunked voxel world, gravity + game-side voxel collision, raycast break/place. It
 forced **three architectural seams**, each designed as a record before code (the `AssetGateway`
 and `CameraComponent` designs, `docs/DESIGN_RUNTIME_MESH.md`): **camera as a component**
@@ -100,7 +105,44 @@ built: a **per-texture sampler filter** as an import setting, **`GameDataCompone
 per-entity state — the ECS gap mobs made unworkable), **lights as components** (directional / point
 / ambient, pose derived from the transform, range falloff, eight lights), **`UIElementStateComponent`**
 (a HUD needs classes and inline style, not only text), and **cursor capture** as a request the
-engine grants only in Play. The gate is **52/52**.
+engine grants only in Play.
+
+Its last arc turned the game into a **streaming** one — 512x512 world, a player-centred 7x7 chunk
+residency — and then stopped adding features to go looking for failures instead. That shift is
+what paid: seven engine defects (**#30–#36**), every one found by the game and not by review. A
+navmesh welder that keyed its spatial hash on a formatted `std::string` (104 → 10 ms); navmesh
+point queries that were linear scans, so 39 off-mesh links against 18 000 polygons cost 24 ms a
+bake (→ 2.8 ms with a derived lookup grid); navigation that never noticed player-built walls; a
+runtime-mesh upload that was **91 % Vulkan object churn and queue stalls** and only 1.6 % actual
+copying (reused staging buffer + a device-memory suballocator took it from 1.05 to **0.27 ms per
+mesh**, and `vkAllocateMemory` calls from 20 740 to **2**); a draw list that gathered 16 000
+zero-scaled pooled particles and spent 17 ms a frame drawing nothing; and a `setDestination` that
+threw an agent's path away every tick, which turned 58 agents into an A\* denial-of-service against
+the engine (243 → 0.89 FPS). A chunk crossing went **60 → 19.6 ms**, and the gate rose **52 →
+56/56**.
+
+Equally important is what did *not* break. Streaming ran 3 507 chunk loads and 7 659 runtime
+meshes created and released with the resident set pinned and live meshes tracking live entities on
+every sample, validation-clean; 197 272 persisted edits (2.5 MB) load at 413 FPS; eight
+deliberately corrupt save files never crashed; and off-mesh links carried an agent across water
+end to end with no engine change at all. Several architectural changes were **named and
+deliberately not built** — tiled navmesh rebuild, failed-replan backoff, batched-submit upload —
+because a measurement, not an intuition, gets to force those.
+
+A [platform audit](docs/PLATFORM_AUDIT.md) closes M4's Minecraft arc by asking a harder question
+than "does the engine have X?": for each subsystem, is there a *seam*, has a *real game* driven
+it, has it survived a *hostile* workload, and is there an unresolved architectural decision. It
+found that **animation/skinning, audio and collision are implemented, self-tested, and have never
+been used by a game** — so L3's next game is a small combat arena, precisely because a projectile
+needs a collider, a hit needs a sound and a swing needs a clip. It is chosen for the engine
+surface it drives, not for what it adds to a game library.
+
+**Level 4 has not started.** It begins when the questions stop being "can this mechanic be built"
+and become questions of quality, scale and platform integration: rendering beyond the current
+forward path, high-DPI/4K and dynamic resolution, vendor features (FreeSync/G-Sync, DLSS/FSR),
+GPU-driven culling and async upload — plus whatever the L3 games measured and deliberately
+deferred. The rule survives the boundary: a game (or a measurement on a real one) forces it, or
+it waits.
 
 > Positioning: *"A Vulkan engine designed for instant iteration and debuggable
 > systems — not just rendering power."* Open-source, dev-led, aimed at indie devs.

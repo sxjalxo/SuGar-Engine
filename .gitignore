@@ -52,7 +52,28 @@ Game.lib
 
 # SaveData runtime store (core/SaveData). A game points it at <gameDir>/save.dat; if the
 # engine is ever run from the repo it would write ./save.dat. Runtime state, never committed.
+# `.tmp` is the half-written file SaveData::save renames from (atomic write), and `.good` is
+# the copy the save-torture pass keeps to mutate; both are runtime debris.
 save.dat
+save.dat.tmp
+save.good
+
+# Measurement and probe output. The dogfood harnesses each write their own file rather than
+# stdout, because a GUI build has no capturable stdout (docs/DEV_ENVIRONMENT.md #2). Covered
+# by *.log above; named here so it is obvious these are *results*, reproducible by re-running
+# the harness, and never source:
+#   stream_test.log  chunk-boundary lifetime counters   (SUGAR_VOXEL_STREAMTEST)
+#   edit_stress.log  large-world persistence verify     (SUGAR_VOXEL_EDITSTRESS/EDITVERIFY)
+#   phase_log.log    per-phase cost of a chunk crossing (SUGAR_VOXEL_PHASELOG)
+#   nav_test.log     navigation vs a changing world     (SUGAR_VOXEL_NAVTEST)
+#   swim_test.log    off-mesh link traversal            (SUGAR_VOXEL_SWIMTEST)
+#   torture.log      adversarial stress pass            (SUGAR_VOXEL_TORTURE)
+#   voxel_debug.log  the voxel game's own trace
+
+# Standalone export output for an EXTERNAL game (M4). `SUGAR_PACKAGE=1 SUGAR_GAME=<dir>`
+# writes <dir>/dist, which is outside this repo by policy — but a game configured inside the
+# tree would put it here, and a package is build output either way.
+dist/
 
 # OS files
 Thumbs.db
@@ -65,9 +86,7 @@ Thumbs.db
 # for publication (see ROADMAP.md, M3 completion).
 #
 # The top-level docs (README, ROADMAP, RULES, REQUIREMENTS_AND_SCOPE) stay tracked.
-# NOTE: docs/ files already committed remain tracked -- a .gitignore rule does not
-# untrack anything. `git rm --cached docs/<file>` is what stops tracking them.
-/docs/
+/DevDocs/
 
 # Cooked asset artifacts (Phase 19B). Derived from source assets + .meta settings,
 # reproducible byte-for-byte, and safe to delete wholesale -- so never committed.
