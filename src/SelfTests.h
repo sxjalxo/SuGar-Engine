@@ -60,6 +60,7 @@
 #include "navigation/NavPath.h"
 #include "navigation/NavigationSystem.h"
 #include "physics/PhysicsWorld.h"
+#include "rendering/DeviceMemoryPool.h"
 #include "physics/PhysicsQuery.h"
 #include "scene/ScriptSystem.h"
 #include "core/SnapshotCapturePolicy.h"
@@ -2018,6 +2019,132 @@ inline bool testNavWeldProbe() {
     // A corner pair exactly one epsilon apart is the boundary of the rule itself: the
     // welder accepts <= epsilon, so it welds.
     ok &= bakeVertexCount(kEpsilon, onBoundary) == 5;
+
+    return ok;
+}
+
+
+// --- DeviceMemoryPool: suballocation bookkeeping ----------------------------------------
+// Runtime meshes stopped owning one vkAllocateMemory each and now take a placement inside a
+// shared block. The Vulkan call is not the part that can be wrong — the bookkeeping is: an
+// overlap hands two meshes the same bytes, a lost hole leaks the block a chunk at a time,
+// and an ignored alignment is undefined behaviour the driver may or may not forgive. All
+// three are checkable without a GPU, which is why the placement logic lives apart from it.
+inline bool testDeviceMemoryPool() {
+    using DeviceMemoryPool::detail::FreeRun;
+    using DeviceMemoryPool::detail::place;
+    using DeviceMemoryPool::detail::release;
+
+    constexpr VkDeviceSize kBlock = 1u << 20;
+    bool ok = true;
+
+    // --- alignment is honoured, and its padding is not lost ------------------------------
+    {
+        std::vector<FreeRun> runs{ FreeRun{0, kBlock} };
+        VkDeviceSize first = 0, second = 0;
+        ok &= place(runs, 100, 1, first) && first == 0;
+        ok &= place(runs, 100, 256, second) && second == 256; // skipped past 100, aligned
+        // Only the two 100-byte placements are gone: the 156 bytes of alignment padding
+        // between them stayed free rather than being absorbed and lost.
+        VkDeviceSize freeBytes = 0;
+        for (const FreeRun& run : runs) freeBytes += run.size;
+        ok &= freeBytes == kBlock - 200;
+    }
+
+    // --- a full free/alloc cycle conserves every byte and coalesces ----------------------
+    {
+        std::vector<FreeRun> runs{ FreeRun{0, kBlock} };
+        struct Placed { VkDeviceSize offset, size; };
+        std::vector<Placed> live;
+
+        // Deterministic churn: sizes and a free order that leave holes of several shapes.
+        uint32_t state = 12345u;
+        const auto next = [&state]() {
+            state = state * 1664525u + 1013904223u;
+            return state;
+        };
+        for (int round = 0; round < 400; ++round) {
+            const bool freeing = !live.empty() && (next() % 3u) == 0u;
+            if (freeing) {
+                const std::size_t victim = next() % live.size();
+                release(runs, live[victim].offset, live[victim].size);
+                live.erase(live.begin() + static_cast<long>(victim));
+                continue;
+            }
+            const VkDeviceSize size = 64 + (next() % 4096u);
+            const VkDeviceSize alignment = 1u << (next() % 9u); // 1..256
+            VkDeviceSize offset = 0;
+            if (!place(runs, size, alignment, offset)) continue;
+            ok &= (offset % alignment) == 0;
+            // No live allocation may overlap another.
+            for (const Placed& other : live) {
+                const bool disjoint = offset + size <= other.offset || other.offset + other.size <= offset;
+                ok &= disjoint;
+            }
+            live.push_back(Placed{offset, size});
+        }
+
+        // Free runs must never overlap or touch each other either — touching means a merge
+        // was missed, which is how a pool fragments itself to death over a long session.
+        for (std::size_t i = 1; i < runs.size(); ++i) {
+            ok &= runs[i - 1].offset + runs[i - 1].size < runs[i].offset;
+        }
+
+        // Give everything back: the block must come out as exactly one whole free run.
+        for (const Placed& placed : live) {
+            release(runs, placed.offset, placed.size);
+        }
+        ok &= runs.size() == 1 && runs.front().offset == 0 && runs.front().size == kBlock;
+    }
+
+    // --- a request larger than anything free is refused, not squeezed in -----------------
+    {
+        std::vector<FreeRun> runs{ FreeRun{0, 1000} };
+        VkDeviceSize offset = 0;
+        ok &= !place(runs, 1001, 1, offset);
+        ok &= place(runs, 1000, 1, offset) && offset == 0 && runs.empty();
+    }
+
+    return ok;
+}
+
+
+// --- NavAgentReissue: re-issuing the same destination must not throw the path away -------
+// "Call setDestination every tick at the thing I am chasing" is how chase behaviour is
+// written. It used to reset the agent to Idle every call, which means a full A* per agent
+// per frame — 58 agents doing it drove a real game under 1 FPS, and every one of them
+// reported Idle forever because it was re-armed before anything could see it following.
+// The retry case still has to work: re-issuing a destination that came back Unreachable is
+// the documented way to ask again.
+inline bool testNavAgentReissue() {
+    NavAgentComponent agent;
+    bool ok = agent.status == NavAgentStatus::Idle;
+
+    const glm::vec3 target(5.0f, 0.0f, 5.0f);
+    agent.setDestination(target);
+    ok &= agent.hasDestination && agent.status == NavAgentStatus::Idle;
+
+    // The system plans and starts walking.
+    agent.status = NavAgentStatus::Following;
+
+    // Re-issued unchanged: keep following, do NOT re-arm.
+    agent.setDestination(target);
+    ok &= agent.status == NavAgentStatus::Following;
+
+    // A different destination always re-arms, however small the move.
+    agent.setDestination(target + glm::vec3(0.001f, 0.0f, 0.0f));
+    ok &= agent.status == NavAgentStatus::Idle;
+
+    // Unreachable + the same destination re-arms: that is how a caller retries.
+    agent.status = NavAgentStatus::Unreachable;
+    agent.setDestination(agent.destination);
+    ok &= agent.status == NavAgentStatus::Idle;
+
+    // Arrived + the same destination re-arms too — an agent pushed off its goal has to be
+    // able to walk back to it.
+    agent.status = NavAgentStatus::Arrived;
+    agent.setDestination(agent.destination);
+    ok &= agent.status == NavAgentStatus::Idle;
 
     return ok;
 }
@@ -4953,8 +5080,10 @@ inline std::pair<int, int> run() {
         { "AnimationGraph",   testAnimationGraph },
         { "Navigation",       testNavigation },
         { "NavLinks",         testNavLinks },
+        { "NavAgentReissue",  testNavAgentReissue },
         { "NavLookupGrid",    testNavLookupGrid },
         { "NavWeldProbe",     testNavWeldProbe },
+        { "DeviceMemoryPool", testDeviceMemoryPool },
         { "NavMeshBake",      testNavMeshBake },
         { "NavAvoidance",     testNavAvoidance },
         { "ViewportOverlay",  testViewportOverlay },

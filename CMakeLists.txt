@@ -271,6 +271,10 @@ add_executable(SuGarEngine
     src/rendering/Camera.h
     src/rendering/Mesh.cpp
     src/rendering/Mesh.h
+    src/rendering/DeviceMemoryPool.cpp
+    src/rendering/DeviceMemoryPool.h
+    src/rendering/MeshUploadProfile.cpp
+    src/rendering/MeshUploadProfile.h
     src/rendering/Texture.cpp
     src/rendering/Texture.h
     src/rendering/Vertex.h

@@ -1523,6 +1523,10 @@ void Renderer::initImGui() {
 // Loads the branding artwork into a normal engine Texture and hands its view to ImGui.
 // Branding is not a scene asset: it is not cooked, not reference-counted and not part of
 // the asset database, so it does not go through ResourceManager.
+int Renderer::submittedDrawCalls() const {
+    return activePass != nullptr ? activePass->getSubmittedDrawCalls() : 0;
+}
+
 void Renderer::createEditorLogo() {
     const std::string path = EnginePaths::resolve("assets/branding/sugar_logo.png");
     int channels = 0;

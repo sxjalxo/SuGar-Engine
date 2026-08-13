@@ -768,6 +768,206 @@ separation — the straddling case a too-small probe silently misses — and rep
 Gate **53 → 54/54**. *Ref:* `navigation/NavMeshBuilder.cpp`, `SelfTests.h`, `Benchmarks.h`
 (`navmesh_bake_weld` / `navmesh_bake_adjacency` now report the split).
 
+**Minecraft (L3) — where runtime-mesh upload's 16.9 ms goes (measurement, no fix).** Upload was
+47% of a chunk crossing and had never been decomposed. `MeshUploadProfile` now splits it at the
+boundaries where a fix would land, and prints on `SUGAR_UPLOADLOG=1`. Over a streaming run —
+**5 184 meshes, 10 370 buffers, 1.17 GB, 1.05 ms per mesh**:
+
+| phase | ms | share | what it is |
+| --- | --- | --- | --- |
+| submitWait | 2175 | **40%** | `vkQueueSubmit` + `vkQueueWaitIdle`, once per buffer |
+| bufferCreate | 1531 | **28%** | `vkCreateBuffer` + `vkAllocateMemory` + bind, 4 per mesh |
+| destroy | 1249 | **23%** | tearing the staging buffer down again |
+| translate | 250 | 4.6% | copy into the engine `Vertex` layout |
+| command | 128 | 2.4% | allocate/record/free the copy command buffer |
+| mapCopy | 86 | 1.6% | `vkMapMemory` + `memcpy` + unmap |
+| validate | 14 | 0.3% | index-range and length checks |
+
+**91% is Vulkan object churn and queue stalls; moving the actual 1.17 GB is 1.6%.** Each mesh
+allocates four buffers (staging + device, for vertices and indices), stalls the queue twice
+(`vkQueueWaitIdle` per buffer — a crossing does 28 full queue waits), then frees two of them
+again. 20 740 `vkAllocateMemory` calls over the run; this driver reports
+`maxMemoryAllocationCount = 4294967295` so there is no hard ceiling *here*, but drivers that
+report 4096 exist and a per-buffer allocation is the pattern Vulkan documents against.
+
+*So the seam is not an asynchronous upload architecture.* Three ordinary fixes are available and
+the measurement says roughly what each is worth: a **reused staging buffer** (up to 51%, the
+bufferCreate + destroy columns), **one submit and one fence wait per batch** instead of per buffer
+(the 40% column, at the cost of a mesh not being renderable until the fence signals), and
+**suballocated device memory**. *Verdict:* measured and documented; nothing built, because which
+of the three to do is a design decision and the numbers now exist to make it. *Ref:*
+`rendering/MeshUploadProfile.{h,cpp}`, `rendering/Mesh.cpp`, `assets/ResourceManager.cpp`.
+
+**Minecraft (L3) — #34 runtime-mesh upload allocated a buffer per buffer.** *Forced by the
+measurement above*, and fixed in the two places it said to, each measured on its own against the
+identical streaming workload (5 184 meshes, 10 370 buffers, 1.17 GB):
+
+| | before | + staging reuse | + suballocation |
+| --- | --- | --- | --- |
+| upload total | 5434 ms | 3610 ms | **1400 ms** |
+| per mesh | 1.05 ms | 0.70 ms | **0.27 ms** |
+| bufferCreate | 1531 ms | 970 ms | **19 ms** |
+| staging destroy | 1249 ms | **0 ms** | 0 ms |
+| submitWait | 2175 ms | 2208 ms | 1021 ms |
+| `vkAllocateMemory` | 20 740 | 10 371 | **2** |
+
+**Reused staging buffer** (`Mesh.cpp`): one host-visible buffer, grown geometrically, never
+shrunk. Safe *because the copy is synchronous* — `copyBuffer` ends in `vkQueueWaitIdle`, so the GPU
+is provably done reading before the next upload refills it. That invariant is written at the
+declaration, because batching the submit later would turn this into a use-after-free and it must be
+impossible to make that change without reading why.
+
+**Device-memory suballocation** (`rendering/DeviceMemoryPool.{h,cpp}`): device-local *buffer* memory
+comes out of 32 MiB blocks with a first-fit free list and coalescing on release; requests over half
+a block get their own. Scope is deliberately one lifetime — staging (reused, host-visible) and
+images (`bufferImageGranularity`) stay out, because one abstraction over three lifetimes is harder
+to debug than three plain ones and only this one had a measurement behind it. Ownership is
+unchanged: the pool owns blocks and bookkeeping, a `Mesh` still owns its `VkBuffer`s and hands its
+placement back on destroy, `ResourceManager` remains the resource owner.
+
+*Not done:* the fence/batched-submit change. `createMesh` still means "renderable when it returns",
+and turning that into create → pending → usable is a lifetime state machine, not an optimization.
+`submitWait` is now 73% of what is left of a much smaller number.
+
+*Verdict:* fixed. Chunk crossing **35.7 → 19.6 ms**, its upload phase **16.9 → 3.5 ms**, eviction
+3.06 → 0.10 ms. After 10 370 buffers the pool holds **one 32 MiB block, 9 MiB live, 124
+allocations** — no fragmentation growth. A Debug run with the validation layers over 5 093 mesh
+creates and 5 042 releases is **clean**, which is the check that matters when buffers start sharing
+memory at an offset. New `DeviceMemoryPool` self-test drives the placement bookkeeping headless —
+alignment honoured, padding not lost, no two live placements overlapping, no two free runs left
+touching (a missed merge is how a pool fragments to death), and a full free/alloc cycle returning
+the block as exactly one run. Gate **54 → 55/55**. *Ref:* `rendering/DeviceMemoryPool.{h,cpp}`,
+`rendering/Mesh.{h,cpp}`, `SelfTests.h`.
+
+**Minecraft (L3) — off-mesh links validated against gameplay (no engine change).** `NavLinks`
+proves the engine's semantics; it cannot answer whether a real game needs the capability or drives
+it correctly. `SUGAR_VOXEL_SWIMTEST=1` walks the whole chain — *world geometry → navmesh → NavLink
+→ A\* → funnel → NavAgent → actual movement*:
+
+```
+1 ground:               Success  waypoints=3  linkSteps=0
+2a water, no links:     Unreachable  moatBlocks=704
+2b water, with links:   Success  linkSteps=1  swimLinks=30  totalLinks=43
+2c funnel:              segmentsCrossingWater=1 of 5
+3a plateau:             topY=17 sideY=14 linksNear=20
+3  drop:                high->low Success (links=1), low->high Unreachable (links=0)
+3c links removed:       high->low Unreachable
+3b determinism:         identical
+4  traversal:           distanceToIsland=2.8  CROSSED
+```
+
+The gameplay rule added is **game-side**: `buildNavLinks` now emits a *swim* link across up to 12
+cells of open water — every intermediate column must be water and not merely unwalkable, because a
+chasm and a lake are both unwalkable and only one is swimmable. Cost is 6×span so a mob that can
+walk around a pond still does. Swimming itself needed no code: the agent walks its waypoints, and
+nothing stops a mob entering water. **The engine's job was the connection, and it did it.**
+
+*Verdict:* capability validated end to end, engine unchanged. **But the census says the world does
+not need it:** 119/120 sampled routes reachable and **0 of them cross a link**, with 43 links
+present. Off-mesh links matter here only where the game deliberately builds an island — which is
+the honest answer to "does this feature earn its place", and worth more than a green test would be.
+
+*Three defects, all in the probe, all found by running it:* a 1×1 pillar is too small to become a
+navmesh polygon (both directions "succeeded" by snapping to the ground beside it); link endpoints
+are on-mesh by construction so counting waypoints *over* water always yields zero (the segment
+between waypoints is what crosses); and a passive mob **wanders**, which sets a destination — the
+first traversal run watched a cow replace its errand with a graze and reported a failure that was
+not one. A probe is code, and gets the same suspicion as the code it probes.
+
+**Minecraft (L3) — #35 the draw list gathered entities that draw nothing.** *Found by the particle
+stress:* a saturating spawner (`SUGAR_VOXEL_PARTICLESTRESS=N`) against a swept pool
+(`SUGAR_VOXEL_PARTICLES`) in the packaged standalone. Two defects fell out, one on each side.
+
+*Game side, first:* the pool recycled by **scanning** for a dead slot — O(pool) per spawn, fine at
+96 and fatal at 4 000. Measured: 4 000 particles at 8 000 spawns/s ran at **1.5 FPS**, and the same
+4 000 particles at 100 spawns/s ran at **180**. The cost was never the rendering. Replaced with a
+free-slot stack (park hands its index back), O(1) both ways.
+
+*Engine side:* with 16 000 pooled particles **all parked** — zero scale, nothing on screen — the
+frame still cost ~17 ms (**60 FPS showing nothing**). `DrawList` resolved a world matrix, copied a
+material, built a sort key and an instance-batch entry for every one of them. A pooled system sizes
+its pool for the peak and runs mostly empty, so the cost was proportional to the pool rather than to
+what is visible. *Change:* skip zero-scaled entities during the gather — free correctness rather
+than a heuristic, since there is no scale at which a zero-extent mesh becomes visible. **60 → 126
+FPS** with 16 000 parked, `items` 16 179 → 178.
+
+*And the number that says the renderer is fine:* across the whole sweep, **`drawCalls` stayed at
+118 while `items` went from 277 to 16 181** — instancing collapses the batch exactly as intended,
+and the remaining cost is per-entity CPU, not submission. Saturated (every particle live):
+
+| pool | FPS | items | drawCalls |
+| --- | --- | --- | --- |
+| 96 | 425 | 277 | 118 |
+| 1 000 | 342 | 1 181 | 118 |
+| 4 000 | 124 | 4 181 | 118 |
+| 8 000 | 40 | 8 181 | 118 |
+| 16 000 | 2.9 | 16 181 | 118 |
+
+*Verdict:* both fixed; **~4 000 simultaneously live particles is the budget** on this machine, and
+what limits it is per-entity work (the game's per-particle `GameDataComponent` lookups and the
+engine's per-item gather), not draw submission. No particle system added to the engine — the game
+still builds one out of transforms, materials and runtime meshes, which was the question this
+module existed to answer. `SUGAR_FPSLOG` now reports **items and drawCalls separately**, because a
+run that sees only the first cannot tell whether batching happened. Gate **55/55**. *Ref:*
+`scene/DrawList.cpp`, `Renderer::submittedDrawCalls`, game `Particles.cpp`.
+
+**Minecraft (L3) — adversarial stress pass.** Four hostile workloads against seams that had only
+ever seen polite ones, plus eight deliberately broken save files.
+
+*Save/load torture — nothing crashed.* Truncated mid-record, 4 KiB of `/dev/urandom`, a line with
+no `=`, an empty file, a block id past `BlockCount`, and a mismatched seed all loaded or were
+rejected cleanly, with no crash dump in any run. A **200 000-edit save (2.5 MB)** loaded 197 272
+unique edits and ran at **413 FPS** — the edit representation is fine at a scale no player will
+reach. *One real defect:* out-of-range coordinates were **accepted**. `editKey` packs y into 16
+bits and z into 24, so a save claiming `y=99999` came back as `y=34463` — a corrupt file would not
+merely carry junk, it would move an edit to a *different voxel*. Now rejected at both doors
+(`recordEdit` and `loadEdits`).
+
+*Streaming / runtime-resource torture — clean.* 96 random long-distance teleports (every resident
+chunk evicted and a fresh set generated per jump): **4 395 loads / 4 346 unloads**, resident pinned
+at 49, `liveMeshes` equal to live chunk entities on every sample. Zigzag across one seam: 952
+loads / 903 unloads, same. Forced remesh of the same chunk **2 318 times** with the terrain
+unchanged — pure runtime-mesh create/release churn — no drift in live meshes or entities.
+
+**#36 a failed plan is retried at full cost, every frame, per agent.** *Found by the navigation
+torture:* 58 agents given one shared destination each tick while a wall around it is built and
+removed. With the wall open, 52 agents follow at **243 FPS**; the moment it closes every agent goes
+Unreachable, gameplay re-issues, and each re-issue costs a **full A\* over the whole reachable
+component** — **0.89 FPS**, oscillating with the wall. *Two causes, one fixed:* `setDestination`
+reset `status` to Idle **unconditionally**, so even a successfully-following agent threw its path
+away and replanned every tick — that is now a no-op when the target is unchanged and the agent is
+already Following, while Unreachable and Arrived still re-arm so the documented retry survives
+(`NavAgentReissue` self-test pins all five cases; gate **55 → 56/56**). *What remains is a named
+seam, not built:* there is **no backoff between failed replans**, so N agents chasing something
+behind a closed door cost N full searches per frame. Both Unity and Unreal throttle repathing; the
+decision here is whether that policy belongs in `NavAgentComponent` (a minimum interval between
+failures) or in the game, and it wants a design record rather than a quick constant.
+
+*And one defect in the harness, worth recording because it nearly became a false finding:* the wall
+toggled on a **wall-clock** gate, which is correct until the thing being measured slows the frame
+past the interval — at which point "every second" silently became "every frame" and the harness was
+measuring itself. Frame-counted now.
+
+**Platform audit (docs/PLATFORM_AUDIT.md).** Not a feature checklist — five questions per
+subsystem: is there a *seam*, has a *real game* driven it, has it survived a *hostile* workload,
+is there an *unresolved architectural decision*, and would widening it *now* avoid a likely
+rewrite. Anything a game has not driven is marked **unproven**, not green.
+
+*The finding:* **animation/skinning, audio and collision are implemented, self-tested, and have
+never been used by a game.** Across all three dogfood games there is not one
+`ColliderComponent`, `AnimatorComponent`, `SkinnedMeshComponent` or `AudioSourceComponent`;
+L1 uses `RigidBodyComponent` in six places and that is the whole of it. Not under-tested —
+*unused*, and their only tests are written against the shape the code already has.
+
+*One item earns "widen now":* **generational entity ids**. An `Entity` is a bare integer that
+is written into save files and game data, so widening it later migrates every artifact that
+stored one. Everything else in the matrix is better decided by the next game.
+
+*Two decisions stay deferred with their numbers attached:* tiled navmesh rebuild, and
+failed-replan backoff. *Verdict:* **no critical missing seam** — so the next move is the
+orthogonal combat game rather than more engine work, because a projectile needs a collider, a
+hit needs a sound and a swing needs a clip, which is precisely the unproven column.
+
 **Minecraft (L3) — measurement tooling.** *Forced (soft):* the per-block vs chunk decision needed
 numbers, and the windowed app has no capturable FPS. *Change:* opt-in `SUGAR_FPSLOG=1` prints
 FPS + drawn-entity + draw count to stderr each second (the L2-noted missing profiler overlay).

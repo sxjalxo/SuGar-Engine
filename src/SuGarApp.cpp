@@ -1411,9 +1411,14 @@ void SuGarApp::mainLoop() {
             // stderr each second. A dogfood-driven stand-in for the missing in-game
             // profiler overlay — lets a scaling run be measured, not guessed.
             if (std::getenv("SUGAR_FPSLOG") != nullptr) {
+                // Both numbers, because they answer different questions: `items` is what
+                // the scene asked to draw, `drawCalls` is what the GPU was actually told
+                // to do. Instancing lives in the gap, and a run reporting only the first
+                // cannot tell whether any batching happened.
                 std::cerr << "[fps] " << fps
                           << " entities=" << registry.transforms.getAll().size()
-                          << " draws=" << drawList.items.size() << "\n";
+                          << " items=" << drawList.items.size()
+                          << " drawCalls=" << renderer->submittedDrawCalls() << "\n";
             }
             fpsTimer = currentTime;
             framesThisSecond = 0;

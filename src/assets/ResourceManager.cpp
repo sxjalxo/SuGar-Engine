@@ -1,4 +1,7 @@
 #include "assets/ResourceManager.h"
+
+#include "rendering/DeviceMemoryPool.h"
+#include "rendering/MeshUploadProfile.h"
 #include "assets/AssetCooker.h"
 #include "assets/AssetPath.h"
 #include "assets/CookedAsset.h"
@@ -7,6 +10,8 @@
 #include "rendering/Texture.h"
 #include <algorithm>
 #include <chrono>
+#include <cstdlib>
+#include <iostream>
 #include <cctype>
 #include <filesystem>
 #include <stdexcept>
@@ -213,6 +218,8 @@ AssetHandle ResourceManager::loadAudioClip(const std::string& path) {
 
 AssetHandle ResourceManager::createRuntimeMesh(const RuntimeMeshData& data, std::string& error) {
     ensureInitialized();
+    auto& profile = MeshUploadProfile::counters();
+    const auto validateStart = std::chrono::steady_clock::now();
 
     // Engine-side validation (the Core boundary passes only data). Reject anything that
     // would upload a malformed buffer or let the GPU read out of range.
@@ -240,6 +247,10 @@ AssetHandle ResourceManager::createRuntimeMesh(const RuntimeMeshData& data, std:
         }
     }
 
+    profile.validateMs += std::chrono::duration<double, std::milli>(
+                              std::chrono::steady_clock::now() - validateStart).count();
+    const auto translateStart = std::chrono::steady_clock::now();
+
     // Copy into the engine's own vertex format, then upload. Nothing retains a pointer
     // into the caller's data — it may be discarded the moment this returns.
     auto mesh = std::make_shared<Mesh>();
@@ -260,10 +271,30 @@ AssetHandle ResourceManager::createRuntimeMesh(const RuntimeMeshData& data, std:
     }
     mesh->indices = data.indices;
 
+    profile.translateMs += std::chrono::duration<double, std::milli>(
+                               std::chrono::steady_clock::now() - translateStart).count();
+
     static uint64_t nextRuntimeId = 1;
     const std::string key = "runtime://mesh/" + std::to_string(nextRuntimeId++);
     mesh->setResourceKey(key);
     mesh->upload(device, physicalDevice, commandPool, graphicsQueue);
+    profile.meshes++;
+
+    // Opt-in report (SUGAR_UPLOADLOG=1), every 64 meshes so a streaming run prints a few
+    // lines rather than one per chunk.
+    static const bool logging = std::getenv("SUGAR_UPLOADLOG") != nullptr;
+    if (logging && profile.maxAllocationsAllowed == 0 && physicalDevice != VK_NULL_HANDLE) {
+        VkPhysicalDeviceProperties properties{};
+        vkGetPhysicalDeviceProperties(physicalDevice, &properties);
+        profile.maxAllocationsAllowed = properties.limits.maxMemoryAllocationCount;
+    }
+    if (logging && profile.meshes % 64u == 0u) {
+        const DeviceMemoryPool::Stats pool = DeviceMemoryPool::stats();
+        std::cerr << "[upload] " << profile.describe() << " | pool " << pool.blocks << " blocks, "
+                  << (pool.usedBytes / (1024u * 1024u)) << "/"
+                  << (pool.blockBytes / (1024u * 1024u)) << " MiB used, " << pool.liveAllocations
+                  << " live\n";
+    }
 
     const AssetHandle handle = nextHandle++;
     meshTable.emplace(handle, ResourceEntry<Mesh>{mesh, key, 1});
@@ -496,6 +527,8 @@ void ResourceManager::shutdown() {
             entry.resource->destroy(device);
         }
     }
+
+    Mesh::shutdownUploadResources(device); // the shared staging buffer outlives the meshes
 
     meshTable.clear();
     textureTable.clear();

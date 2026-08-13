@@ -120,6 +120,11 @@ public:
     uint32_t getCurrentFrame() const { return currentFrame; }
     static constexpr int framesInFlight() { return MAX_FRAMES_IN_FLIGHT; }
     VkDescriptorSet getDescriptorSet(AssetHandle textureHandle, uint32_t imageIndex) const;
+
+    // What the GPU was actually told to draw last frame — after instancing merged what it
+    // could. Exposed because "items" and "draw calls" are different questions, and a
+    // measurement run that reports only the first cannot see whether batching happened.
+    int submittedDrawCalls() const;
     
 private:
     void cleanupSwapChain();

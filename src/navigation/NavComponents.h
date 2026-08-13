@@ -77,9 +77,22 @@ struct NavAgentComponent {
     // only when the value actually changes — this also re-plans a *repeat* of a
     // destination that previously came back Unreachable, which is the one case a
     // pure comparison cannot see.
+    //
+    // Re-issuing the SAME destination while already following a path does not re-arm,
+    // and that exception is the whole of this function's subtlety. "Call setDestination
+    // every tick at the thing I am chasing" is how chase behaviours are written, and
+    // unconditionally resetting the status made it mean "throw the path away and run A*
+    // again, every frame, for every agent". Measured: 58 agents re-issuing one shared
+    // destination each frame drove the game below one frame per second, with every agent
+    // stuck reporting Idle because it was reset before it could ever be seen following.
+    // An Unreachable or Arrived agent still re-arms, so the retry case above survives.
     void setDestination(const glm::vec3& target) {
+        const bool sameTarget = hasDestination && destination == target;
         destination = target;
         hasDestination = true;
+        if (sameTarget && status == NavAgentStatus::Following) {
+            return; // already walking there; keep the path we have
+        }
         status = NavAgentStatus::Idle;
     }
 
