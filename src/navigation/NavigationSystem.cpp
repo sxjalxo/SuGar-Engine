@@ -36,8 +36,12 @@ void planRoute(NavAgentComponent& agent, const glm::vec3& position) {
     if (result != NavPath::Result::Success) {
         agent.path.clear();
         agent.status = NavAgentStatus::Unreachable;
+        // Arm the backoff. Gameplay re-issuing this same goal will not buy another
+        // search until it expires (DevDocs/DESIGN_REPLAN_BACKOFF.md).
+        agent.replanCooldown = agent.failedReplanInterval;
         return;
     }
+    agent.replanCooldown = 0.0f; // a route exists again; nothing to back off from
 
     agent.status = NavAgentStatus::Following;
 
@@ -292,6 +296,13 @@ void update(Registry& registry, float dt) {
         // destination out from under the current plan. Arrived and Unreachable are
         // both terminal until one of those happens — which is what stops a stuck
         // agent from burning a full A* every step, forever.
+        // Simulation time, never wall-clock: a backoff on OS time would make the sim
+        // non-reproducible, and it is exactly the mistake that once made a navigation
+        // harness measure itself when the frame slowed past its own gate.
+        if (agent.replanCooldown > 0.0f) {
+            agent.replanCooldown = std::max(0.0f, agent.replanCooldown - dt);
+        }
+
         if (agent.status == NavAgentStatus::Idle || agent.destination != agent.pathGoal) {
             planRoute(agent, position);
         }

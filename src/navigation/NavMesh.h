@@ -14,7 +14,7 @@
 //
 // This header is pure data + pure math, which is exactly why it lives in Core: no
 // Vulkan, no ResourceManager, and therefore testable headlessly (RULES.md Rule 9,
-// Rule 15). See docs/DESIGN_NAVIGATION.md.
+// Rule 15). See DevDocs/DESIGN_NAVIGATION.md.
 
 // One convex polygon, indexing into NavMesh::indices the same way a submesh
 // indexes a vertex buffer — one allocation for the whole mesh rather than a
@@ -30,7 +30,7 @@ struct NavPolygon {
 
 // An off-mesh connection: a traversable edge between two points that share no polygon
 // edge — a jump across a trench, a drop off a ledge, a ladder (M4 L3, see the addendum in
-// docs/DESIGN_NAVIGATION.md).
+// DevDocs/DESIGN_NAVIGATION.md).
 //
 // A link is **mesh data**, not a second graph: it lives on the NavMesh, the search treats
 // it as one more kind of edge, and the funnel splits its corridor around it. The endpoints

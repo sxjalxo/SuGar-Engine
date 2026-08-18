@@ -16,6 +16,9 @@ layout(push_constant) uniform Push {
 
 layout(location = 0) out vec4 fragColor;
 layout(location = 1) out vec2 fragTexCoord;
+// Screen-space UV for the clip mask (DevDocs/DESIGN_UI_CLIP_MASK.md). Derived from the
+// same NDC this shader already computes, so nothing extra is uploaded per vertex.
+layout(location = 2) out vec2 fragMaskCoord;
 
 void main() {
     vec2 pixel = inPosition + pc.translation;
@@ -23,4 +26,5 @@ void main() {
     gl_Position = vec4(ndc, 0.0, 1.0);
     fragColor = inColor;
     fragTexCoord = inTexCoord;
+    fragMaskCoord = ndc * 0.5 + 0.5;
 }

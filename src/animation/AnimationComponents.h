@@ -12,7 +12,7 @@
 //
 // So playback time lives here, in ECS, where it snapshots and time-travels like
 // any other component — and the pose is recomputed from it every fixed step
-// rather than stored. See docs/DESIGN_ANIMATION.md.
+// rather than stored. See DevDocs/DESIGN_ANIMATION.md.
 struct AnimationPlayerComponent {
     // Clip name, resolved through AnimationClipRegistry. A name (not a pointer or
     // an index) because it serializes, survives a snapshot as a plain string, and
@@ -47,7 +47,7 @@ struct AnimationPlayerComponent {
 // system already poses, and the joint matrices are derived from them each frame
 // (Skinning.h). Caching any of it here would create a second source of truth that
 // a snapshot restore could leave disagreeing with the transforms — RULES.md
-// Rule 21. See docs/DESIGN_ANIMATION.md.
+// Rule 21. See DevDocs/DESIGN_ANIMATION.md.
 struct SkinnedMeshComponent {
     std::string skin; // key into SkinRegistry ("<path>#<skinName>")
 };

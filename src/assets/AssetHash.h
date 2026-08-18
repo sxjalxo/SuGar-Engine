@@ -3,7 +3,7 @@
 #include <cstdint>
 #include <string>
 
-// Content hashing for cook staleness (docs/DESIGN_ASSET_PIPELINE.md).
+// Content hashing for cook staleness (DevDocs/DESIGN_ASSET_PIPELINE.md).
 //
 // Content hash, not mtime: mtime says "a write happened", the hash says "the bytes
 // differ". Touching a file, switching git branches back and forth, or a fresh checkout

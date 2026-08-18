@@ -660,7 +660,7 @@ void writeEntityObject(std::ostream& output, const Registry& registry, Entity en
     // This replaced a ladder of `tailAfter*` booleans, each the OR of every optional
     // declared after it. That cost ~10 edits per new component, and a missed term
     // emitted invalid JSON at *runtime* (a failed snapshot parse) rather than a
-    // compile error — see docs/DEV_ENVIRONMENT.md on partially-applied edits.
+    // compile error — see DevDocs/DEV_ENVIRONMENT.md on partially-applied edits.
     // Nothing is emitted while this vector is built, so it is safe to assemble here,
     // between the material object's contents and its closing brace.
     std::vector<std::function<void(std::ostream&)>> fields;
@@ -842,7 +842,7 @@ void writeEntityObject(std::ostream& output, const Registry& registry, Entity en
     // jumps after a restore. `time` is the whole point — restore it and the next
     // fixed step re-derives the identical pose, which is why the pose itself is
     // never written. A player with no clip is inert, so it is omitted (the same
-    // rule `script` uses for an empty behavior name). See docs/DESIGN_ANIMATION.md.
+    // rule `script` uses for an empty behavior name). See DevDocs/DESIGN_ANIMATION.md.
     if (registry.animations.has(entity) && !registry.animations.get(entity).clip.empty()) {
         fields.push_back([&](std::ostream& out) {
             const auto& player = registry.animations.get(entity);
@@ -922,7 +922,7 @@ void writeEntityObject(std::ostream& output, const Registry& registry, Entity en
     }
 
     // Optional: navigation agent (Phase 18A). All authoritative — *including the
-    // path*, which is the one classification docs/DESIGN_NAVIGATION.md exists to get
+    // path*, which is the one classification DevDocs/DESIGN_NAVIGATION.md exists to get
     // right. A path looks like a cache of f(navmesh, position, goal), but it is a
     // function of where the agent stood when it planned: drop it and a restored
     // agent may legitimately re-decide its route at a fork, so two runs of the same
@@ -968,7 +968,23 @@ void writeEntityObject(std::ostream& output, const Registry& registry, Entity en
             writeIndent(out, 4);
             out << "\"speed\": "; writeFloat(out, agent.speed); out << ",\n";
             writeIndent(out, 4);
-            out << "\"arrivalRadius\": "; writeFloat(out, agent.arrivalRadius); out << "\n";
+            out << "\"arrivalRadius\": "; writeFloat(out, agent.arrivalRadius);
+            // Backoff state (DevDocs/DESIGN_REPLAN_BACKOFF.md). `replanCooldown` is
+            // authoritative history — a restore that forgot it would fire a fresh
+            // search storm on the frame it lands. Written only when either differs
+            // from its default, so existing scenes serialize byte-for-byte as before.
+            if (agent.replanCooldown != 0.0f) {
+                out << ",\n";
+                writeIndent(out, 4);
+                out << "\"replanCooldown\": "; writeFloat(out, agent.replanCooldown);
+            }
+            if (agent.failedReplanInterval != 0.5f) {
+                out << ",\n";
+                writeIndent(out, 4);
+                out << "\"failedReplanInterval\": ";
+                writeFloat(out, agent.failedReplanInterval);
+            }
+            out << "\n";
             writeIndent(out, 3);
             out << "}";
         });
@@ -1049,13 +1065,20 @@ void writeEntityObject(std::ostream& output, const Registry& registry, Entity en
             writeIndent(out, 4);
             out << "\"maxDistance\": ";
             writeFloat(out, label.maxDistance);
+            // Written only when set, so every scene authored before label occlusion
+            // existed still serializes byte-for-byte as it did.
+            if (label.occluderMask != 0u) {
+                out << ",\n";
+                writeIndent(out, 4);
+                out << "\"occluderMask\": " << label.occluderMask;
+            }
             out << "\n";
             writeIndent(out, 3);
             out << "}";
         });
     }
 
-    // Optional: a light on this entity (docs/DESIGN_LIGHTING.md). Position and direction
+    // Optional: a light on this entity (DevDocs/DESIGN_LIGHTING.md). Position and direction
     // are absent by design — both derive from the entity's transform every frame.
     if (registry.lights.has(entity)) {
         fields.push_back([&](std::ostream& out) {
@@ -1081,7 +1104,7 @@ void writeEntityObject(std::ostream& output, const Registry& registry, Entity en
         });
     }
 
-    // Optional: game-defined per-entity state (docs/DESIGN_GAME_DATA.md). The engine
+    // Optional: game-defined per-entity state (DevDocs/DESIGN_GAME_DATA.md). The engine
     // writes the pairs and never interprets them — keys belong to the game. std::map
     // ordering makes the output a function of the state, not of hash layout.
     if (registry.gameData.has(entity) && !registry.gameData.get(entity).values.empty()) {
@@ -1568,6 +1591,13 @@ PendingEntityData parseEntityObject(const JsonValue& objectValue, int sceneVersi
         if (const JsonValue* v = findObjectField(navData, "arrivalRadius")) {
             agent.arrivalRadius = getFloatValue(*v, "navagent.arrivalRadius");
         }
+        if (const JsonValue* v = findObjectField(navData, "replanCooldown")) {
+            agent.replanCooldown = getFloatValue(*v, "navagent.replanCooldown");
+        }
+        if (const JsonValue* v = findObjectField(navData, "failedReplanInterval")) {
+            agent.failedReplanInterval =
+                getFloatValue(*v, "navagent.failedReplanInterval");
+        }
     }
 
     if (const JsonValue* sourceValue = findObjectField(objectData, "navmeshsource")) {
@@ -1591,6 +1621,10 @@ PendingEntityData parseEntityObject(const JsonValue& objectValue, int sceneVersi
         }
         if (const JsonValue* v = findObjectField(labelData, "maxDistance")) {
             pendingEntity.worldLabel.maxDistance = getFloatValue(*v, "worldlabel.maxDistance");
+        }
+        if (const JsonValue* v = findObjectField(labelData, "occluderMask")) {
+            pendingEntity.worldLabel.occluderMask =
+                getUint32Value(*v, "worldlabel.occluderMask");
         }
     }
 
@@ -2351,7 +2385,7 @@ bool SceneSerializer::collectAssetKeys(const std::string& sceneText, std::vector
             if (isAssetField && member.second.type == JsonValue::Type::String &&
                 !member.second.string.empty() &&
                 // Derived runtime meshes are not source assets — never cook/package them
-                // (docs/DESIGN_RUNTIME_MESH.md). (builtin:// stays collected: its runtime
+                // (DevDocs/DESIGN_RUNTIME_MESH.md). (builtin:// stays collected: its runtime
                 // resolution is unchanged and existing packaging relies on it.)
                 member.second.string.rfind("runtime://", 0) != 0) {
                 outKeys.push_back(member.second.string);

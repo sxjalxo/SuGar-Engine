@@ -1410,8 +1410,11 @@ void BasicTrianglePass::updateUniformBuffer() {
     const float farPlane = lightDistance + shadowExtent;
 
     const glm::mat4 lightView = glm::lookAt(fitLightPos, lightTarget, up);
-    const glm::mat4 lightProj =
-        glm::ortho(-shadowExtent, shadowExtent, -shadowExtent, shadowExtent, nearPlane, farPlane);
+    // _ZO for the same reason Camera::getProjectionMatrix uses it: Vulkan clips depth to
+    // 0..1, and GLM's default ortho spans -1..1, so the near HALF of this frustum -- half
+    // the scene, for an ortho light -- never reaches the shadow map at all.
+    const glm::mat4 lightProj = glm::orthoRH_ZO(-shadowExtent, shadowExtent, -shadowExtent,
+                                                shadowExtent, nearPlane, farPlane);
     ubo.lightSpaceMatrix = lightProj * lightView;
 
     if (uniformBufferMapped == nullptr) {

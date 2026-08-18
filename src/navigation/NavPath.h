@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstddef>
 #include <vector>
 
 #include <glm/glm.hpp>
@@ -25,7 +26,7 @@
 //      polygon-center: the classic zig-zag that makes a correct search look broken.
 //
 // One is not a refinement of the other, so neither is hidden inside the other.
-// See docs/DESIGN_NAVIGATION.md.
+// See DevDocs/DESIGN_NAVIGATION.md.
 namespace NavPath {
 
 // Why a plan failed. Distinguished rather than collapsed to a bool because the
@@ -51,7 +52,20 @@ enum class Result {
 // index of the NavLink used to get from `outCorridor[i]` to `outCorridor[i + 1]`, or -1
 // when that step crossed an ordinary shared edge. Optional so every existing caller is
 // unchanged; string-pulling needs it because the funnel is only valid across shared
-// portals (see the off-mesh-link addendum in docs/DESIGN_NAVIGATION.md).
+// portals (see the off-mesh-link addendum in DevDocs/DESIGN_NAVIGATION.md).
+// How many A* corridor searches have run since the last reset.
+//
+// A diagnostic, in the same spirit as PhysicsWorld::lastBroadphaseCandidateCount() and
+// Renderer::submittedDrawCalls(): the failure this exists to catch — N agents chasing an
+// unreachable goal paying a full search each, every step — is invisible to a correctness
+// test, because every one of those searches returns the right answer. Only the *count*
+// shows it (DevDocs/DESIGN_REPLAN_BACKOFF.md).
+//
+// Not simulation state: it is never serialized, never snapshotted, and resetting it
+// changes nothing about what any agent does.
+std::size_t searchesPerformed();
+void resetSearchCount();
+
 Result findCorridor(const NavMesh& mesh,
                     glm::vec3& start,
                     glm::vec3& goal,

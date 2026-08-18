@@ -237,7 +237,7 @@ void SuGarApp::run() {
         std::exit(errors.empty() ? 0 : 1);
     }
 
-    // Opt-in headless standalone export (Phase 20, docs/DESIGN_PACKAGING.md): cook the
+    // Opt-in headless standalone export (Phase 20, DevDocs/DESIGN_PACKAGING.md): cook the
     // assets a scene reaches, write the manifest, copy the scene, and exit. No window,
     // no Vulkan device -- the same reason the cooker is device-free. Runtime binaries
     // are the build pipeline's job (the next M3 item), so this gate ships assets +
@@ -333,7 +333,7 @@ void SuGarApp::run() {
 
         // Acceptance check: resolve the package the way the shipped exe will -- manifest
         // only, no source. A package that does not verify is not shippable, so this
-        // gates the pipeline's exit code (docs/DESIGN_BUILD_PIPELINE.md).
+        // gates the pipeline's exit code (DevDocs/DESIGN_BUILD_PIPELINE.md).
         bool verified = report.ok();
         if (report.ok()) {
             std::vector<std::string> verifyErrors;
@@ -462,7 +462,7 @@ void SuGarApp::initScene() {
     orbitParent = INVALID_ENTITY;
 
     // Packaged vs editor is decided by one fact: does a manifest sit next to the
-    // executable (docs/DESIGN_PACKAGING.md)? If so, this is a shipped build with no
+    // executable (DevDocs/DESIGN_PACKAGING.md)? If so, this is a shipped build with no
     // source tree -- resolve every asset key through the manifest and cook nothing.
     // Otherwise it is the editor: scan the source assets and cook on demand.
     const std::string manifestFile = Packager::manifestPath(".");
@@ -1228,6 +1228,10 @@ void SuGarApp::initVulkan() {
     createLogicalDevice();
     createCommandPool();
     ResourceManager::init(device, physicalDevice, commandPool, graphicsQueue);
+    // How long a released GPU resource must outlive its last reference
+    // (DevDocs/DESIGN_GPU_RETIREMENT.md). The renderer states its own depth rather than
+    // ResourceManager assuming one.
+    ResourceManager::setFramesInFlight(static_cast<uint32_t>(Renderer::framesInFlight()));
     // Engine wires the ECS's asset-release hook to ResourceManager, so Core's
     // Registry never references the Vulkan-coupled resource system directly.
     registry.onReleaseAsset = [](AssetHandle handle) { ResourceManager::release(handle); };
@@ -1418,7 +1422,14 @@ void SuGarApp::mainLoop() {
                 std::cerr << "[fps] " << fps
                           << " entities=" << registry.transforms.getAll().size()
                           << " items=" << drawList.items.size()
-                          << " drawCalls=" << renderer->submittedDrawCalls() << "\n";
+                          << " drawCalls=" << renderer->submittedDrawCalls()
+                          // Resource counts ride along, because the question a torture run
+                          // asks — did thousands of spawn/destroy cycles leak anything? — is
+                          // answered by these staying flat, and nothing headless can see them.
+                          << " meshes=" << ResourceManager::liveMeshCount()
+                          << " textures=" << ResourceManager::liveTextureCount()
+                          << " clips=" << ResourceManager::liveAudioClipCount()
+                          << " retired=" << ResourceManager::retiredCount() << "\n";
             }
             fpsTimer = currentTime;
             framesThisSecond = 0;

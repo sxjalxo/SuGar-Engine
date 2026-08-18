@@ -1,12 +1,13 @@
 #pragma once
 
+#include <cstdint>
 #include <string>
 #include <vector>
 
 // Phase 16A — Runtime UI model layer. Authoritative UI state lives in ECS
 // components (never inside RmlUi), so the rendered UI is a pure function of ECS +
 // input and therefore survives snapshot restore / time travel / hot reload for
-// free. See docs/DESIGN_RUNTIME_UI.md and RULES.md Rule 21.
+// free. See DevDocs/DESIGN_RUNTIME_UI.md and RULES.md Rule 21.
 //
 // Screens and focused elements are identified by name (std::string), mirroring the
 // behavior-name pattern: serializable, extensible, no compiled-in enum to keep in
@@ -36,7 +37,7 @@ struct FocusComponent {
 // In-progress text entry (a save name, a chat line). The buffer and caret are
 // **authoritative**: scrub back and the half-typed text must still be there, so they
 // live here rather than inside an RmlUi text field. The caret *blink phase* is
-// derived and stays in the view. See docs/DESIGN_RUNTIME_UI.md.
+// derived and stays in the view. See DevDocs/DESIGN_RUNTIME_UI.md.
 //
 // `element` ties this field to the document element that displays it, which is how
 // typing is routed: text intents only apply to the field whose `element` matches
@@ -84,7 +85,7 @@ struct UIElementStateComponent {
 };
 
 // Text anchored to a point in the WORLD rather than to the screen — a mob nameplate, an
-// interaction hint, a damage number (M4 L3, see the addendum in docs/DESIGN_RUNTIME_UI.md).
+// interaction hint, a damage number (M4 L3, see the addendum in DevDocs/DESIGN_RUNTIME_UI.md).
 //
 // The anchor is the entity's own transform plus `offsetY`; there is no second position to
 // desync. Everything about *where it lands on screen* — pixel position, scale, whether it
@@ -98,4 +99,13 @@ struct WorldLabelComponent {
     // Past this distance the label is dropped entirely. A world full of labelled mobs is
     // unreadable long before it is slow, so the cull is a legibility decision first.
     float maxDistance = 24.0f;
+
+    // Collision layers that hide this label when they stand between the camera and the
+    // anchor (rendering/WorldLabelVisibility.h). **0 = never occlude**, which is what
+    // every scene written before this did, so nothing changes until a game opts in.
+    //
+    // A mask rather than a bool because "solid" is a game's word: an arena wall should
+    // hide a nameplate and another enemy probably should not, and only the game knows
+    // which layer is which.
+    uint32_t occluderMask = 0u;
 };

@@ -31,7 +31,7 @@ string-pulling, agents whose *plan* — not just their position — is authorita
 state, a bake that turns scene geometry into a navmesh and rebuilds it on scene load, an
 editor with navmesh/path overlays and an explicit Rebake, and agent-radius erosion plus
 local obstacle avoidance. **The asset pipeline is in progress** (Phase 19,
-`docs/DESIGN_ASSET_PIPELINE.md`): `Cooked = f(source
+`DevDocs/DESIGN_ASSET_PIPELINE.md`): `Cooked = f(source
 bytes, import settings, cooker version)`, asset identity is the normalized path (no
 GUIDs, no id database), and 19A has landed the headless asset database, `.meta` import
 sidecars and content-hash staleness, and 19B the cooked-artifact cache — the runtime
@@ -83,7 +83,7 @@ persistence, navigation and AI, streaming, combat, UI, audio, animation — can 
 engine as it stands. **Its first game, a voxel / Minecraft-like, is done.** The first slice runs:
 first-person, a chunked voxel world, gravity + game-side voxel collision, raycast break/place. It
 forced **three architectural seams**, each designed as a record before code (the `AssetGateway`
-and `CameraComponent` designs, `docs/DESIGN_RUNTIME_MESH.md`): **camera as a component**
+and `CameraComponent` designs, `DevDocs/DESIGN_RUNTIME_MESH.md`): **camera as a component**
 (`CameraComponent` — a game drives the view by placing it on an entity; the renderer reads that
 entity's world transform, pose derived); the **asset-acquire seam** (`AssetGateway` — the
 symmetric *acquire* half of the existing release hook, so a Core-only game turns an asset key into
@@ -129,15 +129,86 @@ end to end with no engine change at all. Several architectural changes were **na
 deliberately not built** — tiled navmesh rebuild, failed-replan backoff, batched-submit upload —
 because a measurement, not an intuition, gets to force those.
 
-A [platform audit](docs/PLATFORM_AUDIT.md) closes M4's Minecraft arc by asking a harder question
-than "does the engine have X?": for each subsystem, is there a *seam*, has a *real game* driven
-it, has it survived a *hostile* workload, and is there an unresolved architectural decision. It
-found that **animation/skinning, audio and collision are implemented, self-tested, and have never
-been used by a game** — so L3's next game is a small combat arena, precisely because a projectile
-needs a collider, a hit needs a sound and a swing needs a clip. It is chosen for the engine
-surface it drives, not for what it adds to a game library.
+A [platform audit](DevDocs/PLATFORM_AUDIT.md) closes M4's Minecraft arc by asking a harder
+question than "does the engine have X?": for each subsystem, is there a *seam*, has a *real game*
+driven it, has it survived a *hostile* workload, and is there an unresolved architectural decision.
+It found that **animation/skinning, audio and collision are implemented, self-tested, and have
+never been used by a game** — so L3's next game is a small combat arena, precisely because a
+projectile needs a collider, a hit needs a sound and a swing needs a clip. It is chosen for the
+engine surface it drives, not for what it adds to a game library.
 
-**Level 4 has not started.** It begins when the questions stop being "can this mechanic be built"
+**That arena is built, and it is the first L3 game that forced no new engine seam.** A skinned
+fighter, waves of skinned navmesh agents, a melee swing that is a masked raycast, a thrown bolt
+that is a dynamic body, trigger-volume pickups, spatial per-enemy audio — a game that shares
+nothing with a voxel streamer except the engine, and the engine took it unchanged. It found four
+defects instead (**#37–#40**), and three of them are the same mistake wearing different clothes:
+*treating an asset key as a filesystem path.* A scene outside the working directory silently
+registered **no skins and no animation clips**, so every character rendered in bind pose with no
+error anywhere; packaging an external game shipped **no model at all** because the copy resolved
+onto itself; and releasing the last reference to an asset freed GPU memory that frames in flight
+were still reading (now a [retirement queue](DevDocs/DESIGN_GPU_RETIREMENT.md); three validation
+errors per run → zero). The fourth had nothing to do with games: GLM emits OpenGL's `-1..1` clip
+depth while Vulkan keeps `0..1`, so **half of every shadow map had been discarded** since the
+shadow pass was written — invisible on a perspective camera, fatal on an orthographic light. Gate
+**56 → 57/57**.
+
+What did not break is the other half of the result: **162 skinned, pathing, growling enemies at
+245 FPS** (1 848 entities, 169 draw items held to 140 draw calls by instancing), 162 looping
+spatial voices against a 64-voice mixer cap, a hot reload performed mid-run with ~160 entities
+holding live runtime meshes, and a packaged standalone at 368 FPS. Two deferred items gained
+numbers rather than opinions: a projectile tunnels a 2 m wall somewhere between 400 and 800 m/s
+and the game's throws at **34 m/s** (24x margin), and skinned draws hit a hard ceiling at **64 per
+frame** — reached only by a deliberate stress probe, against a designed wave cap of 24. Neither is
+built. Detail: `E:\Sugar Engine - Games\Level 3\CombatArena\Report.md`.
+
+A second increment then went looking for ordinary game depth — a pause menu, an upgrade
+screen, a run name that survives a restart — and the arena stopped being writable at once.
+**#42: the runtime UI's *interactive* half was unreachable by any game.** Three places, one
+mistake: the engine's own demo document's element ids were compiled into the view. The only
+document→intent bridge was `GetElementById("open")`; the active screen was applied by writing
+debug text into `#body`; every text field rendered `"Tag: " + buffer`. A game ships its own
+`hud.rml`, so **nothing could ever be clickable** — which is why, across L1, L2 and L3, not
+one game had ever used `uiScreens`, `focus` or `textInputs`. The model half had been complete
+and self-tested the whole time; nothing could reach it. Now a document declares its own
+intents (`data-intent="open:Pause"`), the active screen arrives as a `screen-<id>` class the
+game's RCSS interprets, and text fields render verbatim and **escaped** — a player's run name
+was one `<` away from injecting elements into the document.
+
+**Then a deliberate pass over the deferred backlog**, promoting items by evidence rather than
+by age. Three came off it. **World-label depth occlusion** — nameplates showed through walls —
+resolved as an opt-in layer mask, because "solid" is a game's word: an arena wall should hide
+a nameplate, another enemy should not, and a mask of `0` (the default) keeps every existing
+scene identical. **#43, failed-replan backoff**: the instrumentation went in *first*, so the
+acceptance criterion was the work rather than the frame rate — 40 agents re-issuing an
+unreachable goal cost **4 800 A\* searches** in 120 fixed steps, one per agent per step, every
+one of them returning the correct answer. A per-agent cooldown on the *retry* path, decremented
+by simulation time and never the wall clock, took the same workload to **160**. **#44, clip
+masks**: the arena's translucent pause panel finally produced the workload #14 had named when
+it deferred them, and the reproduction — two identical boxes with the shadow swapped between
+them — measured the element's own drop shadow darkening its interior by **53 RGB**. The first
+implementation was then *rejected by its own evidence*: a stencil mask would have required
+changing the depth format for the **scene** pass, because the UI pass uses `D32_SFLOAT` and
+offscreen effect layers carry no depth at all. Built as a coverage texture owned entirely by
+the UI renderer instead: 39.8 → 86.4 against an unshadowed 93.1, with the engine's own
+demo document — which uses no `box-shadow`, so no mask is ever set — pixel-identical.
+
+Gate **56 → 63/63** Debug + Release across the arena's whole arc.
+
+**One deferred item was designed and deliberately not built.** Generational entity ids are the
+single row the platform audit marked "widen now", and
+[the design record](DevDocs/DESIGN_GENERATIONAL_IDS.md) settled the representation with
+measurement rather than taste: `GameData` stores numbers as `double`, so a **64-bit handle
+cannot round-trip** while any 32-bit packing sits six orders of magnitude inside the
+guarantee — and the GPU torture's ~250 reuses of a single slot in 90 seconds rules out an
+8-bit generation. It also corrected the audit's own rationale: scene files, prefabs and
+snapshots store **no entity ids at all** (`parent` is an array index), so the migration needs
+no artifact conversion and no format bump, and does not get harder while it waits. It is
+scheduled as its own phase behind the next L3 game, because in ~35 000 entity destroys across
+the arena's adversarial passes, not one stale-handle defect has ever been observed.
+
+**Level 4 has not started** — but it is a *branch* of M4 rather than the phase after L3, and a
+workload can open it at any time. L3 asks whether SuGar can **build** serious games; L4 asks
+whether it can **run** them to production standards. L4's questions stop being "can this mechanic be built"
 and become questions of quality, scale and platform integration: rendering beyond the current
 forward path, high-DPI/4K and dynamic resolution, vendor features (FreeSync/G-Sync, DLSS/FSR),
 GPU-driven culling and async upload — plus whatever the L3 games measured and deliberately
@@ -171,8 +242,8 @@ it waits.
   hand-written Vulkan `RenderInterface` into the game viewport. All authoritative UI
   state (screen stack, focus, text buffer, caret) lives in **ECS**, so it snapshots,
   time-travels and hot-reloads like any other component; hover/layout/rendering are
-  derived. Design: `docs/DESIGN_RUNTIME_UI.md` — rationale
-  and lessons: `docs/RUNTIME_UI_LESSONS.md`
+  derived. Design: `DevDocs/DESIGN_RUNTIME_UI.md` — rationale
+  and lessons: `DevDocs/RUNTIME_UI_LESSONS.md`
 * **RmlUi effects compositor** (M4 #14) — the runtime UI renders in its own pass after
   the scene pass, and the Vulkan `RenderInterface` implements RmlUi 6's layer path
   (offscreen colour layers + a fullscreen Gaussian-blur composite + save-layer-as-texture),
@@ -255,7 +326,7 @@ it waits.
   (active state, phase, transition target + elapsed) is ECS, so a character saved
   **mid-cross-fade** scrubs back mid-cross-fade. Parameters live in their own component
   because they are *gameplay's* state that the animator only reads
-* **Phase, not seconds** — a state's position is normalized `docs/DESIGN_ANIMATION.md` — the
+* **Phase, not seconds** — a state's position is normalized `DevDocs/DESIGN_ANIMATION.md` — the
   authoritative/derived split, and why an animation transition is authoritative
   where the identical-looking UI tween is derived
 
@@ -311,7 +382,7 @@ it waits.
   a clearance-width short and never arrives. Each obstacle also contributes a
   **tangential** term sided toward the goal; the tangent is what turns a standoff into
   an orbit
-* Design: `docs/DESIGN_NAVIGATION.md` — including the rule
+* Design: `DevDocs/DESIGN_NAVIGATION.md` — including the rule
   the three design records converge on: *a cache is derived only if it is a function of
   the **current** state; a value computed once from a past state is a function of
   history, and history is authoritative*
@@ -538,7 +609,7 @@ the parser stack), a glTF whose accessor runs past its buffer (would read out of
 and a cooked `.sgc` claiming an absurd element count (would abuse `reserve` / overflow a
 size calc). Each must be *rejected cleanly*, so malformed-input handling is a permanent
 regression, not an ad-hoc fuzz. Added in the 2026-07-28 hardening pass; see the robustness
-note in [docs/DESIGN_ASSET_PIPELINE.md](docs/DESIGN_ASSET_PIPELINE.md).
+note in [DevDocs/DESIGN_ASSET_PIPELINE.md](DevDocs/DESIGN_ASSET_PIPELINE.md).
 
 RmlUi also has a separate headless integration smoke test for the engine-only view
 scaffold. It initialises RmlUi with FreeType, loads a bundled Lato font, creates a

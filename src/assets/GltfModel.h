@@ -40,7 +40,7 @@ struct GltfModelData {
     // Animation clips, already in engine form (Phase 17B). glTF channels target
     // node *indices*; the loader resolves those to node **names** here, so nothing
     // downstream depends on glTF's numbering — a re-export that reorders nodes
-    // doesn't invalidate a saved scene. See docs/DESIGN_ANIMATION.md.
+    // doesn't invalidate a saved scene. See DevDocs/DESIGN_ANIMATION.md.
     std::vector<AnimationClip> animations;
 
     // Skins, already in engine form (Phase 17C). glTF lists a skin's joints as node

@@ -12,7 +12,7 @@ class Registry;
 // stays authoritative, and snapshot restore / time travel / hot reload continue an
 // agent's journey rather than re-deciding it.
 //
-// The fixed step is the only clock. See docs/DESIGN_NAVIGATION.md.
+// The fixed step is the only clock. See DevDocs/DESIGN_NAVIGATION.md.
 namespace NavigationSystem {
 
 // Plans and advances every NavAgentComponent. `dt` is the fixed step.

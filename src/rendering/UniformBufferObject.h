@@ -2,7 +2,7 @@
 #include <glm/glm.hpp>
 
 // Eight, not four: a torch-lit scene needs more than four and the game hit the old cap
-// immediately (docs/DESIGN_LIGHTING.md). Not "many" — the renderer is forward and
+// immediately (DevDocs/DESIGN_LIGHTING.md). Not "many" — the renderer is forward and
 // single-pass, so every light costs every fragment; clustered/deferred lighting is a
 // renderer rewrite and nothing has forced it.
 constexpr int MAX_LIGHTS = 8;

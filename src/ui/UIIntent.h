@@ -9,7 +9,7 @@
 // later, RmlUi callbacks) never mutate UI state directly; they enqueue a UIIntent.
 // The RuntimeUISystem drains the queue on the fixed step and applies the changes to
 // ECS, so authoritative UI-state mutations stay deterministic (the same reason raw
-// input is sampled into the fixed step). See docs/DESIGN_RUNTIME_UI.md.
+// input is sampled into the fixed step). See DevDocs/DESIGN_RUNTIME_UI.md.
 
 struct UIIntent {
     enum class Type {
@@ -35,6 +35,42 @@ struct UIIntent {
     static UIIntent caretLeft() { return { Type::CaretLeft, {} }; }
     static UIIntent caretRight() { return { Type::CaretRight, {} }; }
 };
+
+// Parses a document's `data-intent` attribute into an intent
+// (DevDocs/DESIGN_UI_INTENT_BINDING.md). Content declares what a button does, in the
+// engine's own vocabulary, instead of the engine compiling in a list of element ids —
+// which is what made the interactive half of the runtime UI unreachable by any game.
+//
+// Pure string handling and Core-side on purpose: the parse is the part that can be
+// silently wrong, and this way it is testable with no RmlUi and no device.
+//
+//   open:<screen>  pop  focus:<element>  unfocus
+//   text:<string>  backspace  caretleft  caretright
+//
+// Returns false for an unknown verb or a missing argument, leaving `out` untouched:
+// a typo in markup must produce a REPORTED dead button, never a wrong action.
+inline bool parseUIIntent(const std::string& spec, UIIntent& out) {
+    const size_t colon = spec.find(':');
+    const std::string verb = spec.substr(0, colon);
+    const bool hasArgument = colon != std::string::npos;
+    // Everything after the first colon, verbatim — a label may contain colons.
+    const std::string argument = hasArgument ? spec.substr(colon + 1) : std::string();
+
+    if (verb == "pop" && !hasArgument)        { out = UIIntent::popScreen();     return true; }
+    if (verb == "unfocus" && !hasArgument)    { out = UIIntent::clearFocus();    return true; }
+    if (verb == "backspace" && !hasArgument)  { out = UIIntent::backspaceText(); return true; }
+    if (verb == "caretleft" && !hasArgument)  { out = UIIntent::caretLeft();     return true; }
+    if (verb == "caretright" && !hasArgument) { out = UIIntent::caretRight();    return true; }
+
+    // The argument-taking forms. An empty argument is a typo, not an empty screen id.
+    if (!hasArgument || argument.empty()) {
+        return false;
+    }
+    if (verb == "open")  { out = UIIntent::openScreen(argument); return true; }
+    if (verb == "focus") { out = UIIntent::setFocus(argument);   return true; }
+    if (verb == "text")  { out = UIIntent::appendText(argument); return true; }
+    return false;
+}
 
 // A queue of pending UI intents, filled at render rate and drained by the
 // RuntimeUISystem on the fixed step. Owns no ECS state itself — it's a transient

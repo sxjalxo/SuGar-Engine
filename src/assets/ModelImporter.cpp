@@ -2,6 +2,7 @@
 #include "animation/AnimationClipRegistry.h"
 #include "animation/AnimationComponents.h"
 #include "animation/SkinRegistry.h"
+#include "assets/AssetCooker.h"
 #include "assets/GltfLoader.h"
 #include "assets/GltfModel.h"
 #include "assets/ResourceManager.h"
@@ -10,6 +11,7 @@
 #include "scene/Transform.h"
 
 #include <filesystem>
+#include <iostream>
 #include <vector>
 
 namespace {
@@ -56,7 +58,7 @@ void registerSkins(const GltfModelData& model, const std::string& path) {
 }
 
 // Clips are assets, not state: they go into the name-keyed AnimationClipRegistry,
-// and the component only ever holds the key string (docs/DESIGN_ANIMATION.md). So a
+// and the component only ever holds the key string (DevDocs/DESIGN_ANIMATION.md). So a
 // re-import replaces the clip data underneath any entity already playing it, and
 // nothing dangles.
 void registerAnimations(const GltfModelData& model, const std::string& path,
@@ -183,13 +185,25 @@ void ModelImporter::ensureModelAssets(const std::string& assetKey) {
     if (separator == std::string::npos || separator == 0) {
         return; // not a model-backed key (a test's synthetic clip, say)
     }
+    // Two spellings of the same model, and they are not interchangeable. The KEY half
+    // is what the scene wrote and what every registered clip/skin name must be built
+    // from. The SOURCE half is where that file actually sits on this disk, which the
+    // asset catalog owns -- a key is anchored at the "assets/" segment, so for an
+    // external game (SUGAR_GAME) or any content root that is not the working directory
+    // it is a name, not a path. Reading the key as a path is why a game outside the repo
+    // silently rendered in bind pose with no animation at all.
     const std::string path = assetKey.substr(0, separator);
+    const std::string sourcePath = AssetCooker::sourcePath(path);
 
     GltfModelData model;
     try {
-        GltfLoader::loadModel(path, model);
-    } catch (...) {
-        return; // missing/broken model: leave the component unresolved
+        GltfLoader::loadModel(sourcePath, model);
+    } catch (const std::exception& error) {
+        // Reported, not swallowed (Rule 13): the failure mode is silent -- the
+        // component round-trips perfectly and the character simply never moves.
+        std::cerr << "[model] could not reconstitute clips/skins for '" << assetKey
+                  << "' from '" << sourcePath << "': " << error.what() << std::endl;
+        return;
     }
 
     registerSkins(model, path);

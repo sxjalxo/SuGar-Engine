@@ -510,7 +510,7 @@ drift — the recomputation may be perfectly deterministic and its answer perfec
 correct. It is about the answer being *a different correct one*, because the input it
 was originally computed from is gone.
 
-This is why `docs/DESIGN_ANIMATION.md` makes an animation
+This is why `DevDocs/DESIGN_ANIMATION.md` makes an animation
 transition authoritative while the identical-looking UI tween is derived, why animation
 events need explicit "already fired" state, and why a navigation agent's `status` must
 record that a plan was *attempted* — otherwise a stuck agent re-plans forever and a

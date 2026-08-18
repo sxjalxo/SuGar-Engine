@@ -13,7 +13,7 @@ class Registry;
 //
 // The fixed step is the only clock. Advancing on the render delta would make the
 // pose frame-rate dependent and replay non-deterministic, which is exactly the
-// class of bug RULES.md Rule 21 exists to prevent. See docs/DESIGN_ANIMATION.md.
+// class of bug RULES.md Rule 21 exists to prevent. See DevDocs/DESIGN_ANIMATION.md.
 namespace AnimationSystem {
 
 // Advances and applies every AnimationPlayerComponent. `dt` is the fixed step.

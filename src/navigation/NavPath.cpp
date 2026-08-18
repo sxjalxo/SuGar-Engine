@@ -100,11 +100,22 @@ bool portalPoints(const NavMesh& mesh, int from, int to, glm::vec3& left, glm::v
 
 namespace NavPath {
 
+std::size_t g_searchCount = 0;
+
+std::size_t searchesPerformed() {
+    return g_searchCount;
+}
+
+void resetSearchCount() {
+    g_searchCount = 0;
+}
+
 Result findCorridor(const NavMesh& mesh,
                     glm::vec3& start,
                     glm::vec3& goal,
                     std::vector<int>& outCorridor,
                     std::vector<int>* outLinkSteps) {
+    g_searchCount++;
     outCorridor.clear();
     if (outLinkSteps != nullptr) {
         outLinkSteps->clear();
@@ -147,7 +158,7 @@ Result findCorridor(const NavMesh& mesh,
     std::vector<bool> closed(polygonCount, false);
 
     // All scratch, all stack-local: the search owns no state that outlives the call
-    // (docs/DESIGN_NAVIGATION.md — open/closed sets are derived, by definition).
+    // (DevDocs/DESIGN_NAVIGATION.md — open/closed sets are derived, by definition).
     std::priority_queue<OpenNode, std::vector<OpenNode>, OpenNodeGreater> open;
 
     cost[static_cast<std::size_t>(startPolygon)] = 0.0f;

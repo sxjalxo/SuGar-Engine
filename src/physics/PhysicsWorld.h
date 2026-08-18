@@ -21,6 +21,14 @@ public:
     // SuGarApp dispatches these to behaviors' onCollision after stepping.
     const std::vector<CollisionEvent>& getCollisionEvents() const { return collisionEvents; }
 
+    // AABB tests the broadphase performed in the most recent step. Diagnostic, in the
+    // same spirit as Renderer::submittedDrawCalls(): the grid degenerating into an
+    // all-pairs scan is invisible to a correctness test — a degenerate grid answers
+    // every query right — so the property has to be measured, not compared
+    // (DevDocs/DESIGN_BROADPHASE_SCALE.md).
+    size_t lastBroadphaseCandidateCount() const { return broadphaseCandidateCount; }
+
 private:
     std::vector<CollisionEvent> collisionEvents;
+    size_t broadphaseCandidateCount = 0;
 };

@@ -241,9 +241,9 @@ public:
     ComponentStorage<NavObstacleComponent> navObstacles;
     ComponentStorage<CameraComponent> cameras;
     // Game-defined per-entity state. The engine stores/serializes it and never reads a
-    // value — see docs/DESIGN_GAME_DATA.md.
+    // value — see DevDocs/DESIGN_GAME_DATA.md.
     ComponentStorage<GameDataComponent> gameData;
-    // Lights on entities; pose derived from the transform (docs/DESIGN_LIGHTING.md).
+    // Lights on entities; pose derived from the transform (DevDocs/DESIGN_LIGHTING.md).
     ComponentStorage<LightComponent> lights;
     // Per-element UI presentation state (classes / inline style).
     ComponentStorage<UIElementStateComponent> uiElementStates;

@@ -123,14 +123,22 @@ struct Camera {
     }
 
     glm::mat4 getProjectionMatrix(float aspectRatio) const {
-        glm::mat4 projection = glm::perspective(
+        // **_ZO, not glm::perspective.** GLM defaults to OpenGL's clip space, where NDC z
+        // runs -1..1; Vulkan clips z to 0..1, so half of an OpenGL-convention frustum's
+        // depth range is thrown away by the rasterizer. For a perspective camera the lost
+        // half sits between the near plane and ~2*near, which is why nothing noticed --
+        // but the same default applied to the shadow map's ORTHOGRAPHIC projection
+        // discards the near half of the whole scene, and that half of the floor then
+        // renders unshadowed with a hard straight edge across it (found by the L3 arena).
+        // Every projection this engine builds states its depth convention explicitly.
+        glm::mat4 projection = glm::perspectiveRH_ZO(
             glm::radians(fov),
             aspectRatio,
             nearPlane,
             farPlane
         );
 
-        projection[1][1] *= -1.0f;
+        projection[1][1] *= -1.0f; // Vulkan's Y points down
         return projection;
     }
 };

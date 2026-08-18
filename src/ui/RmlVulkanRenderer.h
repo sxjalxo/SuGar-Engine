@@ -50,13 +50,24 @@ public:
     void EnableScissorRegion(bool enable) override;
     void SetScissorRegion(Rml::Rectanglei region) override;
 
+    // --- Clip masks (DevDocs/DESIGN_UI_CLIP_MASK.md) --------------------------------
+    // RmlUi draws an outer box-shadow as "mask to everything OUTSIDE the element, then
+    // draw the shadow". With no mask the shadow covers the element too -- invisible
+    // under an opaque background, and measured at -53/-62 RGB through a translucent
+    // one, which is what forced this.
+    //
+    // The mask is a coverage TEXTURE, not a stencil buffer: the UI pass writes into an
+    // image whose depth attachment is D32_SFLOAT (no stencil aspect) and offscreen
+    // effect layers carry no depth at all, so stencil would have meant changing the
+    // engine's depth format for the scene pass. Everything here stays inside src/ui/.
+    void EnableClipMask(bool enable) override;
+    void RenderToClipMask(Rml::ClipMaskOperation operation, Rml::CompiledGeometryHandle geometry,
+                          Rml::Vector2f translation) override;
+
     // --- Layer compositor (RmlUi effects: box-shadow / blur) ---------------------
     // The seam: RmlUi renders effects by pushing offscreen layers, drawing into them,
     // compositing them back (optionally through a filter), and saving one as a texture.
     // We honour that with offscreen colour targets + a fullscreen composite/blur pass.
-    // Clip masks are intentionally not implemented yet (box-shadow only needs them to
-    // hide the shadow under *translucent* elements; opaque elements cover it anyway) --
-    // a documented, forced-later gap, not a silent one.
     Rml::LayerHandle PushLayer() override;
     void CompositeLayers(Rml::LayerHandle source, Rml::LayerHandle destination,
                          Rml::BlendMode blendMode,
@@ -102,6 +113,24 @@ private:
         VkExtent2D extent{0, 0};
         bool inUse = false;
     };
+    // --- clip mask ---------------------------------------------------------------
+    // Two R8 targets that ping-pong: Intersect must read the previous coverage while
+    // writing the new one, and sampling the attachment being written is a feedback loop.
+    struct MaskTarget {
+        VkImage image = VK_NULL_HANDLE;
+        VkDeviceMemory memory = VK_NULL_HANDLE;
+        VkImageView view = VK_NULL_HANDLE;
+        VkFramebuffer framebuffer = VK_NULL_HANDLE;
+        VkDescriptorSet sampleSet = VK_NULL_HANDLE;
+        VkImageLayout layout = VK_IMAGE_LAYOUT_UNDEFINED;
+    };
+    bool ensureMaskTargets(VkExtent2D extent);
+    void destroyMaskTargets();
+    // Binds set 1 for UI draws: the active mask, or a 1x1 white texture when nothing is
+    // masked -- which is what makes the multiply in rml.frag inert by default.
+    VkDescriptorSet activeMaskSet() const;
+    void resetClipMask();                     // called each frame; RmlUi re-declares masks
+
     int acquireLayer();                       // index into layerPool; grows the pool as needed
     void beginLayerPass(int layerIndex, bool clear);
     void endActivePass();
@@ -181,6 +210,15 @@ private:
     VkPipeline compositePipeline = VK_NULL_HANDLE;   // fullscreen copy/blur
     VkPipelineLayout compositePipelineLayout = VK_NULL_HANDLE;
     VkSampler layerSampler = VK_NULL_HANDLE;
+
+    MaskTarget maskTargets[2];
+    int currentMask = 0;          // index of the mask UI draws sample
+    bool maskActive = false;      // false => set 1 binds the 1x1 white mask
+    VkExtent2D maskExtent{0, 0};
+    VkRenderPass maskPass = VK_NULL_HANDLE;       // colour-only R8
+    VkPipeline maskPipeline = VK_NULL_HANDLE;      // write a constant coverage
+    VkPipelineLayout maskPipelineLayout = VK_NULL_HANDLE;
+    VkDescriptorSet whiteMaskSet = VK_NULL_HANDLE;        // the inert 1x1 mask
 
     std::vector<LayerTarget> layerPool;
     std::vector<int> layerStack;   // active offscreen layer indices; back() == top

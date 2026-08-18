@@ -205,7 +205,7 @@ bool cookTexture(
     out.width = static_cast<uint32_t>(width);
     out.height = static_cast<uint32_t>(height);
     // Sampling is decided here, at import, and travels in the artifact — a packaged
-    // runtime has no .meta to read (docs/DESIGN_PACKAGING.md). Unknown spellings fall
+    // runtime has no .meta to read (DevDocs/DESIGN_PACKAGING.md). Unknown spellings fall
     // back to linear: a hand-edited .meta typo must not stop the asset from cooking.
     out.filter = meta.get(AssetSettings::TextureFilter) == "nearest"
                      ? CookedAsset::TextureFilter::Nearest
@@ -276,9 +276,23 @@ bool AssetCooker::hasManifest() {
     return manifest != nullptr;
 }
 
+std::string AssetCooker::sourcePath(const std::string& resourceKey) {
+    if (catalog != nullptr) {
+        const AssetEntry* entry = catalog->find(resourceKey);
+        if (entry != nullptr) {
+            return entry->path;
+        }
+    }
+    // Uncatalogued: hand back the caller's own spelling, NOT the normalized key.
+    // Normalization lowercases, and a lowercased filename only happens to open on a
+    // case-insensitive filesystem.
+    const size_t separator = resourceKey.find('#');
+    return separator == std::string::npos ? resourceKey : resourceKey.substr(0, separator);
+}
+
 uint64_t AssetCooker::artifactKey(const std::string& resourceKey) {
     // Packaged mode: the source is gone, so the artifact name was recorded at package
-    // time (docs/DESIGN_PACKAGING.md). Look it up rather than hashing a file that is not
+    // time (DevDocs/DESIGN_PACKAGING.md). Look it up rather than hashing a file that is not
     // there. A key the manifest does not list returns 0 -- reported, never guessed.
     if (manifest != nullptr) {
         return manifest->lookup(resourceKey);

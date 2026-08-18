@@ -19,7 +19,7 @@ public:
     static bool loadFromString(Registry& registry, std::vector<Light>& lights, const std::string& text);
 
     // Every asset key a scene references: mesh, material albedo texture, audio/animation
-    // clip, skinned-mesh skin, and prefab. Packaging (Phase 20, docs/DESIGN_PACKAGING.md)
+    // clip, skinned-mesh skin, and prefab. Packaging (Phase 20, DevDocs/DESIGN_PACKAGING.md)
     // walks these to decide what a shipped build must contain. The serializer owns the
     // scene format, so it is the one place that knows which fields are asset references
     // -- the packager never parses scene JSON itself. Returns false on malformed input;

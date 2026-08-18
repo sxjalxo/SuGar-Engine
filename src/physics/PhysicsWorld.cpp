@@ -3,6 +3,8 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdlib>
+#include <iostream>
 #include <cstdint>
 #include <unordered_map>
 #include <unordered_set>
@@ -265,22 +267,43 @@ void shapeAabb(const WorldShape& shape, glm::vec3& outMin, glm::vec3& outMax) {
 // it stays deterministic and needs no serialization. Returned pairs are (a<b) and
 // sorted, so contact resolution order is stable run-to-run (it was previously the
 // unordered_map's iteration order).
-std::vector<std::pair<size_t, size_t>> broadphasePairs(const std::vector<WorldShape>& shapes) {
+std::vector<std::pair<size_t, size_t>> broadphasePairs(const std::vector<WorldShape>& shapes,
+                                                     size_t& outCandidates) {
+    // `outCandidates` counts AABB tests actually performed. That, not the returned
+    // pair count, is the number a scale test has to watch: a degenerate grid returns
+    // the right pairs and merely takes O(n^2) comparisons to find them
+    // (DevDocs/DESIGN_BROADPHASE_SCALE.md).
+    outCandidates = 0;
     std::vector<std::pair<size_t, size_t>> pairs;
     const size_t count = shapes.size();
     if (count < 2) {
         return pairs;
     }
 
-    float maxExtent = 0.0f;
+    // Cell size comes from the MEDIAN shape, not the largest
+    // (DevDocs/DESIGN_BROADPHASE_SCALE.md). Sizing it by the largest meant one arena wall
+    // — 40 m long, among a thousand projectiles — made every cell 40 m across, so every
+    // small shape landed in the same bucket and the grid became the all-pairs scan it
+    // exists to replace: 1 524 shapes produced 23 221 candidate pairs at 0.84 FPS.
+    // Every game has at least one collider far larger than its typical one.
+    std::vector<float> extents;
+    extents.reserve(count);
     for (const WorldShape& shape : shapes) {
-        const float extent = shape.type == ColliderType::Box
+        extents.push_back(shape.type == ColliderType::Box
             ? std::max({shape.halfExtents.x, shape.halfExtents.y, shape.halfExtents.z})
-            : shape.radius;
-        maxExtent = std::max(maxExtent, extent);
+            : shape.radius);
     }
-    const float cellSize = std::max(maxExtent * 2.0f, 1e-3f);
+    const size_t middle = extents.size() / 2;
+    std::nth_element(extents.begin(), extents.begin() + middle, extents.end());
+    const float cellSize = std::max(extents[middle] * 2.0f, 1e-3f);
     const float invCell = 1.0f / cellSize;
+
+    // A correctly sized cell moves the disparity problem rather than removing it: a 36 m
+    // floor would now occupy ~1 300 buckets and a 1 km ground plane a million. So a shape
+    // whose AABB spans more than this many cells is kept OUT of the grid and tested
+    // against everything directly — the second tier. `k` is a handful of level-geometry
+    // pieces, so `O(n + k*n)` replaces `O(n^2)`.
+    constexpr int64_t MaxCellsPerShape = 32;
 
     // Pack a signed cell coordinate (21 bits/axis) into one key. Coordinates far
     // beyond +/-1e6 cells wrap rather than crash — fine for gameplay-scale scenes.
@@ -305,11 +328,30 @@ std::vector<std::pair<size_t, size_t>> broadphasePairs(const std::vector<WorldSh
         return static_cast<int>(c);
     };
 
+    const auto spannedCells = [&](const glm::vec3& lo, const glm::vec3& hi) -> int64_t {
+        const int64_t nx = static_cast<int64_t>(cellCoord(hi.x)) - cellCoord(lo.x) + 1;
+        const int64_t ny = static_cast<int64_t>(cellCoord(hi.y)) - cellCoord(lo.y) + 1;
+        const int64_t nz = static_cast<int64_t>(cellCoord(hi.z)) - cellCoord(lo.z) + 1;
+        // Saturate rather than overflow: a shape at the coordinate clamp spans a
+        // meaningless number of cells, and "too many" is the only answer needed.
+        if (nx > MaxCellsPerShape || ny > MaxCellsPerShape || nz > MaxCellsPerShape) {
+            return MaxCellsPerShape + 1;
+        }
+        return nx * ny * nz;
+    };
+
     std::unordered_map<int64_t, std::vector<int>> grid;
+    std::vector<size_t> oversized; // the second tier: level geometry, a handful of it
+    std::vector<bool> isOversized(count, false);
     grid.reserve(count * 2);
     for (size_t i = 0; i < count; ++i) {
         glm::vec3 lo, hi;
         shapeAabb(shapes[i], lo, hi);
+        if (spannedCells(lo, hi) > MaxCellsPerShape) {
+            oversized.push_back(i);
+            isOversized[i] = true;
+            continue;
+        }
         for (int z = cellCoord(lo.z); z <= cellCoord(hi.z); ++z) {
             for (int y = cellCoord(lo.y); y <= cellCoord(hi.y); ++y) {
                 for (int x = cellCoord(lo.x); x <= cellCoord(hi.x); ++x) {
@@ -323,6 +365,12 @@ std::vector<std::pair<size_t, size_t>> broadphasePairs(const std::vector<WorldSh
     // (it may share several cells), and AABB-reject before it reaches narrowphase.
     std::unordered_set<int64_t> seen;
     for (size_t i = 0; i < count; ++i) {
+        if (isOversized[i]) {
+            // Tier two owns this shape entirely. Querying the grid for it as well would
+            // both re-emit every pair the second tier finds *and* walk the thousand-plus
+            // cells its AABB covers — the two costs this split exists to avoid.
+            continue;
+        }
         glm::vec3 lo, hi;
         shapeAabb(shapes[i], lo, hi);
         for (int z = cellCoord(lo.z); z <= cellCoord(hi.z); ++z) {
@@ -343,6 +391,7 @@ std::vector<std::pair<size_t, size_t>> broadphasePairs(const std::vector<WorldSh
                         }
                         glm::vec3 olo, ohi;
                         shapeAabb(shapes[other], olo, ohi);
+                        outCandidates++;
                         const bool overlap = lo.x <= ohi.x && hi.x >= olo.x &&
                                              lo.y <= ohi.y && hi.y >= olo.y &&
                                              lo.z <= ohi.z && hi.z >= olo.z;
@@ -355,8 +404,40 @@ std::vector<std::pair<size_t, size_t>> broadphasePairs(const std::vector<WorldSh
         }
     }
 
+    // Second tier: an oversized shape is in no bucket, so it is paired against every
+    // other shape here. Each unordered pair is still emitted once — a grid shape is
+    // never the `i` of one of these, and two oversized shapes are ordered by index.
+    for (const size_t big : oversized) {
+        glm::vec3 lo, hi;
+        shapeAabb(shapes[big], lo, hi);
+        for (size_t other = 0; other < count; ++other) {
+            if (other == big) {
+                continue;
+            }
+            if (isOversized[other] && other < big) {
+                continue; // the lower-indexed one already emitted this pair
+            }
+            glm::vec3 olo, ohi;
+            shapeAabb(shapes[other], olo, ohi);
+            outCandidates++;
+            const bool overlap = lo.x <= ohi.x && hi.x >= olo.x &&
+                                 lo.y <= ohi.y && hi.y >= olo.y &&
+                                 lo.z <= ohi.z && hi.z >= olo.z;
+            if (overlap) {
+                pairs.emplace_back(std::min(big, other), std::max(big, other));
+            }
+        }
+    }
+
     // Sort so narrowphase + resolution run in a deterministic order.
     std::sort(pairs.begin(), pairs.end());
+    if (std::getenv("SUGAR_PHYSDBG") != nullptr) {
+        static int probe = 0;
+        if ((probe++ % 60) == 0) {
+            std::cerr << "[physdbg] shapes=" << count << " cell=" << cellSize
+                      << " buckets=" << grid.size() << " pairs=" << pairs.size() << std::endl;
+        }
+    }
     return pairs;
 }
 
@@ -401,7 +482,11 @@ void PhysicsWorld::step(Registry& registry, float deltaTime) {
     //    resolution order is deterministic). Every hit becomes a CollisionEvent so
     //    gameplay (behaviors) can react; the contact point is approximated as the
     //    midpoint of the two centers (good enough for triggers/sfx; refine if needed).
-    for (const auto& [i, k] : broadphasePairs(shapes)) {
+    size_t candidates = 0;
+    const std::vector<std::pair<size_t, size_t>> candidatePairs =
+        broadphasePairs(shapes, candidates);
+    broadphaseCandidateCount = candidates;
+    for (const auto& [i, k] : candidatePairs) {
         // Collision filtering: layers that don't interact produce no contact and no
         // event at all — as if the other shape weren't there.
         if (!layersInteract(shapes[i], shapes[k])) {

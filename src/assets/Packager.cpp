@@ -250,7 +250,7 @@ Packager::Report Packager::package(AssetDatabase& database, const Spec& spec) {
 
         // A named sub-key of a model (#Idle, #Humanoid) is an animation clip or a skin.
         // Those are not cooked artifacts (Phase 19 scoped them out); they reconstitute
-        // at load by parsing the source model. Interim (docs/DESIGN_PACKAGING.md): ship
+        // at load by parsing the source model. Interim (DevDocs/DESIGN_PACKAGING.md): ship
         // the source model and report the key, rather than cooking the whole model as a
         // bogus mesh under the clip's name. A numeric sub (#3) IS a mesh index and cooks
         // normally, so only non-numeric subs take this path.
@@ -258,7 +258,17 @@ Packager::Report Packager::package(AssetDatabase& database, const Spec& spec) {
             const AssetEntry* entry = database.find(pathPart);
             const std::string sourcePath = entry != nullptr ? entry->path : pathPart;
             if (copiedSourceModels.insert(pathPart).second) {
-                if (copyInto(sourcePath, outRoot / sourcePath, report.errors)) {
+                // Where the SHIPPED runtime will look: the key's own directory under the
+                // package root, keeping the file's real name. Not `outRoot / sourcePath`
+                // -- a catalogued path is ABSOLUTE whenever the content root is outside
+                // the working directory, which is every external game (SUGAR_GAME), and
+                // `path / absolute` discards the left operand. That made the destination
+                // identical to the source: the copy failed as a self-copy and the package
+                // shipped no model at all, so the standalone rendered in bind pose.
+                const std::filesystem::path destination =
+                    outRoot / std::filesystem::path(pathPart).parent_path() /
+                    std::filesystem::path(sourcePath).filename();
+                if (copyInto(sourcePath, destination, report.errors)) {
                     report.sourceModelsCopied++;
                 }
             }

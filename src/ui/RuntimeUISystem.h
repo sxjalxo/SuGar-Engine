@@ -11,7 +11,7 @@ class UIIntentQueue;
 // apply in queue order on the fixed step).
 //
 // This is the *model* side of UI = f(ECS, input). The *view* (RmlUi) reads these
-// components and renders them; it never lives here. See docs/DESIGN_RUNTIME_UI.md.
+// components and renders them; it never lives here. See DevDocs/DESIGN_RUNTIME_UI.md.
 namespace RuntimeUISystem {
 
 // Applies every queued intent to the UI components, in order, then clears the queue.

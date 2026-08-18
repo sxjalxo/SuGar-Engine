@@ -13,7 +13,7 @@
 // Bridges an RmlUi callback to the intent queue. This is the *only* thing a UI
 // callback is allowed to do: emit an intent. It never touches UI state, never
 // hides a document, never writes ECS — the fixed-step RuntimeUI system does that.
-// See RULES.md Rule 21 and docs/DESIGN_RUNTIME_UI.md.
+// See RULES.md Rule 21 and DevDocs/DESIGN_RUNTIME_UI.md.
 class IntentEmitter : public Rml::EventListener {
 public:
     IntentEmitter(UIIntentQueue* queue, UIIntent intent) : queue(queue), intent(std::move(intent)) {}
@@ -188,16 +188,27 @@ void RuntimeUIView::init(VkDevice device, VkPhysicalDevice physicalDevice, VkCom
         }
     }
 
-    // Buttons emit intents only — the hard rule from the design record.
+    // Buttons emit intents only — the hard rule from the design record. WHICH intent
+    // now comes from the document's own `data-intent` attribute rather than from a list
+    // of element ids compiled in here (DevDocs/DESIGN_UI_INTENT_BINDING.md): a game ships
+    // its own hud.rml, so hardcoded ids meant no game could make anything clickable.
     if (intents != nullptr) {
-        if (Rml::Element* open = document->GetElementById("open")) {
-            openListener = std::make_unique<IntentEmitter>(intents, UIIntent::openScreen("Inventory"));
-            open->AddEventListener("click", openListener.get());
+        Rml::ElementList bound;
+        document->QuerySelectorAll(bound, "[data-intent]");
+        for (Rml::Element* element : bound) {
+            const std::string spec = element->GetAttribute<Rml::String>("data-intent", "");
+            UIIntent intent{};
+            if (!parseUIIntent(spec, intent)) {
+                // Reported, never guessed: a typo must not become a silently dead button.
+                std::cerr << "[RuntimeUI] element '" << element->GetId()
+                          << "' has an unparseable data-intent=\"" << spec << "\"" << std::endl;
+                continue;
+            }
+            auto listener = std::make_unique<IntentEmitter>(intents, intent);
+            element->AddEventListener("click", listener.get());
+            intentListeners.push_back(std::move(listener));
         }
-        if (Rml::Element* back = document->GetElementById("back")) {
-            backListener = std::make_unique<IntentEmitter>(intents, UIIntent::popScreen());
-            back->AddEventListener("click", backListener.get());
-        }
+        std::cout << "[RuntimeUI] bound " << intentListeners.size() << " document intent(s)" << std::endl;
     }
 
     document->Show();
@@ -290,8 +301,21 @@ void RuntimeUIView::syncFromEcs(const Registry* registry) {
     }
     lastScreen = activeScreen;
 
+    // The document body carries the active screen as a class, and the game's RCSS
+    // decides what that means (DevDocs/DESIGN_UI_INTENT_BINDING.md). Before this, the
+    // screen stack's only effect was the debug text below — written into an element id
+    // that exists in the ENGINE's demo document and in no game's, so pushing a screen
+    // did nothing a player could see.
     if (Rml::Element* body = document->GetElementById("body")) {
         body->SetInnerRML(activeScreen.empty() ? "No screen" : ("Screen: " + activeScreen));
+    }
+    if (!lastScreenClass.empty()) {
+        document->SetClass(lastScreenClass, false);
+        lastScreenClass.clear();
+    }
+    if (!activeScreen.empty()) {
+        lastScreenClass = "screen-" + activeScreen;
+        document->SetClass(lastScreenClass, true);
     }
 }
 
@@ -323,7 +347,27 @@ void RuntimeUIView::syncTextFromEcs(const Registry* registry) {
         // The caret is drawn at its authoritative index; its glyph/blink is derived.
         std::string shown = text.buffer;
         shown.insert(caret, "|");
-        field->SetInnerRML((text.element == "name" ? "Name: " : "Tag: ") + shown);
+
+        // Verbatim, with no engine-chosen prefix. This used to read
+        //     (text.element == "name" ? "Name: " : "Tag: ") + shown
+        // — element ids belonging to the ENGINE's demo document, so every game's field
+        // rendered a stray "Tag: ". A game labels its own field in markup, exactly as it
+        // does for a UILabelComponent (DevDocs/DESIGN_UI_INTENT_BINDING.md).
+        //
+        // Escaped, because this is player-typed text going into markup: `SetInnerRML`
+        // parses what it is given, so an unescaped '<' would let a run name inject
+        // elements into the document.
+        std::string escaped;
+        escaped.reserve(shown.size());
+        for (const char character : shown) {
+            switch (character) {
+                case '&': escaped += "&amp;"; break;
+                case '<': escaped += "&lt;"; break;
+                case '>': escaped += "&gt;"; break;
+                default:  escaped += character; break;
+            }
+        }
+        field->SetInnerRML(escaped);
     }
 }
 
@@ -518,8 +562,7 @@ void RuntimeUIView::shutdown() {
         Rml::Shutdown(); // destroys documents, which reference the listeners below
         initialised = false;
     }
-    openListener.reset();
-    backListener.reset();
+    intentListeners.clear();
     context = nullptr;
     document = nullptr;
     if (renderer) {

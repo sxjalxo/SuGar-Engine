@@ -4,7 +4,7 @@
 
 #include "scene/Light.h"
 
-// A light on an entity (M4 L3 — docs/DESIGN_LIGHTING.md). The seam that lets game code,
+// A light on an entity (M4 L3 — DevDocs/DESIGN_LIGHTING.md). The seam that lets game code,
 // which links only Core, run a day-night cycle and place torches: a game drives the sun by
 // rotating an entity and lights a cave by creating one.
 //

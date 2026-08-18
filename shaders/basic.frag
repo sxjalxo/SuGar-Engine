@@ -39,7 +39,10 @@ layout(location = 0) out vec4 outColor;
 
 float ShadowCalculation(vec4 fragPosLightSpace, vec3 normal, vec3 lightDir) {
     vec3 projCoords = fragPosLightSpace.xyz / fragPosLightSpace.w;
-    projCoords = projCoords * 0.5 + 0.5;
+    // XY only. The light matrix is built with a Vulkan (0..1) depth range, so z is
+    // already in the same space as the depth stored in the shadow map; remapping it
+    // as if it were OpenGL's -1..1 shifted every comparison by half the frustum.
+    projCoords.xy = projCoords.xy * 0.5 + 0.5;
 
     if (projCoords.z > 1.0) {
         return 0.0;
@@ -89,7 +92,7 @@ void main() {
         // w == 0 is a directional light: xyz already points toward it and it does not
         // fall off. Otherwise xyz is a world position and w is the range it fades over —
         // range-limited rather than inverse-square, so a torch's reach is what the
-        // author set (docs/DESIGN_LIGHTING.md).
+        // author set (DevDocs/DESIGN_LIGHTING.md).
         bool directional = ubo.lightPositions[i].w == 0.0;
         vec3 toLight = directional ? ubo.lightPositions[i].xyz
                                    : ubo.lightPositions[i].xyz - fragPos;

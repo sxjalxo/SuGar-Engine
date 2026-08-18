@@ -5,7 +5,7 @@
 class AssetDatabase;
 
 // The one implementation of "this asset changed, bring everything back in line"
-// (docs/DESIGN_ASSET_PIPELINE.md, Phase 19D).
+// (DevDocs/DESIGN_ASSET_PIPELINE.md, Phase 19D).
 //
 // Two callers need it: the file watcher (a file changed on disk) and the editor (a
 // developer pressed Reimport, or edited import settings). They must not be two code

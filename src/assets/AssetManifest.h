@@ -5,7 +5,7 @@
 #include <string>
 
 // The recorded answer to "which cooked file is this key?" for a shipped build
-// (docs/DESIGN_PACKAGING.md, Phase 20).
+// (DevDocs/DESIGN_PACKAGING.md, Phase 20).
 //
 // In the editor the cooker hashes the SOURCE to name an artifact. A package has no
 // source, so the packager records `resourceKey -> artifact hash` here at package time,

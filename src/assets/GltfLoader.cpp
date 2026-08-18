@@ -437,7 +437,7 @@ Interpolation parseInterpolation(const std::string& mode) {
 // linearly is exact *at* every keyframe and merely less smooth between them, which
 // is a far better failure mode than dropping the channel (silently missing
 // animation) or misreading the triples as keys (garbage). Full cubic evaluation
-// lands when a real asset needs it — docs/DESIGN_ANIMATION.md, open question 4.
+// lands when a real asset needs it — DevDocs/DESIGN_ANIMATION.md, open question 4.
 struct KeyLayout {
     size_t stride = 1;
     size_t offset = 0;

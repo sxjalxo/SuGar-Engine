@@ -7,7 +7,7 @@
 class AssetDatabase;
 class AssetManifest;
 
-// Source formats -> cooked artifacts (docs/DESIGN_ASSET_PIPELINE.md, Phase 19B).
+// Source formats -> cooked artifacts (DevDocs/DESIGN_ASSET_PIPELINE.md, Phase 19B).
 //
 //     Cooked  = f(source bytes, import settings, cooker version)
 //     Runtime = f(cooked)
@@ -34,7 +34,7 @@ public:
     // the file itself -- so a tool or a test can cook a tree it never scanned.
     static void setDatabase(AssetDatabase* database);
 
-    // Puts the cooker in packaged mode (docs/DESIGN_PACKAGING.md, Phase 20). A shipped
+    // Puts the cooker in packaged mode (DevDocs/DESIGN_PACKAGING.md, Phase 20). A shipped
     // build has no source to hash, so `artifactKey` resolves through this manifest and
     // `ensureCooked` returns the artifact WITHOUT cooking -- it never parses a source
     // format, because in a package there is none. Pass nullptr to return to editor mode
@@ -50,6 +50,17 @@ public:
 
     // The cooked path for an artifact key: "<cache>/<16-hex>.sgc".
     static std::string artifactPath(uint64_t key);
+
+    // Where the source file a resource key names actually lives on this disk.
+    //
+    // A resource key is a NAME, not a path: AssetPath anchors it at the "assets/"
+    // segment so the same key identifies the asset wherever its content root is. The
+    // catalog holds the real spelling. Every cooked type already resolved through this
+    // internally; it is public for the one consumer that must read a source file
+    // directly -- ModelImporter, rebuilding a scene's clips and skins on load. Returns
+    // the key's path part unchanged when nothing has catalogued it, which is the
+    // editor's own assets/ tree and the self-tests.
+    static std::string sourcePath(const std::string& resourceKey);
 
     // Cooks `resourceKey` if it is missing or stale, and returns the cooked path.
     // Returns "" (with `errorMessage` set) if the source cannot be read or cooked.

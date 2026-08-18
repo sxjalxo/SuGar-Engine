@@ -21,7 +21,7 @@
 //     Skinning = f(mesh, skeleton pose)
 //
 // where the pose lives in ECS transforms and the joint matrices are derived
-// (Skinning.h). See docs/DESIGN_ANIMATION.md.
+// (Skinning.h). See DevDocs/DESIGN_ANIMATION.md.
 struct Skin {
     std::string name;
 

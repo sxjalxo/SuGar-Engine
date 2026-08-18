@@ -76,7 +76,7 @@ Not owned (not forced by any game yet):
 - More than one shadow caster, shadow cascades, per-light bias
 - Clustered / deferred lighting, light cookies, area lights, baked GI
 
-See `docs/DESIGN_LIGHTING.md`.
+See `DevDocs/DESIGN_LIGHTING.md`.
 
 ---
 
@@ -294,7 +294,7 @@ player-facing UI scaffold.
 ## Engine-owned (Phase 19)
 
 Asset *identity*, *settings* and *staleness* are engine logic, not library territory —
-see `docs/DESIGN_ASSET_PIPELINE.md`.
+see `DevDocs/DESIGN_ASSET_PIPELINE.md`.
 
 - `AssetPath` — the identity function. Normalizing a path into an asset key happens in
   exactly one place, because every scene, prefab and save file on disk already contains
@@ -323,13 +323,13 @@ see `docs/DESIGN_ASSET_PIPELINE.md`.
   in line". The file watcher and the editor's Reimport button both call it; they differ
   only in the `force` flag. The editor must never import by another route.
 - `AssetManifest` — `resourceKey -> artifact hash`, written at package time, read by a
-  shipped runtime so it resolves keys with no source tree (docs/DESIGN_PACKAGING.md).
+  shipped runtime so it resolves keys with no source tree (DevDocs/DESIGN_PACKAGING.md).
   Core, headless, no format dependencies.
 - `Packager` — the standalone export: reachability walk over scenes + dependency edges,
   cook, copy, write the manifest, copy the exe + DLLs, and verify the result resolves
   source-free. Engine layer, headless (`SUGAR_PACKAGE=1`). `ResourceManager` never learns
   a package exists. `scripts/build_release.ps1` chains `cmake --build` + packaging into
-  the release pipeline (Phase 21, docs/DESIGN_BUILD_PIPELINE.md).
+  the release pipeline (Phase 21, DevDocs/DESIGN_BUILD_PIPELINE.md).
 
 The first four are Core. `CookedAsset` and `AssetCooker` are Engine-layer, because
 cooking needs the parsing libraries Rule 15 keeps out of Core and produces
@@ -382,7 +382,7 @@ not a subsystem. See `ROADMAP.md` friction log and the games' `Level 1\Report.md
 ### M4 Level 3 additions (voxel game — three seams)
 
 Forced by the first real game; each was designed as a record before code (the `AssetGateway`
-and `CameraComponent` designs; `docs/DESIGN_RUNTIME_MESH.md`). See the `ROADMAP.md` friction log
+and `CameraComponent` designs; `DevDocs/DESIGN_RUNTIME_MESH.md`). See the `ROADMAP.md` friction log
 (#16–#19) and `Level 3\Report.md`.
 
 - **`CameraComponent` (Core, `src/rendering/CameraComponent.h`).** A game defines the view by
@@ -413,7 +413,7 @@ and `CameraComponent` designs; `docs/DESIGN_RUNTIME_MESH.md`). See the `ROADMAP.
 ### M4 Level 3 additions (streaming arc — GPU memory and measurement)
 
 Forced by turning the voxel game into a *streaming* one. See friction log #30–#36 and
-`docs/PLATFORM_AUDIT.md`.
+`DevDocs/PLATFORM_AUDIT.md`.
 
 - **`DeviceMemoryPool` (engine, `src/rendering/DeviceMemoryPool.{h,cpp}`).** Suballocates
   device-local **buffer** memory from 32 MiB blocks (first fit, coalescing on release,
@@ -436,11 +436,97 @@ Forced by turning the voxel game into a *streaming* one. See friction log #30–
   `buildAdjacency` beside the neighbour table, replacing the linear scans in
   `findContainingPolygon` / `findNearestPolygon`. Derived, never stored in an asset — same rule
   as adjacency, and for the same reason.
+- **Measurement surface (extended by the arena's adversarial pass).** `SUGAR_FPSLOG` also
+  reports live `meshes` / `textures` / `clips` and the GPU **retirement queue depth**, because
+  "did 15 000 spawn/destroy cycles leak anything?" is answered by those staying flat and by
+  nothing a headless test can observe. `SUGAR_PHYSDBG=1` prints the broadphase's shape count,
+  cell size, bucket count, oversized-shape count and pair count — the numbers that identified
+  #41, kept for the same reason `SUGAR_UPLOADLOG` was. `PhysicsWorld::lastBroadphaseCandidateCount()`
+  exposes AABB tests performed so the gate can assert the *cost*, not only the answers.
 - **Measurement surface.** `SUGAR_FPSLOG` reports `items` (what the scene asked to draw) and
   `drawCalls` (what the GPU was told) **separately**, because instancing lives in the gap and a
   run reporting only the first cannot tell whether batching happened. `Renderer::
   submittedDrawCalls()` is the accessor. Benchmarks gained `navmesh_bake_112` plus its
   weld/adjacency split, so a future change cannot hide which half moved.
+
+### M4 Level 3 additions (combat arena — no new seam, one lifetime rule)
+
+The arena forced no new subsystem. It did settle one ownership question and sharpen one
+existing boundary. See friction log #37–#40 and
+`E:\Sugar Engine - Games\Level 3\CombatArena\Report.md`.
+
+- **GPU retirement (`ResourceManager`, `DevDocs/DESIGN_GPU_RETIREMENT.md`).** Dropping the last
+  reference to a mesh or texture no longer destroys it: the resource is retired for
+  `framesInFlight` frames and destroyed by `ResourceManager::endFrame()`, which the renderer
+  calls once a frame after waiting on that frame's fence. *Scope:* meshes and textures — audio
+  clips are CPU data whose `shared_ptr` a playing voice already holds. *Ownership is unchanged:*
+  `ResourceManager` is still the sole owner; retirement only delays the destructor. **New
+  engine invariant:** something must call `endFrame()` once per frame, or GPU memory is never
+  freed — a leak, deliberately, rather than the use-after-free the queue exists to prevent.
+  Headless (no device) destroys immediately, because nothing is in flight.
+- **A resource key is a name, not a path (`AssetCooker::sourcePath`).** Keys are anchored at the
+  `assets/` segment so the same key identifies an asset wherever its content root is; the
+  catalog owns the mapping to a real file. Every cooked type already resolved that way
+  internally. It is now public for the one consumer that must read a *source* file directly —
+  `ModelImporter`, reconstituting a scene's clips and skins on load. *Scope:* resolution only;
+  registered clip/skin names are still built from the key's spelling, so a name a scene wrote
+  still matches the name the registry holds.
+- **Projections state their depth convention.** `Camera::getProjectionMatrix` and the shadow
+  pass use `glm::perspectiveRH_ZO` / `glm::orthoRH_ZO`, never GLM's OpenGL-range defaults,
+  because Vulkan keeps only `0 <= z <= w`. Pinned by the `ProjectionDepth` self-test rather than
+  by comment. *Not adopted:* a project-wide `GLM_FORCE_DEPTH_ZERO_TO_ONE`, which would change
+  header-inline function bodies across the engine and the game DLL — an ODR hazard for a game
+  module that includes glm through its own include path.
+
+### M4 Level 3 additions (deferred-backlog pass — three items, promoted by evidence)
+
+Not new subsystems: three long-deferred items whose forcing workload finally appeared. See
+friction log #43/#44 and `DevDocs/DESIGN_REPLAN_BACKOFF.md`, `DESIGN_UI_CLIP_MASK.md`.
+
+- **`WorldLabelComponent::occluderMask` (Core).** Collision layers that hide a world label
+  when they stand between camera and anchor, tested by a raycast
+  (`rendering/WorldLabelVisibility.h`). *Scope:* a **mask, not a bool**, because "solid" is a
+  game's word — an arena wall should hide a nameplate and another enemy should not, and only
+  the game knows which layer is which. **0 = never occlude, and 0 is the default**, so every
+  scene predating it is unchanged; the field is written to disk only when set, so existing
+  scene bytes are byte-identical.
+- **`NavAgentComponent::replanCooldown` / `failedReplanInterval` (Core).** A per-agent
+  backoff on the *retry* path only. *Scope, and the split matters:* the cooldown is
+  **authoritative history** (a snapshot restored mid-cooldown that forgot it would fire a
+  fresh search storm on the frame you scrubbed to — Rule 21b), while the interval is per-agent
+  policy for the same reason `speed` is. Decremented by the **fixed step**, never wall-clock:
+  a backoff on OS time would make the simulation non-reproducible. A destination that
+  *changes* is never throttled — a new decision is not a retry.
+- **`NavPath::searchesPerformed()` / `PhysicsWorld::lastBroadphaseCandidateCount()`
+  (diagnostics).** Both added *before* the fixes they justify, so the acceptance criterion is
+  the work rather than the frame rate. Never serialized, never snapshotted; resetting them
+  changes nothing any agent or body does.
+- **Clip masks (`src/ui/`, engine).** `RmlVulkanRenderer` implements `EnableClipMask` /
+  `RenderToClipMask`, and `ClipMaskPolicy.h` holds the operation→coverage table as pure data
+  so it can be gate-tested. *Scope, deliberately narrow:* the mask is an `R8_UNORM` coverage
+  texture owned by the UI renderer — **not** a stencil buffer, because the UI pass's depth
+  attachment is `D32_SFLOAT` (no stencil aspect) and offscreen effect layers carry no depth,
+  so stencil would have forced a depth-format change on the **scene** pass. Nothing outside
+  `src/ui/` changed. RmlUi 6.3 defines three operations, so three are implemented. Not built:
+  a mask stack, cross-frame mask caching, masking in the editor's ImGui pass, or any
+  game-facing masking API — RCSS remains the authoring surface.
+
+### M4 Level 3 additions (runtime UI, #42 — the interactive half)
+
+- **`data-intent` on a document element (engine, `src/ui/`).** Content declares what a button
+  does in the engine's existing vocabulary (`open:<screen>`, `pop`, `focus:<element>`,
+  `unfocus`, `text:<s>`, `backspace`, `caretleft/right`), parsed once at load into a
+  `UIIntent`. *Scope:* click only; one string argument; no widget library; no directional
+  focus traversal. An unparseable value is **reported and ignored**, never guessed into a
+  button that does something the author did not write.
+- **Active screen as a `screen-<id>` class on the document body.** The game's RCSS decides
+  what a screen means, because a screen is rarely "one panel appears" — it also dims the HUD
+  and greys a button, which is RCSS's job. Exactly one such class at a time, so a game never
+  unsets anything.
+- **Text fields render verbatim and escaped.** No engine-chosen prefix (the view used to
+  render `"Name: "`/`"Tag: "` by matching the *demo document's* element ids), and the buffer
+  is escaped before `SetInnerRML` — it is player-typed text going into markup, so an
+  unescaped `<` would let a run name inject elements into the document.
 
 ## tinygltf
 
@@ -620,7 +706,7 @@ be rebuilt each frame and need not be serialized.
 
 The full classification (including the gray areas: why a transition mid-blend is
 authoritative, why blend weights are not, why animation events need explicit
-already-fired state) is the architecture record: **`docs/DESIGN_ANIMATION.md`**.
+already-fired state) is the architecture record: **`DevDocs/DESIGN_ANIMATION.md`**.
 
 ---
 
@@ -701,7 +787,7 @@ a function of where the agent stood *when it planned*, so recomputing it from th
 present can legitimately produce a different valid route. The full classification
 (including why `status` must record that a plan was *attempted*, and why avoidance is
 derived while the path is not) is the architecture record:
-**`docs/DESIGN_NAVIGATION.md`**.
+**`DevDocs/DESIGN_NAVIGATION.md`**.
 
 Asset reconstitution (RULES.md Rule 21a)
 
@@ -733,7 +819,7 @@ Owns:
   and strings the engine stores, serializes, snapshots and inspects but never *reads*.
   Keys belong to the game. It exists because a game module links only Core and cannot add
   a component type, while `Behavior`'s contract requires per-entity state to live in
-  components — see `docs/DESIGN_GAME_DATA.md`.
+  components — see `DevDocs/DESIGN_GAME_DATA.md`.
 
 Never replaced by an external ECS library.
 

@@ -14,7 +14,7 @@ class Registry;
 //     Pose = f(graph, playback state, parameters)
 //
 // so snapshot restore / time travel / hot reload bring a mid-transition character
-// back exactly, with no animation-specific restore code. See docs/DESIGN_ANIMATION.md.
+// back exactly, with no animation-specific restore code. See DevDocs/DESIGN_ANIMATION.md.
 namespace AnimationStateSystem {
 
 // Advances and applies every AnimationStateComponent. `dt` is the fixed step.

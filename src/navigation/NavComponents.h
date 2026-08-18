@@ -5,7 +5,7 @@
 
 #include <glm/glm.hpp>
 
-// Phase 18A — the authoritative half of navigation. See docs/DESIGN_NAVIGATION.md.
+// Phase 18A — the authoritative half of navigation. See DevDocs/DESIGN_NAVIGATION.md.
 
 // Whether the agent is walking, done, or stuck.
 //
@@ -73,6 +73,21 @@ struct NavAgentComponent {
     // plan?" and "how close may I pass?".
     float radius = 0.25f;
 
+    // --- failed-replan backoff (DevDocs/DESIGN_REPLAN_BACKOFF.md) ------------------
+    // Simulation seconds before this agent may search again after a failure.
+    //
+    // **Authoritative history**, not a cache: it records that an attempt happened and
+    // failed. Recomputing it from the present would give a different (wrong) answer, so
+    // by Rule 21b it is state — and a snapshot restored mid-cooldown that forgot it
+    // would fire a fresh search storm on the very frame you scrubbed to.
+    float replanCooldown = 0.0f;
+
+    // How long that cooldown lasts. Per agent rather than a global constant, for the
+    // same reason `speed` and `arrivalRadius` are: a guard and a housefly do not agree
+    // about how eagerly to retry an impossible goal. 0 restores the old behaviour
+    // (retry every step), which is the escape hatch for a game that wants it.
+    float failedReplanInterval = 0.5f;
+
     // Re-arms planning for `target`. Setting `destination` directly works too, but
     // only when the value actually changes — this also re-plans a *repeat* of a
     // destination that previously came back Unreachable, which is the one case a
@@ -92,6 +107,15 @@ struct NavAgentComponent {
         hasDestination = true;
         if (sameTarget && status == NavAgentStatus::Following) {
             return; // already walking there; keep the path we have
+        }
+        // Re-issuing a goal that just came back Unreachable is throttled rather than
+        // refused: the retry is what lets an agent notice a door opening, but paying a
+        // full A* for it *every step* is what turned 58 agents into a denial of service
+        // (243 -> 0.89 FPS). Measured as 40 agents x 120 steps = 4 800 searches before
+        // this guard existed. A destination that actually CHANGES is never throttled —
+        // a new decision is not a retry (DevDocs/DESIGN_REPLAN_BACKOFF.md).
+        if (sameTarget && status == NavAgentStatus::Unreachable && replanCooldown > 0.0f) {
+            return;
         }
         status = NavAgentStatus::Idle;
     }

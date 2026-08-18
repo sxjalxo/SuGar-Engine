@@ -102,7 +102,7 @@ yes/no answer. It is bounded on both sides:
 - Plugin marketplace
 
 **Deliverable at the M3 → M4 hand-off:** publish the Runtime UI design
-(`docs/DESIGN_RUNTIME_UI.md` + `docs/RUNTIME_UI_LESSONS.md`) as a standalone article —
+(`DevDocs/DESIGN_RUNTIME_UI.md` + `DevDocs/RUNTIME_UI_LESSONS.md`) as a standalone article —
 integrating a retained-mode UI library (RmlUi) with an ECS/deterministic gameplay model.
 Validate against a real game first.
 
@@ -168,7 +168,7 @@ game.
 **L3 game 1 — voxel / Minecraft-like. DONE.**
 - First slice runs: first-person, a chunked voxel world, gravity + game-side voxel collision,
   raycast break/place. Forced **three architectural seams** — each designed as a record first
-  (`docs/DESIGN_RUNTIME_MESH.md`, the `AssetGateway` + `CameraComponent` designs), never
+  (`DevDocs/DESIGN_RUNTIME_MESH.md`, the `AssetGateway` + `CameraComponent` designs), never
   "add a function":
   - **Camera as a component** (`CameraComponent`, Core): a game drives the view by placing it
     on an entity; the renderer reads that entity's world transform (pose derived, Rule 21b).
@@ -195,9 +195,9 @@ game.
 - **Second arc — the full game** (biomes, mobs, UI, lighting, particles, packaging), which is
   what put M4's remaining target features under load. Forced **five** more seams, each designed
   first: **#20** per-texture sampler filter as an import setting (the block atlas),
-  **#21 `GameDataComponent`** — the A3 gap, forced by mobs (`docs/DESIGN_GAME_DATA.md`),
+  **#21 `GameDataComponent`** — the A3 gap, forced by mobs (`DevDocs/DESIGN_GAME_DATA.md`),
   **#22 lights as components** with Directional/Point/Ambient, derived pose, ≤8 selection and
-  range falloff (`docs/DESIGN_LIGHTING.md`), **#23 `UIElementStateComponent`** (a HUD needs
+  range falloff (`DevDocs/DESIGN_LIGHTING.md`), **#23 `UIElementStateComponent`** (a HUD needs
   classes and inline style, not only text), **#24 cursor capture** as a request the engine
   grants only in Play. Gate **48 → 52/52**, Debug + Release (+`GameData`, `Lighting`, `NavLinks`, `WorldLabels`).
   - **Navigation held up, with one instructive failure.** A first navmesh built from flat
@@ -292,7 +292,7 @@ game.
 **L3 game 2 — combat arena. NEXT.** Third-person arena, 5–10 enemies, melee + ranged,
 projectiles, a boss, hit reactions, audio, save/load, packaged. Deliberately small and
 deliberately *orthogonal* to the voxel game: it is chosen not for what it adds to a game
-library but for which engine surface it drives. `docs/PLATFORM_AUDIT.md` found that
+library but for which engine surface it drives. `DevDocs/PLATFORM_AUDIT.md` found that
 **animation/skinning, audio and collision are implemented, self-tested, and have never been
 used by a game** — a projectile needs a collider, a hit needs a sound, a swing needs a clip.
 The question it answers is the one under all of M4: *can SuGar carry a materially different
@@ -300,8 +300,17 @@ game without being rewritten for it?*
 
 ### Level 4 — Advanced systems and quality (NOT STARTED)
 
-L4 begins when the *mechanics* questions are answered and the remaining ones are about
-**quality, scale and platform integration** rather than "can this be built at all":
+**L3 and L4 are two branches of M4, not two phases of it.** They are separated by the
+*kind of question a game asks*, not by the order the games arrive in:
+
+- **L3 asks "can SuGar build serious games?"** — capability. A game that cannot express a
+  mechanic at all is an L3 problem.
+- **L4 asks "can SuGar run serious games to production standards?"** — quality, scale and
+  platform sophistication. A game that renders correctly at 1080p and misses frame time at
+  4K is an L4 problem, and it is one *whether or not L3 has run out of questions*.
+
+So **L4 does not wait for L3 to finish.** A workload opens it, exactly as a workload opens
+anything else here. The L4 column:
 
 - rendering quality beyond the current forward path (post-processing, better materials/PBR,
   GI or its approximations, shadow quality);
@@ -314,7 +323,9 @@ L4 begins when the *mechanics* questions are answered and the remaining ones are
 
 The same rule holds across the boundary: **a game forces it, or it waits.** L4 items are
 allowed to be motivated by measurement rather than by a blocked game — a frame that is too
-slow at 4K is a real forcing function — but never by a feature list.
+slow at 4K is a real forcing function — but never by a feature list. DLSS is the clearest
+case: it goes in when a measured workload shows the rendering path needs another
+performance/quality mechanism, and not because modern engines have one.
 
 ---
 
@@ -612,7 +623,7 @@ self-test `AssetGateway`.
 needs one mesh generated *from voxel data*, not loaded from a file — the per-block-entity
 alternative measured 1.2 FPS at 25 600 blocks. *Change:* `AssetGateway::createMesh(RuntimeMeshData)`
 → `ResourceManager::createRuntimeMesh` (validate → copy into the engine vertex format → upload →
-synthetic `runtime://mesh/<id>` key). Designed first (`docs/DESIGN_RUNTIME_MESH.md`): CPU data is
+synthetic `runtime://mesh/<id>` key). Designed first (`DevDocs/DESIGN_RUNTIME_MESH.md`): CPU data is
 the caller's (engine copies before return, retains no pointer); `runtime://` is a derived,
 non-source resource (excluded from cook/package, not serialized — rebuilt from voxels on load,
 Rule 21a); runtime-key release idles the device (re-mesh swap safe). *Verdict:* fixed — chunk
@@ -642,7 +653,7 @@ Filter) use — a property of the image, not of one material. *Verdict:* fixed, 
 *Forced:* mobs. One `Behavior` instance ticks every entity that names it, so a per-mob health /
 cooldown / kind has nowhere to live; the player's velocity and hotbar slot had already been
 smuggled into module globals, which do not survive snapshot restore. *Change:* designed first in
-**`docs/DESIGN_GAME_DATA.md`**, then one engine-owned component whose *contents* the game owns —
+**`DevDocs/DESIGN_GAME_DATA.md`**, then one engine-owned component whose *contents* the game owns —
 `GameDataComponent{ map<string, number|string> }`, serialized as a plain JSON object, snapshotted
 free (a snapshot *is* the serializer), shown and edited in the Inspector. The engine never reads a
 value. Reflection / game-registered types stay unbuilt (Rule 8: nothing needed *types*, it needed a
@@ -653,7 +664,7 @@ place to put six floats). *Verdict:* fixed; the whole L3 game now keeps its stat
 components.** *Forced:* a day-night cycle and placed torches. Lights were a scene-level
 `std::vector<Light>` in the engine layer (a Core-only behaviour cannot touch it), every light was a
 point light with **no falloff**, ambient was a `0.12` constant compiled into the shader, and
-`MAX_LIGHTS` was 4. *Change:* designed first in **`docs/DESIGN_LIGHTING.md`** — Core
+`MAX_LIGHTS` was 4. *Change:* designed first in **`DevDocs/DESIGN_LIGHTING.md`** — Core
 `LightComponent{type,color,intensity,range,castsShadow,active}` with **position and direction
 derived from the entity's world transform** (the CameraComponent precedent, Rule 21b);
 `LightType{Directional,Point,Ambient}`; the draw list gathers scene lights + light entities and
@@ -684,7 +695,7 @@ game cannot trap the cursor in the editor; GLFW is applied engine-side (Rule 15)
 **Minecraft (L3) — #25 navigation had no off-mesh links.** *Forced:* a mob below a two-block
 ledge or across a trench plans and gets `Unreachable`, correctly — a navmesh welds by vertex, so
 two surfaces that share no corner are separate islands. *Change:* designed first (addendum in
-`docs/DESIGN_NAVIGATION.md`), then `NavMesh::links` — a `NavLink{start, end, cost, bidirectional}`
+`DevDocs/DESIGN_NAVIGATION.md`), then `NavMesh::links` — a `NavLink{start, end, cost, bidirectional}`
 whose **endpoint polygons are derived** by `buildAdjacency` (the same argument `neighbors` makes:
 an asset must not carry a stale resolution). A* expands links as one more edge kind, after the
 shared ones and in index order, so determinism is untouched; the funnel splits its corridor at a
@@ -728,7 +739,7 @@ clean over a 28 s run.
 **Minecraft (L3) — #29 no world-space text → `WorldLabelComponent`.** *Forced:* mob nameplates.
 The game has 60+ creatures of a dozen kinds and 15 villager professions, and the HUD can only
 describe whatever the crosshair is on — identifying anything meant aiming at it, one at a time.
-*Change:* designed first (addendum in `docs/DESIGN_RUNTIME_UI.md`), then **UI anchored to a world
+*Change:* designed first (addendum in `DevDocs/DESIGN_RUNTIME_UI.md`), then **UI anchored to a world
 point**, not glyph geometry in the scene: Core `WorldLabelComponent{text, offsetY, maxDistance}`
 whose anchor is the entity's own transform, plus pure `ScreenProjection::project` (Core, headless-
 testable) for the one piece of real math. The renderer projects, culls behind-camera / past-range /
@@ -1028,7 +1039,7 @@ toggled on a **wall-clock** gate, which is correct until the thing being measure
 past the interval — at which point "every second" silently became "every frame" and the harness was
 measuring itself. Frame-counted now.
 
-**Platform audit (docs/PLATFORM_AUDIT.md).** Not a feature checklist — five questions per
+**Platform audit (DevDocs/PLATFORM_AUDIT.md).** Not a feature checklist — five questions per
 subsystem: is there a *seam*, has a *real game* driven it, has it survived a *hostile* workload,
 is there an *unresolved architectural decision*, and would widening it *now* avoid a likely
 rewrite. Anything a game has not driven is marked **unproven**, not green.
@@ -1053,12 +1064,374 @@ numbers, and the windowed app has no capturable FPS. *Change:* opt-in `SUGAR_FPS
 FPS + drawn-entity + draw count to stderr each second (the L2-noted missing profiler overlay).
 *Ref:* `SuGarApp::mainLoop`.
 
+### Level 3, game 2 — the combat arena (the audit's orthogonal game)
+
+*Built to drive the three subsystems the platform audit found **unused**: animation/skinning,
+audio, collision. A 36x36 arena, a skinned fighter with a melee swing and a thrown bolt, waves
+of skinned navmesh agents, trigger-volume pickups, an RmlUi HUD. Report + numbers:
+`E:\Sugar Engine - Games\Level 3\CombatArena\Report.md`. Gate **56 -> 57/57** Debug + Release.*
+
+**The headline is what did *not* happen: this is the first L3 game that forced no new engine
+seam.** It forced four bug fixes and nothing else — a voxel streamer and a melee arena share
+nothing but the engine, and the engine took the second one unchanged.
+
+**#37 a scene outside the working directory silently loses every clip and skin.** *Found by the
+arena's first boot:* the fighter rendered, textured, in bind pose, and nothing anywhere said why.
+`ModelImporter::ensureModelAssets` opened the model at **the raw path from the asset key**, and a
+key is a *name* anchored at the `assets/` segment, not a working-directory path — every other
+asset type resolves through the catalog. For an external game (`SUGAR_GAME`, which is how all
+eight dogfood games are built) the file is elsewhere, the load threw, and `catch (...)` swallowed
+it. The components round-trip perfectly and the character never moves. The game settled it by
+asking the Core registries directly: `skin=0 clipIdle=0 clipDie=0` before, `1 1 1` after.
+*Change:* `AssetCooker::sourcePath(key)` — the catalog lookup every cooked type already used
+internally, made public for the one consumer that reads a *source* file directly. Keys are still
+built from the key spelling (a registered clip name must match what the scene wrote); only the
+file is resolved. The swallowed exception now prints (Rule 13). *Test:* `AnimationImport` gained
+an out-of-tree content root — assert the key does **not** resolve uncatalogued, scan, assert it
+does. *Ref:* `assets/ModelImporter.cpp`, `assets/AssetCooker.{h,cpp}`.
+
+**#38 releasing the last reference to an asset freed GPU memory that frames in flight were still
+using.** *Found by a thrown bolt:* it acquires `builtin://cube` + `builtin://white`, lives under a
+second, and is destroyed — and `ResourceManager::release` destroyed the resource inside the
+gameplay step. `vkDestroyBuffer(): ... currently in use by VkCommandBuffer`, and the same for a
+sampler still bound to a descriptor set. **Three sites had already met this problem and each
+patched its own instance** (a `vkDeviceWaitIdle` for `runtime://` meshes, another for hot reload,
+a deferred list in the Inspector); none covered the ECS destroy path, which is the one a game uses
+constantly. Rule 22 says fix the category. *Change (design-first,
+`DevDocs/DESIGN_GPU_RETIREMENT.md`):* a **retirement queue** — `release` erases the table entry and
+key mapping immediately (so the key reloads fresh the same step) and hands the GPU object a
+countdown of `framesInFlight`; `ResourceManager::endFrame()`, called once per frame by the
+renderer after it waits on that frame's fence, destroys what has outlived every frame that could
+still read it. Deferral rather than a wider `vkDeviceWaitIdle` because an arena destroys a bolt, a
+corpse and several audio emitters per second and each would stall the pipeline; the guarantee is
+identical. Two of the three ad-hoc mechanisms were **deleted**, and the Inspector path lost a
+full-pipeline stall. *Evidence:* **3 validation errors per run -> 0**, over an 80 s run destroying
+hundreds of asset-holding entities. *Named, not built:* the engine has no device-backed test gate,
+so the queue's timing is verified by the game rather than the suite — the second defect (after
+#G43) that such a gate would have caught.
+
+**#39 packaging an external game shipped no model at all.** A skin/clip sub-key is not a cooked
+artifact (the Phase 19 interim ships the source model and reports the key), and the copy
+destination was `outRoot / sourcePath` — but a catalogued path is **absolute** whenever the content
+root sits outside the working directory, and `path / absolute` discards the left operand. The copy
+became a self-copy: `0 source model(s)`, and no external game could ever ship an animated
+character. The packaging gate behaved correctly throughout — exit code 1, nothing shipped
+silently. *Change:* the destination is the key's own directory under the package root, keeping the
+real filename. *Test:* `Packaging` gained an external-content-root case (it asserts the catalogued
+path really is absolute first, so the test cannot pass for the wrong reason); break-tested FAIL
+without the fix. *Ref:* `assets/Packager.cpp`.
+
+**#40 half of every shadow map was being thrown away.** *Found by the arena floor:* a hard straight
+seam across it, one side lit and one side flat, and **no character casting a shadow at all**. It
+survived removing the walls, clearing `castsShadow`, and a 16x bias increase — so neither occlusion
+nor acne. *Root cause:* **GLM emits OpenGL clip space (NDC z in -1..1); Vulkan clips z to 0..1**,
+and every projection the engine built used the GLM default. On the perspective camera the discarded
+half hides between the near plane and ~2x near, which is why it went unseen for the engine's whole
+history. Applied to the shadow map's **orthographic** light frustum, z = 0 sits at the frustum's
+*midpoint*: the near half of the scene never reached the shadow map, stayed at the clear value and
+read as lit, while the far half was compared against a depth the fragment shader then re-mapped as
+if it were -1..1. *Change (the category, not the case):* `glm::perspectiveRH_ZO` and
+`glm::orthoRH_ZO` at both sites, each stating its convention, and the shadow lookup remaps only
+`xy` — `z` already arrives in the depth buffer's space. *Test:* new **`ProjectionDepth`** self-test
+pins near->0 and far->1 for the engine's camera and for the light's ortho; break-tested FAIL against
+`glm::perspective`. *Verdict:* fixed — the seam is gone and characters cast shadows, verified in
+the packaged standalone. *Ref:* `rendering/Camera.h`, `BasicTrianglePass.cpp`, `shaders/basic.frag`.
+
+*What the arena proved rather than broke.* Release, one machine, `SUGAR_FPSLOG`: **5 / 19 / 35 /
+81 / 162 enemies -> 400 / 370 / 285 / 312 / 245 FPS**, at 1 848 entities and 169 draw items held to
+**140 draw calls** by instancing. 162 navmesh agents replanning against a moving player, 162
+looping **spatial** growls against a 64-voice mixer cap plus hundreds of transient one-shots, no
+dropout and no error. The first `ColliderComponent` any game has authored, in all four roles at
+once (dynamic player body, kinematic enemies, filtered projectile spheres, `isTrigger` pickups).
+**Hot reload with live runtime assets** — F8 mid-run at ~160 entities holding runtime meshes and
+skinned characters — loaded `Game_live_1.dll` and carried on with zero validation errors, closing
+an *unproven* cell in the audit. Packaged standalone: 368 FPS fullscreen, every key from the
+manifest, no source.
+
+*Two deferred items now carry numbers instead of intuition.* **CCD / tunneling (B12):** 10 bolts
+fired at a 2 m wall — 34, 120, 170, 200 and 400 m/s all register 10 hits; **800 m/s registers 0**
+(a fixed step moves the bolt 13.3 m). The game's bolt is 34 m/s, **24x below the threshold**, so
+nothing forces CCD. **`MAX_SKINNED_DRAWS = 64`:** at 65+ skinned characters in one frame the extras
+render in bind pose behind a warn-once; reached only by the deliberate 162-enemy probe, against a
+designed wave cap of 24. A stress probe is not a game requirement — recorded, not raised.
+
+*The one ergonomic gap the game would ask for next, and did not get:* a Core-only module can build
+a skinned character (the skeleton is ordinary entities, the skin is a name) but must **duplicate
+the rig's joint table** from the glTF in game code, with nothing checking the two agree. Not a
+defect and not forced — `ModelImporter` is engine-side by construction, and the fix is a
+spawn-a-model seam that one game wanting it is not yet evidence for.
+
+### Level 3, game 2 — the arena's adversarial pass
+
+*No new features. The arena was pointed at the four things it had just changed, plus the
+subsystems the audit had only ever seen used gently. Five passes, validation layers on
+throughout, driven by `SUGAR_ARENA_TORTURE=<pass>` in the game's own `src/Torture.cpp`.
+Gate **57 -> 60/60** Debug + Release.*
+
+**#41 one big collider turned the broadphase back into the all-pairs scan it replaced.**
+*Found by the physics pass:* firing bolts continuously into the walled arena took it from
+8.9 FPS to **0.84**. Instrumented rather than guessed (`SUGAR_PHYSDBG=1`):
+
+```
+[physdbg] shapes=1016 cell=40 buckets=614 pairs=2124
+[physdbg] shapes=1524 cell=40 buckets=624 pairs=23221
+```
+
+Shapes rose 1.5x, candidate pairs 11x. `cell=40` is the whole story: the uniform grid sized
+its cells from the **largest** shape in the scene, and the arena's 40 m east wall made every
+cell wider than the playfield, so a thousand projectiles shared one bucket. **Every game has
+a collider far larger than its typical one** — a floor, a wall, a level hull; the three
+earlier dogfood games escaped only because none of them had *many* colliders (the voxel game
+rolled its own collision and never added a `ColliderComponent`).
+
+*Why the suite missed it, which is the part worth keeping:* `GridVsBruteForce` compares the
+grid's pairs against a brute-force oracle and `GridEdgeCases` already had a case named *"a
+big shape mixed with small ones"*. Both passed the whole time. **They verify the grid's
+answers; nothing verified that it was still a grid** — a degenerate grid is perfectly
+correct and merely quadratic. A performance property needs a test that *measures*.
+
+*Change (design-first, `DevDocs/DESIGN_BROADPHASE_SCALE.md`):* cells are sized from the
+**median** shape rather than the largest, and a shape whose AABB would span more than 32
+cells is kept out of the grid entirely and tested against everything directly — the two-tier
+split every physics engine converges on, `O(n + k*n)` with `k` a handful of level pieces.
+Determinism is untouched: pairs are still emitted as `(i<k)`, deduplicated and sorted, so
+contact resolution order is unchanged (Rule 10). *Test:* new **`GridScale(1200)`** stress
+test asserts near-linear growth in AABB tests performed, which needed
+`PhysicsWorld::lastBroadphaseCandidateCount()` — a diagnostic in the same spirit as
+`Renderer::submittedDrawCalls()`. Break-tested against the old sizing: **300 shapes -> 45 150
+candidate tests (exactly n(n+1)/2), 1200 -> 482 570**. With the fix, 232 FPS at 1 016 shapes
+and full recovery to 242 FPS as the population drains.
+
+*Named, not built:* the median cell size **moves with the population mix** — measured
+flipping 0.34 -> 0.99 mid-run as pickups and characters outnumbered projectiles, roughly
+tripling the candidate tests the projectiles pay. A percentile or a smoothed estimate would
+steady it; nothing forces the choice, and picking a constant without a workload is the
+speculation the freeze exists to prevent.
+
+*What survived the other four passes.* **Animation:** 4 000 skinned characters created and
+destroyed *while animating*, with every graph edge driven each cycle — 0 validation errors,
+live resource counts flat. **Audio:** 16 000 one-shot voices and 2 000 looping spatial
+sources against a 64-voice mixer cap, owners destroyed mid-playback — 310-420 FPS, no
+dropout, no error. **GPU/resource torture** (the highest-value pass after #38): 15 000
+entities and 7 500 unique runtime meshes created and released across 250 cycles with layers
+on — **0 validation errors and `meshes` pinned at 37, `textures` at 6, `clips` at 5 for the
+whole run**, with `retired` rising and draining as the queue works. **Two hot reloads mid-
+churn** (`Game_live_2.dll`) while those meshes were live: no crash, no leak, gameplay
+continued. **Packaging from an external content root:** the package copied to an unrelated
+directory boots three times running with `skin=1 clipIdle=1 clipDie=1` and zero validation
+errors — no accidental source-tree dependency in either direction.
+
+*Instrumentation added, deliberately small:* `SUGAR_FPSLOG` now also reports live
+`meshes/textures/clips` and the retirement queue depth, because "did 15 000 spawn/destroy
+cycles leak anything?" is answered by those staying flat and by nothing a headless test can
+observe.
+
+*Two dev-environment traps cost real time and are now written down* (`DevDocs/DEV_ENVIRONMENT.md`):
+`cmake --build --target SuGarEngine` does **not** always refresh `SuGarCore` for a config, and
+both of a game's build directories emit to the same `Game.dll`, so switching config silently
+leaves the wrong DLL in place. Both fail identically — an access violation inside
+`BehaviorRegistry::registerBehavior` at startup — and in both cases **the crash reporter named
+the exact frame**, which is the first time it has been used in anger rather than tested.
+
+### Level 3, game 2 — the arena grows a menu (#42)
+
+*The next increment of ordinary game depth: a pause screen, an upgrade screen, a run name
+that persists. It stopped being writable immediately.*
+
+**#42 the runtime UI's interactive half was unreachable by any game.** Three separate
+places, one mistake: **the engine's own demo document's element ids were compiled into the
+view.**
+
+- **Intents.** The only bridge from a document to a `UIIntent` was
+  `GetElementById("open")` -> `openScreen("Inventory")` and `GetElementById("back")` ->
+  `popScreen()`. A game ships its own `hud.rml`, so no game could make anything clickable.
+- **Screens.** `UIScreenComponent`'s active screen was applied by writing debug text into
+  `#body` — an element only the demo document has. Pushing a screen did nothing visible.
+- **Text fields.** Every field was rendered as `("Name: " or "Tag: ") + buffer`, chosen by
+  matching the demo's ids, so the arena's run-name field displayed a stray `Tag:`.
+
+That is why the platform audit's UI row never said more than "labels and element states":
+across L1, L2 and L3 there is not one use of `uiScreens`, `focus` or `textInputs` in any
+game. The model half was complete and self-tested the whole time; nothing could reach it.
+
+*Change (design-first, `DevDocs/DESIGN_UI_INTENT_BINDING.md`):*
+- **`data-intent` on any element** — `open:<screen>`, `pop`, `focus:<element>`, `unfocus`,
+  `text:<s>`, `backspace`, `caretleft`, `caretright` — parsed once at load, one
+  `IntentEmitter` per element. Content declares what a button does, in the engine's existing
+  vocabulary; the engine stops being the author of the list. An unparseable value is
+  **reported and ignored** (Rule 13), never guessed into a button that does the wrong thing.
+- **The active screen becomes a class on the document body**, `screen-<id>`, and the game's
+  RCSS decides what that means. Chosen over the engine toggling a tagged container because a
+  screen is rarely "one panel appears" — it also dims the HUD and greys a button, which is
+  RCSS's job. Exactly one `screen-` class at a time, so a game never unsets anything.
+- **Text fields render verbatim**, with the caret at its authoritative index and the text
+  **escaped** — `SetInnerRML` parses what it is given, so an unescaped `<` would let a
+  player's run name inject elements into the document.
+
+*Test:* `UIIntentBinding` covers the parse — every form, unknown verb, missing argument,
+empty argument, an argument-free verb given one, and case sensitivity — asserting a bad
+attribute yields **no** intent rather than a wrong one. Break-tested. The wiring itself is
+device-bound and was verified live: **`[RuntimeUI] bound 6 document intent(s)`** from the
+arena's own document, the pause panel appearing on `screen-Pause`, and `best wave 2` read
+back from the previous session's save.
+
+*What the increment also proved, game-side:* `SaveData` progression across processes, and
+gameplay pausing correctly — the fixed step keeps running (animation, UI intents drain)
+while no gameplay behaviour decides anything.
+
+*Still not built (Rule 8):* intents on events other than `click`, arguments beyond one
+string, directional focus traversal, any widget library. Which upgrade a player picked rides
+on `FocusComponent` — clicking focuses, focus is authoritative, the game reads it — rather
+than on a new intent verb invented for it.
+
+### Deferred backlog — working it down (start)
+
+*A pass over items deferred **with rationale** rather than forgotten. The order is by
+evidence, not by age: an item is taken now only if it is a defect, or if a game has since
+supplied the evidence the deferral said it was waiting for. Everything measured as
+not-forced stays deferred — CCD (24x margin), `MAX_SKINNED_DRAWS` (a stress probe reached
+it, not a game), batched-submit upload, binary snapshots, greedy face-merge, async chunk
+generation, `MAX_LIGHTS` clustering.*
+
+**World-label depth occlusion — deferred since world labels landed, now fixed.** The
+original note was one line: *"depth occlusion for world labels (they show through walls)"*.
+It stayed deferred for a real reason, and the fix is shaped by it: **"solid" is a game's
+word, not the engine's.** An arena wall should hide a nameplate; another enemy standing in
+front probably should not, and only the game knows which layer is which.
+
+*Change:* `WorldLabelComponent::occluderMask` — the collision layers that hide this label,
+tested by a raycast from the camera to the anchor
+(`rendering/WorldLabelVisibility.h`, Core, so the decision is headless-testable while the
+projection/layout half stays in the view). **A mask of 0 means never occlude, and 0 is the
+default**, so every scene written before this renders exactly as it did; the field is also
+written to disk only when set, keeping existing scene bytes identical. The labelled
+entity's own collider never counts — a nameplate must not be hidden by the body it belongs
+to.
+
+*Test:* `WorldLabelOcclusion` — nothing between, a wall between, the same wall on a layer
+the label ignores, mask 0 opting out, the owner's own collider, the degenerate
+camera-on-anchor case, and the mask surviving a scene round-trip. Break-tested.
+
+*Verified in the arena:* nameplates render and are occlusion-tested against
+`arena::LayerWorld` only, so enemies never hide each other's labels.
+
+*And a game-side finding on the way:* world labels need a `#worldlabels` container in the
+game's document — the arena had none, so its nameplates had **never rendered at all**. Not
+an engine defect (a document that doesn't want labels shouldn't get them), but one more
+case of the same family as #42: the contract between a game's document and the engine was
+discoverable only by reading the view's source. It is now in the game's `hud.rml`.
+
+Gate 60 -> **61/61** Debug + Release (+`WorldLabelOcclusion`).
+
+**#43 no backoff between failed replans — deferred at #36, now built.** *The second item off
+the deferred list, and the one with the strongest case: an already-observed pathological
+workload, a single identified ownership point, and an acceptance criterion that is a number.*
+
+`setDestination` already refused to re-arm a **Following** agent (that was #36). It still
+re-armed an **Unreachable** one, deliberately — that retry is how an agent notices a door
+opening — and the cost was a full A\* over the reachable component, per agent, **per step**.
+Measured at the time as 58 agents going 243 -> **0.89 FPS**.
+
+*Instrumentation first, on purpose.* `NavPath::searchesPerformed()` was added **before** the
+policy, because otherwise the fix could only be shown to improve the frame rate, not to
+remove the work. The reproduction — 40 agents, two disconnected islands, destination
+re-issued every step for 120 steps, exactly the shape of a chase behaviour — reported:
+
+```
+[stress]   replan searches 4800 (unthrottled 4800)
+```
+
+40 x 120. Every one of those searches returns the correct answer, which is precisely why no
+correctness test could ever have caught it.
+
+*Change (design-first, `DevDocs/DESIGN_REPLAN_BACKOFF.md`):* a **per-agent cooldown**,
+specified as behaviour rather than as a duration constant — Following + same goal: no
+search; **Unreachable + same goal: no search until the cooldown expires**; goal *changes*:
+search immediately, because a new decision is not a retry; route becomes available: the next
+permitted search succeeds and Following resumes on its own; Arrived: unchanged. Two fields,
+and the split between them is the design: `replanCooldown` is **authoritative history** (a
+snapshot restored mid-cooldown that forgot it would fire a fresh storm on the frame you
+scrubbed to — Rule 21b), while `failedReplanInterval` is per-agent policy, for the same
+reason `speed` is per agent. **Decremented by the fixed step's `dt`, never wall-clock** — a
+backoff on OS time would make the simulation non-reproducible, and it is the same mistake
+that once had a navigation harness measuring itself.
+
+*Result, same workload:* **4 800 -> 160 searches.** `NavReplanBackoff` (stress) asserts the
+throttle does not become abandonment (every agent still tried, all still report
+Unreachable), that the count is bounded by the interval rather than the step count, and that
+a *changed* destination still searches immediately, once per agent. Break-tested at
+`failedReplanInterval = 0`, which reproduces the 4 800 exactly.
+
+*Not built:* exponential backoff (nothing shows a fixed interval is wrong, and an
+exponential one needs a reset rule nobody has asked for), a navigation-wide search budget
+(it would starve agents non-deterministically by iteration order), and waking agents on a
+navmesh rebake (the interval already bounds the delay).
+
+Gate 60 -> **62/62** Debug + Release (+`WorldLabelOcclusion`, +`NavReplanBackoff`).
+
+**#44 box-shadow bled through translucent elements — the clip mask that #14 deferred.**
+*Third item off the deferred backlog, and the one the deferral itself had named a condition
+for: "box-shadow on a **translucent** element would show the shadow bleeding through its
+centre; opaque elements hide it." The arena's pause panel is that element.*
+
+*Reproduced before anything was designed.* Two identical boxes, same background, same 50%
+alpha, differing only in `box-shadow` — then the shadow **swapped between them**, so
+position and background are controlled and only the shadow moves:
+
+```
+LEFT  box: shadow-on (39.8, 34.8, 34.9)   shadow-off (93.1, 83.3, 83.6)
+RIGHT box: shadow-off (114.0, 104.4, 104.7)  shadow-on  (51.8, 46.7, 46.7)
+```
+
+The darkening follows the shadow, not the position. *And it is the clip mask, not the
+compositor* — the shadow **is** blurred and composited correctly, merely unclipped.
+RmlUi's own source says what should happen (`GeometryBoxShadow.cpp`): mask to everything
+outside the element's padding+border box, *then* draw the shadow. `RmlVulkanRenderer`
+overrode no clip-mask entry point, so `RenderToClipMask` fell through to a base-class no-op.
+
+*Change (design-first, `DevDocs/DESIGN_UI_CLIP_MASK.md`) — and the design reversed itself
+during implementation, which is the part worth keeping.* The obvious answer is a stencil
+attachment on the UI pass. It was rejected on evidence: `findDepthFormat()` prefers
+**`D32_SFLOAT`, which has no stencil aspect**, so stencil would mean changing the depth
+format for the **scene** pass — exactly the leak this seam exists to prevent — and offscreen
+effect layers, where blurred shadows are actually drawn, carry no depth attachment at all.
+So the mask is an **`R8_UNORM` coverage texture** owned by `RmlVulkanRenderer`, written by
+its own pass and sampled by the UI fragment shader. Nothing outside `src/ui/` changed. Set 1
+carries it; with no mask active set 1 binds the existing 1x1 white texture, so the multiply
+is inert and an unmasked document is unchanged.
+
+RmlUi 6.3 defines **three** operations, not the four an earlier draft assumed: `Set`
+(clear 0, write 1), `SetInverse` (clear 1, write 0 — the box-shadow case) and `Intersect`
+(clear 0, write the *previous* mask, which needs two targets ping-ponging because sampling
+the attachment being written is a feedback loop). An `Intersect` with no existing mask is a
+`Set`.
+
+*Test:* `ClipMaskPolicy` pins that table — the half that can be silently wrong, since
+inverting `SetInverse` yields a shadow covering everything *except* the element and still
+renders and validates. Break-tested.
+
+*Measured result:* the same probe re-run gives **39.8 -> 86.4** against an unshadowed 93.1,
+**87% of the bleed removed**; the residual ~7 is the blur running after the mask and
+smearing coverage back into the hole, which is inherent and what other backends do.
+*Also verified:* inset shadows stay inside their element; an oversized child of a rounded
+`overflow:hidden` parent is clipped to the **parent's** radius (a scissor would give square
+corners, so the mask is genuinely doing it); **zero validation errors**; Pong's L1 HUD
+chips unchanged; and the engine's own demo document — no `box-shadow`, so no mask ever set —
+**pixel-identical** apart from the unrelated #42 text-field fix.
+
+*One defect found in the making, by the validation layer:* the pipeline layout's push range
+now spans vertex+fragment, and `vkCmdPushConstants` must name **every** stage of an
+overlapping range even when the shader reads only half of it —
+`"which is missing stageFlags from the overlapping VkPushConstantRange"`. Fixed.
+
+Gate 62 -> **63/63** Debug + Release (+`ClipMaskPolicy`).
+
 ---
 
 ## Phase detail — M3 (Phases 16–21)
 
 The per-phase engineering record for M3, each with its architecture decided first (the
-`docs/DESIGN_*.md` records) and gated by `SUGAR_VALIDATE`. Summary bullets are in the
+`DevDocs/DESIGN_*.md` records) and gated by `SUGAR_VALIDATE`. Summary bullets are in the
 Milestones appendix; the detail below is the reference.
 
 1. **Runtime UI (RmlUi) — DONE (Phase 16).** It led M3, and not merely because it's a
@@ -1067,7 +1440,7 @@ Milestones appendix; the detail below is the reference.
    `ImGui::Begin("HUD")` — violating the engine's own architecture. It is the *last
    missing piece of the platform*, so it leads.
    - **Architecture decided before code:** see
-     **`docs/DESIGN_RUNTIME_UI.md`** — the governing
+     **`DevDocs/DESIGN_RUNTIME_UI.md`** — the governing
      invariant is `UI = f(ECS, input)`: RmlUi is a *view*, authoritative UI state
      lives in ECS ([RULES.md](RULES.md) Rule 21), callbacks emit intents only, and
      the UI system polls ECS (never subscribes). This makes snapshot restore /
@@ -1215,7 +1588,7 @@ Milestones appendix; the detail below is the reference.
    authoritative text (16B.7) → focus-routed text (16B.8). Screen stack, focus, text
    buffer and caret all live in ECS; hover, layout and rendering are derived — with no
    exceptions. Rationale and the bugs found along the way are captured in
-   **`docs/RUNTIME_UI_LESSONS.md`** (why not `<input>`,
+   **`DevDocs/RUNTIME_UI_LESSONS.md`** (why not `<input>`,
    why focus is authoritative, why callbacks only emit intents, why polling beat
    subscriptions, why the RenderInterface is hand-written, and the one ImGui flag
    behind two unrelated-looking bugs).
@@ -1229,7 +1602,7 @@ Milestones appendix; the detail below is the reference.
    Rule 21 constraint: playback state (current time, active state) is authoritative →
    ECS / serializable; graph evaluation caches are derived → rebuildable.
    - **Architecture decided before code**, as with Runtime UI: see
-     **`docs/DESIGN_ANIMATION.md`**. The governing invariant
+     **`DevDocs/DESIGN_ANIMATION.md`**. The governing invariant
      is `Pose = f(clip data, playback state)` — clips are immutable assets, playback
      state lives in ECS, and the pose is *recomputed*, never stored. Rule 21 uses an
      animator hiding `currentTime` as its worked example of the bug this prevents.
@@ -1415,7 +1788,7 @@ Milestones appendix; the detail below is the reference.
      - **Phase, not seconds — the one thing the record didn't predict.** A blend tree
        mixes clips of different lengths (a walk is slower than a run); advance them by
        wall-clock seconds and the feet slide, because each reaches its foot-plant at a
-       different moment. `statePhase` is normalized `docs/DESIGN_ANIMATION.md`**.
+       different moment. `statePhase` is normalized `DevDocs/DESIGN_ANIMATION.md`**.
 3. **QA + hardening pass (DONE, between Phase 17 and 18).** Before starting a new
    subsystem, stabilise the last one and clear known debt:
    - **Scene-UBO write-while-in-flight race fixed.** The scene uniform buffer was a
@@ -1440,7 +1813,7 @@ Milestones appendix; the detail below is the reference.
      determinism across two runs and snapshot survival at scale. 26/26 `SUGAR_VALIDATE`.
 4. **Navigation — DONE (Phase 18).** The third M3 platform item, and the third
    subsystem to have its architecture decided **before** any code:
-   **`docs/DESIGN_NAVIGATION.md`**. The governing invariant
+   **`DevDocs/DESIGN_NAVIGATION.md`**. The governing invariant
    is `Route = f(navmesh, start, goal)` — *and* the deliberate counterweight to it,
    which is what the record exists for: **following a route is state, not a cache.**
    - **The record's own contribution — a path is authoritative.** The tempting
@@ -1704,7 +2077,7 @@ Milestones appendix; the detail below is the reference.
    one the other two depend on: packaging exports what cooking produced, and the build
    pipeline runs the cooker.
    - **Architecture decided before code:** see
-     **`docs/DESIGN_ASSET_PIPELINE.md`** — the governing
+     **`DevDocs/DESIGN_ASSET_PIPELINE.md`** — the governing
      invariant is `Cooked = f(source bytes, import settings, cooker version)`, with
      `Runtime = f(cooked)`. Asset identity stays the normalized path key (Rule 21a);
      **GUIDs are rejected** because an id database is a function of *history*, not of
@@ -1797,7 +2170,7 @@ Milestones appendix; the detail below is the reference.
 
 6. **Packaging — IN PROGRESS (Phase 20).** The fifth M3 item, and the first that
    *consumes* the asset pipeline rather than extending it. Design record written before
-   code, as always: `docs/DESIGN_PACKAGING.md`.
+   code, as always: `DevDocs/DESIGN_PACKAGING.md`.
    - **The expensive decision: the manifest.** In the editor the runtime names a cooked
      file by hashing the *source*; a shipped build has no source. So the packager records
      `resourceKey -> artifact hash` at package time, and the runtime resolves through
@@ -1826,7 +2199,7 @@ Milestones appendix; the detail below is the reference.
 
 7. **Build pipeline — DONE (Phase 21). M3 COMPLETE.** The sixth and final floor item,
    and the first that introduced *no new subsystem* — it orchestrates the headless gates
-   19 and 20 already built. `docs/DESIGN_BUILD_PIPELINE.md`.
+   19 and 20 already built. `DevDocs/DESIGN_BUILD_PIPELINE.md`.
    - `scripts/build_release.ps1` (+ `.sh`): `cmake --build` (Release) then
      `SUGAR_PACKAGE=1`. Device-free end to end, so it runs on a headless CI box.
    - **Binaries close Phase 20's gap:** `Packager::collectRuntimeBinaries()` ships the
@@ -1875,7 +2248,7 @@ architectural change. Healthy distribution for software reaching a production ba
 Made a **permanent regression, not a one-off fuzz**: the `MalformedInput` self-test is now
 part of the gate, so every `SUGAR_VALIDATE` run asserts a JSON bomb, an OOB-accessor glTF,
 and a bogus-count `.sgc` all fail cleanly. Count is now **37/37** (was 36). Robustness
-note in `docs/DESIGN_ASSET_PIPELINE.md`. Feature gap left open (not a security issue):
+note in `DevDocs/DESIGN_ASSET_PIPELINE.md`. Feature gap left open (not a security issue):
 sparse glTF accessors unsupported.
 
 ### Pre-freeze: crash reporting (2026-07-28)
@@ -1904,7 +2277,25 @@ That closes the pre-freeze list. **The platform is frozen; M4 (dogfood) begins.*
 
 ## Deferred / future
 
-Scheduled explicitly *later* so they aren't lost:
+Scheduled explicitly *later* so they aren't lost.
+
+**How an item leaves this list (added 2026-08-19).** Not by age, and not by someone deciding
+it is time: a workload or an architectural lifetime constraint has to make the complexity
+worth spending. The first pass under that rule retired three items and refused several more:
+
+| Item | Outcome | What promoted it |
+| --- | --- | --- |
+| World-label depth occlusion | **built** | Nameplates showing through arena walls; resolved as an opt-in layer mask because "solid" is a game's word, not the engine's |
+| Failed-replan backoff (**#43**) | **built** | 40 agents on an unreachable goal measured at **4 800 A\* searches** in 120 steps; per-agent cooldown took it to **160** |
+| Stencil/clip masks (**#44**) | **built**, but *not* as stencil | The arena's translucent pause panel measured a **53 RGB** interior darkening; stencil was then rejected on evidence (the UI pass is `D32_SFLOAT`, effect layers have no depth) in favour of a coverage texture |
+| Generational entity ids | **designed, not built** | The audit's one "widen now" row. `DevDocs/DESIGN_GENERATIONAL_IDS.md` settled 20/12 bit packing by measurement and found the audit's premise half wrong — no file stores an entity id — so it does not get harder while it waits |
+| CCD, `MAX_SKINNED_DRAWS`, batched-submit upload, binary snapshots, greedy face-merge, async chunk generation, `MAX_LIGHTS` clustering | **still deferred** | Each measured as not-forced. A projectile tunnels at 400–800 m/s and the game throws at 34; skinned draws cap at 64 and a game has never passed 24 |
+
+The pattern worth keeping: **an item can be promoted and then have its first implementation
+rejected by its own evidence.** #44 is the example — the reproduction justified the work, and
+the same investigation then ruled out the obvious mechanism.
+
+Still explicitly later:
 
 **Engine**
 - **Binary / delta snapshots** — *evidence-gated, not assumed.* The M2 benchmark
@@ -1944,6 +2335,21 @@ Small, deliberate "later, not now" items:
   legible on disk. Communicates intent; not technically required.
 - **Physics:** boxes are axis-aligned (rotation ignored in collision); physics bodies
   should be top-level. Contact point is the pair midpoint (fine for sfx/triggers).
+- **Broadphase cell size follows the population's median**, so it *moves* when the mix of
+  shape sizes changes — measured flipping 0.34 → 0.99 mid-run as pickups outnumbered
+  projectiles, roughly tripling the candidate tests the projectiles pay. A percentile or a
+  smoothed estimate would steady it; nothing forces the choice, and picking a constant
+  without a workload is the speculation the freeze exists to prevent
+  (`DevDocs/DESIGN_BROADPHASE_SCALE.md`).
+- **Blur runs after the clip mask**, so a blurred box-shadow smears a little coverage back
+  into the hole the mask punched — measured at ~7 RGB of the original 53. Inherent to
+  blur-after-mask and what other backends do; masking *again* after the composite would fix
+  it and nothing has asked (`DevDocs/DESIGN_UI_CLIP_MASK.md`).
+- **Entity identity is designed but unbuilt.** `DevDocs/DESIGN_GENERATIONAL_IDS.md` specifies
+  20-bit index / 12-bit generation packed into the existing `uint32_t`, and states the one
+  decision that makes it more than a typedef change: undo must resurrect an exact packed id
+  *including its generation*, so the staleness guard protects gameplay reuse and explicitly
+  not the editor's time machine.
 
 ---
 
@@ -2022,8 +2428,10 @@ full phase-by-phase history is in git.
 
 ### M4 — Dogfood (active, and not a phase with a near end)
 
-Games get built on the engine until it is a serious one. Each tier closes when its questions
-stop producing answers, not on a schedule.
+Games get built on the engine until it is a serious one. **M4 is open-ended by design**, and
+the question is never "have we shipped enough games?" — it is *"are real games still exposing
+important weaknesses?"* If yes, keep dogfooding. A fixed end date would work against the
+method, because the method is the evidence.
 
 - **Level 1 (done)** — Pong, Breakout, Flappy Bird, Asteroids. 10 engine boundary features
   forced (all by Pong), zero architecture rewrites, gate held 38/38. Detail:
@@ -2032,8 +2440,16 @@ stop producing answers, not on a schedule.
   nothing) and a survivors-like (forced the snapshot-capture policy). Gate 40 → 47/47.
 - **Level 3 (in progress)** — *core game mechanics at real-game scale*, not a single game.
   Game 1, the voxel/Minecraft-like: done, and it forced seven engine seams plus seven defects
-  (#16–#36), gate 47 → 56/56. Game 2: the combat arena, chosen by `docs/PLATFORM_AUDIT.md`
-  because animation, audio and collision have never been driven by a game.
-- **Level 4 (not started)** — advanced systems and quality: rendering beyond the forward path,
+  (#16–#36), gate 47 → 56/56. Game 2, the combat arena (chosen by `DevDocs/PLATFORM_AUDIT.md`
+  because animation, audio and collision had never been driven by a game): **done**, and the
+  first L3 game to force **no new seam** — four defects (#37–#40), gate 56 → 57/57. Its
+  adversarial pass found **#41** (one large collider degrading the broadphase to all-pairs)
+  and closed the audit's remaining unproven cells; a second increment found **#42** (the
+  runtime UI's interactive half, unreachable by any game). A **deferred-backlog pass** then
+  worked three long-standing items down by evidence: world-label occlusion, **#43** replan
+  backoff, **#44** clip masks — plus a design record for generational entity ids that was
+  deliberately *not* implemented. Gate 56 → **63/63**.
+- **Level 4 (not started)** — the *other branch* of M4, not L3's successor: advanced systems
+  and quality, opened by a workload rather than by L3 running out. Rendering beyond the forward path,
   high-DPI/4K and dynamic resolution, vendor features (FreeSync/G-Sync, DLSS/FSR), GPU-driven
   culling and async upload, plus the L3-deferred optimizations if a workload forces them.

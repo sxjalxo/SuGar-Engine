@@ -9,7 +9,7 @@
 // Sidecar rather than one central manifest: no merge conflicts on a shared file, and
 // moving an asset moves its settings with it. These files are SOURCE, not cache --
 // they are committed, and two developers must cook the same bytes from the same
-// checkout (docs/DESIGN_ASSET_PIPELINE.md).
+// checkout (DevDocs/DESIGN_ASSET_PIPELINE.md).
 //
 // A missing .meta is legal: defaults apply and the file is written on first import.
 // Dropping an asset into the project must never require ceremony (Rule 1).

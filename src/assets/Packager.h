@@ -6,7 +6,7 @@
 
 class AssetDatabase;
 
-// Standalone export (docs/DESIGN_PACKAGING.md, Phase 20).
+// Standalone export (DevDocs/DESIGN_PACKAGING.md, Phase 20).
 //
 // A package is the cooked artifacts a set of scenes can reach, plus the manifest that
 // lets a shipped runtime find them without the source tree, plus the scenes and the
@@ -74,7 +74,7 @@ public:
 
     // Verifies a package on disk the way a shipped runtime would: load its manifest, put
     // the cooker in packaged mode, and resolve every key to a readable artifact -- with
-    // no source and no database (Phase 21, docs/DESIGN_BUILD_PIPELINE.md). This is the
+    // no source and no database (Phase 21, DevDocs/DESIGN_BUILD_PIPELINE.md). This is the
     // build pipeline's acceptance check: a package that verifies boots. Errors are
     // appended; empty means the package is self-contained. Saves and restores the
     // cooker's global state, so it is safe to call in-process.

@@ -3,7 +3,7 @@
 #include <map>
 #include <string>
 
-// Game-defined per-entity state (M4 Level 3 — see docs/DESIGN_GAME_DATA.md).
+// Game-defined per-entity state (M4 Level 3 — see DevDocs/DESIGN_GAME_DATA.md).
 //
 // A game module links only Core and cannot add a component type to Registry, yet
 // Behavior's contract says per-entity state must live in components. Mobs made that

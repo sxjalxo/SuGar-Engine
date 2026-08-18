@@ -4,7 +4,7 @@
 // UI = f(ECS, input). It will hold the RmlUi library lifecycle + context, read the
 // authoritative UI model from ECS (src/ui/UIComponents.h) each frame, and render it
 // through a Vulkan RenderInterface. RmlUi is confined to the engine layer here;
-// SuGarCore never sees it (RULES.md Rule 15). See docs/DESIGN_RUNTIME_UI.md.
+// SuGarCore never sees it (RULES.md Rule 15). See DevDocs/DESIGN_RUNTIME_UI.md.
 //
 // 16B.1 establishes the build/link/init path with FreeType and a headless smoke
 // test. The Vulkan RenderInterface + ECS-to-document sync are Phase 16B.2+, which
@@ -27,7 +27,7 @@ class UIIntentQueue;
 class IntentEmitter;
 
 // One label to draw this frame: text plus where the renderer projected it. Derived data,
-// handed over per frame — the view never keeps it (docs/DESIGN_RUNTIME_UI.md addendum).
+// handed over per frame — the view never keeps it (DevDocs/DESIGN_RUNTIME_UI.md addendum).
 struct ScreenLabel {
     std::string text;
     float x = 0.0f;      // viewport pixels, origin top-left
@@ -44,7 +44,7 @@ public:
     // context, and (for now) a built-in demo document. Call once the UI render pass
     // exists. Safe no-op on failure — the editor keeps running without runtime UI.
     // `intents` is the queue UI callbacks emit into — they never mutate UI state
-    // directly (docs/DESIGN_RUNTIME_UI.md). May be null (smoke/headless paths).
+    // directly (DevDocs/DESIGN_RUNTIME_UI.md). May be null (smoke/headless paths).
     void init(VkDevice device, VkPhysicalDevice physicalDevice, VkCommandPool commandPool,
               VkQueue graphicsQueue, VkRenderPass renderPass, VkExtent2D extent,
               UIIntentQueue* intents);
@@ -54,7 +54,7 @@ public:
     void processMouse(float x, float y, bool leftDown);
 
     // Keyboard/gamepad focus navigation. Focus is *authoritative* state
-    // (docs/DESIGN_RUNTIME_UI.md): this does not move focus directly — it works out
+    // (DevDocs/DESIGN_RUNTIME_UI.md): this does not move focus directly — it works out
     // the next focusable element from the document and emits a SetFocus intent, which
     // the fixed-step system writes to FocusComponent. The view then applies it.
     void focusNext(bool reverse);
@@ -64,7 +64,7 @@ public:
 
     // Records the runtime UI into `cmd`. Must be called inside the UI render pass.
     // Polls `registry` for the authoritative UI model first (never subscribes to it —
-    // see docs/DESIGN_RUNTIME_UI.md), so the view is a pure function of ECS state.
+    // see DevDocs/DESIGN_RUNTIME_UI.md), so the view is a pure function of ECS state.
     void render(VkCommandBuffer cmd, VkExtent2D extent, VkFramebuffer framebuffer,
                 VkRenderPass layerPass, VkImage sceneImage, const Registry* registry);
 
@@ -96,8 +96,12 @@ private:
     void syncWorldLabels();
 
     std::unique_ptr<RmlVulkanRenderer> renderer;
-    std::unique_ptr<IntentEmitter> openListener;
-    std::unique_ptr<IntentEmitter> backListener;
+    // One per element carrying a `data-intent`; owned here because RmlUi keeps raw
+    // listener pointers for the document's lifetime.
+    std::vector<std::unique_ptr<IntentEmitter>> intentListeners;
+    // The `screen-<id>` class currently applied to the document, so the previous one
+    // can be removed without the game ever having to unset it.
+    std::string lastScreenClass;
     Rml::Context* context = nullptr;
     Rml::ElementDocument* document = nullptr;
     bool initialised = false;

@@ -60,17 +60,21 @@
 #include "navigation/NavPath.h"
 #include "navigation/NavigationSystem.h"
 #include "physics/PhysicsWorld.h"
+#include "rendering/Camera.h"
 #include "rendering/DeviceMemoryPool.h"
 #include "physics/PhysicsQuery.h"
 #include "scene/ScriptSystem.h"
 #include "core/SnapshotCapturePolicy.h"
 #include "audio/AudioClip.h"
+#include "audio/AudioEngine.h"
 #include "rendering/Mesh.h"
 #include "rendering/ScreenProjection.h"
+#include "rendering/WorldLabelVisibility.h"
 #include "rendering/UniformBufferObject.h"
 #include "scene/BehaviorRegistry.h"
 #include "scene/Light.h"
 #include "scene/SceneSerializer.h"
+#include "ui/ClipMaskPolicy.h"
 #include "ui/RuntimeUISystem.h"
 #include "ui/UIIntent.h"
 
@@ -947,7 +951,7 @@ inline bool testRuntimeUI() {
 
 // --- Animation: playback state is authoritative, the pose is derived --------
 // The whole subsystem is testable headlessly because sampling is pure math over
-// plain data in Core (docs/DESIGN_ANIMATION.md) — no GPU, no skinning, no assets.
+// plain data in Core (DevDocs/DESIGN_ANIMATION.md) — no GPU, no skinning, no assets.
 inline bool testAnimation() {
     bool ok = true;
     constexpr float step = 1.0f / 60.0f;
@@ -1518,6 +1522,43 @@ inline bool testSkinImport() {
     // Resolving a clip key must also bring in that model's skin: a character needs
     // both, and only one of them names the file.
     ok &= SkinRegistry::has(ModelImporter::skinKey("assets/models/SkinnedBend.gltf", "Armature"));
+
+    // Content that does NOT live under the working directory — an external game
+    // (SUGAR_GAME), which is how every M4 dogfood game is built. A resource key is
+    // anchored at the "assets/" segment, so it names the asset without saying where
+    // its content root is; reading the key as a path found nothing, and a scene's
+    // skins and clips silently failed to register (the character then renders in bind
+    // pose and never animates, with no error anywhere).
+    AnimationClipRegistry::clear();
+    SkinRegistry::clear();
+    {
+        const std::filesystem::path contentRoot = "build/selftest_content";
+        const std::filesystem::path modelDirectory = contentRoot / "assets" / "models";
+        std::error_code ignored;
+        std::filesystem::remove_all(contentRoot, ignored);
+        std::filesystem::create_directories(modelDirectory, ignored);
+        std::filesystem::copy_file("assets/models/SkinnedBar.gltf",
+                                   modelDirectory / "OffTreeRig.gltf",
+                                   std::filesystem::copy_options::overwrite_existing, ignored);
+
+        const std::string offTreeKey =
+            ModelImporter::skinKey("assets/models/OffTreeRig.gltf", "Armature");
+
+        // The premise: nothing resolves this key by treating it as a path.
+        ok &= !std::filesystem::exists("assets/models/OffTreeRig.gltf");
+        ModelImporter::ensureModelAssets(offTreeKey);
+        ok &= !SkinRegistry::has(offTreeKey);
+
+        // Catalogue the external content root, and the same key resolves.
+        AssetDatabase externalCatalog;
+        externalCatalog.scan(contentRoot.generic_string());
+        AssetCooker::setDatabase(&externalCatalog);
+        ModelImporter::ensureModelAssets(offTreeKey);
+        ok &= SkinRegistry::has(offTreeKey);
+
+        AssetCooker::setDatabase(nullptr);
+        std::filesystem::remove_all(contentRoot, ignored);
+    }
 
     // Junk keys and missing files are ignored rather than throwing mid-scene-load.
     ModelImporter::ensureModelAssets("no-separator");
@@ -3407,7 +3448,7 @@ inline bool testSceneLoad() {
 }
 
 // --- GameData: game-defined per-entity state survives save/load/patch -------
-// The A3 seam (docs/DESIGN_GAME_DATA.md). What matters is not that the map works —
+// The A3 seam (DevDocs/DESIGN_GAME_DATA.md). What matters is not that the map works —
 // it is that a value a *game* wrote comes back byte-for-byte through the scene file
 // and through the snapshot patch path, because that is what makes mob health and a
 // player's chosen slot survive time travel and hot reload.
@@ -3484,7 +3525,7 @@ inline bool testGameData() {
 
 // --- Lighting: components round-trip, and the renderer picks the right 8 ----
 // The seam that let the game run a day-night cycle and place torches
-// (docs/DESIGN_LIGHTING.md). Two claims worth pinning: a LightComponent survives the
+// (DevDocs/DESIGN_LIGHTING.md). Two claims worth pinning: a LightComponent survives the
 // scene file, and light *selection* prefers the shadow-casting sun and then the points
 // nearest the camera — the rule that decides what a torch-lit cave actually looks like.
 inline bool testLighting() {
@@ -3647,7 +3688,7 @@ inline bool testBehaviorRegistry() {
 // --- AssetPath / AssetMeta / AssetDatabase (Phase 19A) ----------------------
 // The identity function is the thing worth testing here: every scene, prefab and save
 // file on disk already contains its output, so a change to it is a migration
-// (docs/DESIGN_ASSET_PIPELINE.md). Runs headless -- no Vulkan, no ResourceManager.
+// (DevDocs/DESIGN_ASSET_PIPELINE.md). Runs headless -- no Vulkan, no ResourceManager.
 inline bool testAssetDatabase() {
     bool ok = true;
 
@@ -3807,7 +3848,7 @@ inline bool testAssetDatabase() {
 // --- AssetCooker / CookedAsset (Phase 19B) ---------------------------------
 // The defining test of the cooker is byte-identical recook: cook a tree twice into two
 // cache directories and compare bytes. A regression here is an architecture violation,
-// not a bug (docs/DESIGN_ASSET_PIPELINE.md). Everything runs headless -- cooking never
+// not a bug (DevDocs/DESIGN_ASSET_PIPELINE.md). Everything runs headless -- cooking never
 // needs a Vulkan device, which is what lets CI and packaging run it.
 inline bool testAssetCooking() {
     bool ok = true;
@@ -4017,7 +4058,7 @@ inline bool testAssetCooking() {
 // Settings are applied at COOK time, so the test is "does the artifact's content
 // change", not "does the loader behave differently". Dependency edges are owned by the
 // database and discovered by the cooker: this pins that split, because the easy mistake
-// is for the cooker to start keeping its own table (docs/DESIGN_ASSET_PIPELINE.md).
+// is for the cooker to start keeping its own table (DevDocs/DESIGN_ASSET_PIPELINE.md).
 inline bool testAssetImport() {
     bool ok = true;
 
@@ -4272,7 +4313,7 @@ inline bool testAssetImport() {
 // --- AssetReimport: one import path for watcher and editor (Phase 19D) -----
 // The editor must not have its own import shortcut, so the property worth pinning is
 // behavioural: the same call the file watcher makes is the one the Reimport button
-// makes, and the only difference is `force` (docs/DESIGN_ASSET_PIPELINE.md). Headless:
+// makes, and the only difference is `force` (DevDocs/DESIGN_ASSET_PIPELINE.md). Headless:
 // ResourceManager has no device here, so nothing reloads -- and that is a supported
 // state, not a skipped test.
 inline bool testAssetReimport() {
@@ -4375,7 +4416,7 @@ inline bool testAssetReimport() {
 
 // --- Packaging: manifest resolves keys without source (Phase 20) -----------
 // The expensive decision packaging settles is "which cooked file is this key when there
-// is no source to hash" (docs/DESIGN_PACKAGING.md). The test proves the manifest is that
+// is no source to hash" (DevDocs/DESIGN_PACKAGING.md). The test proves the manifest is that
 // answer: cook + package a scene, then resolve its keys with the SOURCE TREE DELETED and
 // only the manifest present, and read the artifacts back. Headless throughout.
 inline bool testPackaging() {
@@ -4549,7 +4590,314 @@ inline bool testPackaging() {
     AssetCooker::setManifest(nullptr);
     AssetCooker::setDatabase(nullptr);
     AssetCooker::setCacheDirectory("build/assetcache");
+
+    // --- An EXTERNAL content root, which is how every M4 dogfood game is built ------
+    // Packaging a game outside the working directory catalogues ABSOLUTE source paths.
+    // A skin/clip sub-key ships as source (the Phase 19 interim), and the destination
+    // for that copy has to be package-relative: `outRoot / absolutePath` collapses to
+    // the absolute path itself, so the copy was a self-copy that shipped nothing and
+    // left the standalone with no skeleton to animate.
+    {
+        const std::filesystem::path external = root / "external";
+        const std::filesystem::path externalAssets = external / "assets" / "models";
+        std::filesystem::create_directories(externalAssets, cleanupError);
+        std::filesystem::copy_file("assets/models/SkinnedBar.gltf", externalAssets / "Rig.gltf",
+                                   std::filesystem::copy_options::overwrite_existing,
+                                   cleanupError);
+
+        const std::filesystem::path externalScene = external / "scene.json";
+        {
+            std::ofstream file(externalScene, std::ios::binary);
+            file << R"({"version":2,"objects":[)"
+                    R"({"name":"Rig","mesh":"assets/models/Rig.gltf#0",)"
+                    R"("skinnedmesh":"assets/models/Rig.gltf#Armature"})"
+                    R"(]})";
+        }
+
+        AssetDatabase externalDatabase;
+        externalDatabase.scan((external / "assets").generic_string());
+        // The premise of the bug: the catalogued path is absolute here.
+        const AssetEntry* rigEntry = externalDatabase.find("assets/models/Rig.gltf");
+        ok &= rigEntry != nullptr &&
+              std::filesystem::path(rigEntry->path).is_absolute();
+
+        Packager::Spec externalSpec;
+        externalSpec.scenes.push_back(externalScene.generic_string());
+        const std::filesystem::path externalPackage = root / "externalpackage";
+        externalSpec.outputDirectory = externalPackage.generic_string();
+
+        const Packager::Report externalReport = Packager::package(externalDatabase, externalSpec);
+        ok &= externalReport.errors.empty();
+        ok &= externalReport.sourceModelsCopied == 1;
+        // Shipped where the packaged runtime will look for it: under the package root,
+        // at the key's own directory, keeping the real filename.
+        ok &= std::filesystem::exists(externalPackage / "assets" / "models" / "Rig.gltf");
+
+        AssetCooker::setManifest(nullptr);
+        AssetCooker::setDatabase(nullptr);
+        AssetCooker::setCacheDirectory("build/assetcache");
+    }
+
     std::filesystem::remove_all(root, cleanupError);
+    return ok;
+}
+
+// --- World-label occlusion: labels stop showing through walls -------------------
+// Deferred since world labels landed ("they show through walls"), and deferred for a
+// real reason: "solid" is a GAME's word. An arena wall should hide a nameplate; another
+// enemy standing in front probably should not. So the engine does not decide —
+// WorldLabelComponent::occluderMask names the layers that count, and 0 (the default)
+// means never occlude, which is exactly what every scene did before this existed.
+//
+// The decision is a raycast against colliders the ECS already holds, so it is Core and
+// testable with no device — unlike the projection/layout half in the view.
+inline bool testWorldLabelOcclusion() {
+    bool ok = true;
+    constexpr uint32_t WorldLayer = 1u << 0;
+    constexpr uint32_t OtherLayer = 1u << 1;
+
+    Registry registry;
+    const auto addBox = [&registry](const glm::vec3& position, uint32_t layer) {
+        const Entity entity = registry.createEntity();
+        Transform transform;
+        transform.position = position;
+        registry.transforms.add(entity, { transform });
+        ColliderComponent collider{};
+        collider.type = ColliderType::Box;
+        collider.halfExtents = glm::vec3(1.0f, 3.0f, 1.0f);
+        collider.layer = layer;
+        registry.colliders.add(entity, collider);
+        return entity;
+    };
+
+    // Camera at the origin looking down +X; the label is anchored 10 m away.
+    const glm::vec3 eye(0.0f, 1.0f, 0.0f);
+    const glm::vec3 anchor(10.0f, 1.0f, 0.0f);
+    const Entity labelled = addBox(anchor, OtherLayer); // the labelled body itself
+
+    // Nothing in between: visible.
+    ok &= !WorldLabelVisibility::occluded(registry, eye, anchor, labelled, WorldLayer);
+
+    // A wall on the world layer, halfway: hidden.
+    const Entity wall = addBox(glm::vec3(5.0f, 1.0f, 0.0f), WorldLayer);
+    ok &= WorldLabelVisibility::occluded(registry, eye, anchor, labelled, WorldLayer);
+
+    // The same wall, on a layer the label does not care about: visible again. This is
+    // the whole reason the mask exists rather than a bool.
+    ok &= !WorldLabelVisibility::occluded(registry, eye, anchor, labelled, OtherLayer);
+
+    // Opting out (mask 0) never occludes, whatever is in the way — the back-compatible
+    // default that keeps every pre-existing scene rendering as it did.
+    ok &= !WorldLabelVisibility::occluded(registry, eye, anchor, labelled, 0u);
+
+    // The labelled entity's OWN collider must not hide its nameplate: put it on the
+    // world layer and remove the wall, and the label stays visible.
+    registry.destroyEntity(wall);
+    registry.colliders.get(labelled).layer = WorldLayer;
+    ok &= !WorldLabelVisibility::occluded(registry, eye, anchor, labelled, WorldLayer);
+
+    // Degenerate: camera sitting on the anchor cannot be occluded (no direction to cast).
+    ok &= !WorldLabelVisibility::occluded(registry, anchor, anchor, labelled, WorldLayer);
+
+    // And the mask round-trips through the scene file, since it is authored state.
+    {
+        Registry loaded;
+        std::vector<Light> lights;
+        const std::string scene =
+            "{ \"version\": 2, \"objects\": [ { \"name\": \"L\", \"parent\": -1,"
+            " \"transform\": { \"pos\": [0,0,0], \"rot\": [0,0,0], \"scale\": [1,1,1] },"
+            " \"mesh\": \"\", \"material\": { \"albedo\": \"\", \"metallic\": 0,"
+            " \"roughness\": 0.5, \"ao\": 1 },"
+            " \"worldlabel\": { \"text\": \"x\", \"offsetY\": 1.0,"
+            " \"maxDistance\": 20.0, \"occluderMask\": 5 } } ], \"lights\": [] }";
+        ok &= SceneSerializer::loadFromString(loaded, lights, scene);
+        bool sawMask = false;
+        for (const auto& [entity, label] : loaded.worldLabels.getAll()) {
+            (void)entity;
+            sawMask = label.occluderMask == 5u;
+        }
+        ok &= sawMask;
+    }
+
+    return ok;
+}
+
+// --- Clip-mask policy: what each operation does to the coverage mask ------------
+// The half of #44 a test can reach. Getting SetInverse backwards yields a shadow that
+// covers everything EXCEPT the element -- it still renders, still validates, and is
+// completely wrong; only the mapping says which is which. The Vulkan state around it is
+// verified by measuring the actual frame (DevDocs/DESIGN_UI_CLIP_MASK.md).
+inline bool testClipMaskPolicy() {
+    bool ok = true;
+
+    // Set: coverage is exactly the geometry, so everything else must be cleared away.
+    const ClipMask::Plan set = ClipMask::plan(ClipMask::Op::Set, false);
+    ok &= set.clearValue == 0.0f && set.writeValue == 1.0f && !set.samplePrevious;
+
+    // SetInverse: the box-shadow case. Everything OUTSIDE the element is covered, so the
+    // target clears to 1 and the element's own geometry punches 0 into it.
+    const ClipMask::Plan inverse = ClipMask::plan(ClipMask::Op::SetInverse, false);
+    ok &= inverse.clearValue == 1.0f && inverse.writeValue == 0.0f && !inverse.samplePrevious;
+
+    // Intersect against an existing mask keeps the old coverage inside the new geometry
+    // and clears everything else -- "old AND new" -- which requires reading the previous
+    // mask rather than writing a constant.
+    const ClipMask::Plan nested = ClipMask::plan(ClipMask::Op::Intersect, true);
+    ok &= nested.clearValue == 0.0f && nested.samplePrevious;
+
+    // Intersect with nothing to intersect against is just Set. Sampling here would read
+    // an undefined target, which is the kind of thing that renders fine on one driver.
+    const ClipMask::Plan first = ClipMask::plan(ClipMask::Op::Intersect, false);
+    ok &= first.clearValue == 0.0f && first.writeValue == 1.0f && !first.samplePrevious;
+
+    // Set and SetInverse never sample, whatever came before them: both are documented to
+    // clear any existing mask.
+    ok &= !ClipMask::plan(ClipMask::Op::Set, true).samplePrevious;
+    ok &= !ClipMask::plan(ClipMask::Op::SetInverse, true).samplePrevious;
+
+    return ok;
+}
+
+// --- UI intent binding: content declares what a button does ---------------------
+// Until this existed, the only bridge from a document to an intent was two element ids
+// compiled into the engine ("open" -> Inventory, "back" -> pop), matching the engine's
+// OWN demo document. A game ships its own hud.rml, so no game could make anything
+// clickable — which is why zero games have ever used uiScreens/focus/textInputs.
+//
+// The wiring (element -> listener -> queue) needs RmlUi and a device. The PARSE does not,
+// and the parse is the half that can be silently wrong: a mis-parsed attribute becomes a
+// button that does the wrong thing. See DevDocs/DESIGN_UI_INTENT_BINDING.md.
+inline bool testUIIntentBinding() {
+    bool ok = true;
+    const auto parses = [&](const char* spec, UIIntent::Type type, const char* argument) {
+        UIIntent intent{};
+        if (!parseUIIntent(spec, intent)) {
+            return false;
+        }
+        return intent.type == type && intent.arg == argument;
+    };
+
+    ok &= parses("open:Pause", UIIntent::Type::OpenScreen, "Pause");
+    ok &= parses("pop", UIIntent::Type::PopScreen, "");
+    ok &= parses("focus:runname", UIIntent::Type::SetFocus, "runname");
+    ok &= parses("unfocus", UIIntent::Type::ClearFocus, "");
+    ok &= parses("text:A", UIIntent::Type::AppendText, "A");
+    ok &= parses("backspace", UIIntent::Type::BackspaceText, "");
+    ok &= parses("caretleft", UIIntent::Type::CaretLeft, "");
+    ok &= parses("caretright", UIIntent::Type::CaretRight, "");
+
+    // Everything after the FIRST colon is the argument, verbatim — a label may contain one.
+    ok &= parses("text:a:b", UIIntent::Type::AppendText, "a:b");
+
+    // A typo must yield NO intent rather than a wrong one. Each of these would otherwise
+    // become a button that silently does something the author did not write.
+    UIIntent unused{};
+    ok &= !parseUIIntent("", unused);
+    ok &= !parseUIIntent("openn:Pause", unused);   // misspelt verb
+    ok &= !parseUIIntent("open", unused);          // argument-taking verb, no argument
+    ok &= !parseUIIntent("open:", unused);         // empty argument
+    ok &= !parseUIIntent("pop:Pause", unused);     // argument-free verb given one
+    ok &= !parseUIIntent("focus", unused);
+    ok &= !parseUIIntent("Open:Pause", unused);    // case matters; no silent lenience
+
+    return ok;
+}
+
+// --- Audio voice cap: the stealing POLICY, not merely the absence of a crash ----
+// The mixer caps simultaneous voices at 64 and steals one when a new play() arrives.
+// The arena's audio torture pass fires 16 000 one-shots past that cap without dropping
+// a frame — but "did not crash" is not the property that matters. What matters is
+// WHICH voice dies: cutting the music because a pile of hit sounds fired is the worst
+// available choice, so a loop is only ever stolen when every voice is a loop.
+inline bool testAudioVoicePolicy() {
+    bool ok = true;
+
+    // No init(): play() only manipulates the voice list, so the policy is testable
+    // with no audio device — which is the only reason this can be a gate test at all.
+    AudioEngine engine;
+    auto clip = std::make_shared<AudioClip>();
+    clip->frameCount = 64;
+    clip->samples.assign(static_cast<size_t>(clip->frameCount) * AudioMixChannels, 0.25f);
+
+    {   // A loop surrounded by a storm of one-shots must survive all of it.
+        const uint32_t music = engine.play(clip, 1.0f, 1.0f, /*loop*/ true);
+        ok &= music != 0;
+        std::vector<uint32_t> oneShots;
+        for (int i = 0; i < 200; i++) {
+            oneShots.push_back(engine.play(clip, 1.0f, 1.0f, /*loop*/ false));
+        }
+        ok &= engine.isActive(music);
+        // And the cap really is enforced: the earliest one-shot is long gone.
+        ok &= !engine.isActive(oneShots.front());
+        ok &= engine.isActive(oneShots.back());
+        engine.stopAll();
+    }
+
+    {   // Every voice a loop: the fallback steals the oldest, and the list stays
+        // bounded rather than growing forever.
+        std::vector<uint32_t> loops;
+        for (int i = 0; i < 80; i++) {
+            loops.push_back(engine.play(clip, 1.0f, 1.0f, /*loop*/ true));
+        }
+        ok &= !engine.isActive(loops.front()); // oldest stolen
+        ok &= engine.isActive(loops.back());
+        int alive = 0;
+        for (const uint32_t voice : loops) {
+            if (engine.isActive(voice)) {
+                alive++;
+            }
+        }
+        ok &= alive <= 64;
+        engine.stopAll();
+    }
+
+    return ok;
+}
+
+// --- Projection depth convention: Vulkan clips z to 0..1, GLM defaults to -1..1 --
+// The engine renders with Vulkan, whose clip space keeps only 0 <= z <= w. GLM's
+// glm::perspective / glm::ortho emit OpenGL's -1..1 range, so half of every frustum
+// built that way is discarded by the rasterizer. On the perspective camera the lost
+// slice hides between the near plane and ~2*near and nothing ever noticed; on the
+// shadow map's ORTHOGRAPHIC light frustum it is the near HALF of the scene, which
+// rendered as a hard straight edge across the floor with one side unshadowed.
+//
+// So the convention is pinned here: near plane -> 0, far plane -> 1.
+inline bool testProjectionDepth() {
+    bool ok = true;
+    const auto nearly = [](float a, float b) { return std::fabs(a - b) < 1e-4f; };
+
+    Camera camera;
+    camera.fov = 60.0f;
+    camera.nearPlane = 0.25f;
+    camera.farPlane = 80.0f;
+    const glm::mat4 projection = camera.getProjectionMatrix(16.0f / 9.0f);
+
+    // The camera looks down -Z in view space, so a point at -nearPlane sits on the near
+    // plane and one at -farPlane on the far plane.
+    const auto ndcZ = [&projection](float viewZ) {
+        const glm::vec4 clip = projection * glm::vec4(0.0f, 0.0f, viewZ, 1.0f);
+        return clip.z / clip.w;
+    };
+    ok &= nearly(ndcZ(-camera.nearPlane), 0.0f);
+    ok &= nearly(ndcZ(-camera.farPlane), 1.0f);
+    // And everything between stays inside the range Vulkan will keep.
+    const float middle = ndcZ(-10.0f);
+    ok &= middle > 0.0f && middle < 1.0f;
+
+    // The shadow pass builds its light frustum with the same convention (an orthographic
+    // one). Pinning it here is what makes the shader's lookup -- which compares z
+    // directly against the stored depth, with no -1..1 remap -- correct by contract
+    // rather than by luck.
+    const glm::mat4 lightProjection = glm::orthoRH_ZO(-32.0f, 32.0f, -32.0f, 32.0f, 18.0f, 82.0f);
+    const auto lightNdcZ = [&lightProjection](float viewZ) {
+        const glm::vec4 clip = lightProjection * glm::vec4(0.0f, 0.0f, viewZ, 1.0f);
+        return clip.z / clip.w;
+    };
+    ok &= nearly(lightNdcZ(-18.0f), 0.0f);
+    ok &= nearly(lightNdcZ(-82.0f), 1.0f);
+    ok &= nearly(lightNdcZ(-50.0f), 0.5f);
+
     return ok;
 }
 
@@ -5092,6 +5440,11 @@ inline std::pair<int, int> run() {
         { "AssetImport",      testAssetImport },
         { "AssetReimport",    testAssetReimport },
         { "Packaging",        testPackaging },
+        { "ProjectionDepth",  testProjectionDepth },
+        { "AudioVoicePolicy", testAudioVoicePolicy },
+        { "UIIntentBinding",  testUIIntentBinding },
+        { "ClipMaskPolicy",   testClipMaskPolicy },
+        { "WorldLabelOcclusion", testWorldLabelOcclusion },
         { "Serializer",       testSerializer },
         { "BlendMode",        testBlendMode },
         { "SceneLoad",        testSceneLoad },

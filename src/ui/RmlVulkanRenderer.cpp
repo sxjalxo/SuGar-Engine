@@ -1,5 +1,7 @@
 #include "ui/RmlVulkanRenderer.h"
 
+#include "ui/ClipMaskPolicy.h"
+
 #include "rendering/Texture.h"
 
 #include <RmlUi/Core/Variant.h>
@@ -57,6 +59,16 @@ struct RmlPushConstants {
     float translation[2];
 };
 
+// The mask shader's push constants: the UI block plus the coverage to write and which
+// source to write from. Laid out so the first 16 bytes match RmlPushConstants exactly,
+// which is what lets one pipeline layout serve both (DevDocs/DESIGN_UI_CLIP_MASK.md).
+struct RmlMaskPushConstants {
+    float viewport[2];
+    float translation[2];
+    float value = 1.0f;
+    float sampleMode = 0.0f;
+};
+
 } // namespace
 
 void RmlVulkanRenderer::init(VkDevice deviceIn, VkPhysicalDevice physicalDeviceIn, VkCommandPool commandPoolIn,
@@ -70,6 +82,14 @@ void RmlVulkanRenderer::init(VkDevice deviceIn, VkPhysicalDevice physicalDeviceI
     createPipeline(renderPass);
     createOffscreenResources();
     createWhiteTexture();
+    // Set 1 binds this when nothing is masked, so the clip-mask multiply in rml.frag is a
+    // no-op and a document that never masks renders exactly as it did before #44.
+    {
+        const auto whiteIt = textures.find(static_cast<uintptr_t>(whiteTextureHandle));
+        if (whiteIt != textures.end()) {
+            whiteMaskSet = whiteIt->second.descriptorSet;
+        }
+    }
 }
 
 void RmlVulkanRenderer::createDescriptorResources() {
@@ -200,15 +220,24 @@ void RmlVulkanRenderer::createPipeline(VkRenderPass renderPass) {
     dynamicState.dynamicStateCount = 2;
     dynamicState.pDynamicStates = dynamicStates;
 
+    // Wide enough for the mask shader's two extra floats, and visible to the fragment
+    // stage because that is where the mask's coverage value is written. The UI shaders
+    // simply do not declare the tail (DevDocs/DESIGN_UI_CLIP_MASK.md).
     VkPushConstantRange pushRange{};
-    pushRange.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
+    pushRange.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
     pushRange.offset = 0;
-    pushRange.size = sizeof(RmlPushConstants);
+    pushRange.size = sizeof(RmlMaskPushConstants);
+
+    // Set 0 is the draw's texture; set 1 is the clip mask. Both are a single combined
+    // image sampler, so one layout object serves both and the per-texture sets already
+    // allocated for set 0 can be bound as set 1 unchanged (that is how the inert 1x1
+    // white mask works).
+    const VkDescriptorSetLayout setLayouts[2] = {descriptorSetLayout, descriptorSetLayout};
 
     VkPipelineLayoutCreateInfo layoutInfo{};
     layoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-    layoutInfo.setLayoutCount = 1;
-    layoutInfo.pSetLayouts = &descriptorSetLayout;
+    layoutInfo.setLayoutCount = 2;
+    layoutInfo.pSetLayouts = setLayouts;
     layoutInfo.pushConstantRangeCount = 1;
     layoutInfo.pPushConstantRanges = &pushRange;
     if (vkCreatePipelineLayout(device, &layoutInfo, nullptr, &pipelineLayout) != VK_SUCCESS) {
@@ -375,6 +404,122 @@ void RmlVulkanRenderer::createOffscreenResources() {
         if (vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1, &pi, nullptr, &offscreenUiPipeline) != VK_SUCCESS) {
             throw std::runtime_error("failed to create RmlUi offscreen UI pipeline");
         }
+        vkDestroyShaderModule(device, fragModule, nullptr);
+        vkDestroyShaderModule(device, vertModule, nullptr);
+    }
+
+    // --- clip-mask pass + pipelines (DevDocs/DESIGN_UI_CLIP_MASK.md) ---------------------
+    // A single-channel coverage target. Its own pass because the mask is written between
+    // UI draws, into a different attachment than whatever layer is being composited.
+    {
+        VkAttachmentDescription maskColor{};
+        maskColor.format = VK_FORMAT_R8_UNORM;
+        maskColor.samples = VK_SAMPLE_COUNT_1_BIT;
+        // LOAD, not CLEAR: three of the four operations clear to a value chosen per call
+        // (vkCmdClearAttachments) and Union must keep what is already there.
+        maskColor.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
+        maskColor.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+        maskColor.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+        maskColor.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+        maskColor.initialLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+        maskColor.finalLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+        VkAttachmentReference maskRef{};
+        maskRef.attachment = 0;
+        maskRef.layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+        VkSubpassDescription maskSubpass{};
+        maskSubpass.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
+        maskSubpass.colorAttachmentCount = 1;
+        maskSubpass.pColorAttachments = &maskRef;
+        std::array<VkSubpassDependency, 2> maskDeps{};
+        maskDeps[0].srcSubpass = VK_SUBPASS_EXTERNAL;
+        maskDeps[0].dstSubpass = 0;
+        maskDeps[0].srcStageMask = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+        maskDeps[0].srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
+        maskDeps[0].dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+        maskDeps[0].dstAccessMask =
+            VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+        maskDeps[1].srcSubpass = 0;
+        maskDeps[1].dstSubpass = VK_SUBPASS_EXTERNAL;
+        maskDeps[1].srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+        maskDeps[1].srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+        maskDeps[1].dstStageMask = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+        maskDeps[1].dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+        VkRenderPassCreateInfo maskRp{};
+        maskRp.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
+        maskRp.attachmentCount = 1;
+        maskRp.pAttachments = &maskColor;
+        maskRp.subpassCount = 1;
+        maskRp.pSubpasses = &maskSubpass;
+        maskRp.dependencyCount = static_cast<uint32_t>(maskDeps.size());
+        maskRp.pDependencies = maskDeps.data();
+        if (vkCreateRenderPass(device, &maskRp, nullptr, &maskPass) != VK_SUCCESS) {
+            throw std::runtime_error("failed to create RmlUi clip-mask render pass");
+        }
+
+        auto vertCode = readSpirv("build/shaders/rml.vert.spv");
+        auto fragCode = readSpirv("build/shaders/rml_mask.frag.spv");
+        VkShaderModule vertModule = createShaderModule(device, vertCode);
+        VkShaderModule fragModule = createShaderModule(device, fragCode);
+        VkPipelineShaderStageCreateInfo stages[2]{};
+        stages[0].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+        stages[0].stage = VK_SHADER_STAGE_VERTEX_BIT;
+        stages[0].module = vertModule; stages[0].pName = "main";
+        stages[1].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+        stages[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT;
+        stages[1].module = fragModule; stages[1].pName = "main";
+
+        VkVertexInputBindingDescription binding{};
+        binding.binding = 0; binding.stride = sizeof(Rml::Vertex);
+        binding.inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
+        VkVertexInputAttributeDescription attributes[3]{};
+        attributes[0] = {0, 0, VK_FORMAT_R32G32_SFLOAT, offsetof(Rml::Vertex, position)};
+        attributes[1] = {1, 0, VK_FORMAT_R8G8B8A8_UNORM, offsetof(Rml::Vertex, colour)};
+        attributes[2] = {2, 0, VK_FORMAT_R32G32_SFLOAT, offsetof(Rml::Vertex, tex_coord)};
+        VkPipelineVertexInputStateCreateInfo vertexInput{};
+        vertexInput.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
+        vertexInput.vertexBindingDescriptionCount = 1;
+        vertexInput.pVertexBindingDescriptions = &binding;
+        vertexInput.vertexAttributeDescriptionCount = 3;
+        vertexInput.pVertexAttributeDescriptions = attributes;
+        VkPipelineInputAssemblyStateCreateInfo ia{};
+        ia.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
+        ia.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+        VkPipelineViewportStateCreateInfo vp{};
+        vp.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
+        vp.viewportCount = 1; vp.scissorCount = 1;
+        VkPipelineRasterizationStateCreateInfo rs{};
+        rs.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
+        rs.polygonMode = VK_POLYGON_MODE_FILL; rs.cullMode = VK_CULL_MODE_NONE;
+        rs.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE; rs.lineWidth = 1.0f;
+        VkPipelineMultisampleStateCreateInfo ms{};
+        ms.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
+        ms.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+        VkPipelineDynamicStateCreateInfo ds{};
+        VkDynamicState dyn[] = {VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR};
+        ds.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
+        ds.dynamicStateCount = 2; ds.pDynamicStates = dyn;
+
+        // Set/SetInverse/Intersect overwrite the coverage they touch.
+        VkPipelineColorBlendAttachmentState writeBlend{};
+        writeBlend.blendEnable = VK_FALSE;
+        writeBlend.colorWriteMask = VK_COLOR_COMPONENT_R_BIT;
+        VkPipelineColorBlendStateCreateInfo writeCb{};
+        writeCb.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
+        writeCb.attachmentCount = 1; writeCb.pAttachments = &writeBlend;
+
+        VkGraphicsPipelineCreateInfo pi{};
+        pi.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
+        pi.stageCount = 2; pi.pStages = stages;
+        pi.pVertexInputState = &vertexInput; pi.pInputAssemblyState = &ia;
+        pi.pViewportState = &vp; pi.pRasterizationState = &rs; pi.pMultisampleState = &ms;
+        pi.pColorBlendState = &writeCb; pi.pDynamicState = &ds;
+        pi.layout = pipelineLayout;
+        pi.renderPass = maskPass; pi.subpass = 0;
+        if (vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1, &pi, nullptr, &maskPipeline) !=
+            VK_SUCCESS) {
+            throw std::runtime_error("failed to create RmlUi clip-mask pipeline");
+        }
+
         vkDestroyShaderModule(device, fragModule, nullptr);
         vkDestroyShaderModule(device, vertModule, nullptr);
     }
@@ -632,6 +777,277 @@ void RmlVulkanRenderer::destroyLayerTargets() {
 
 // --- RmlUi effect interface ------------------------------------------------------------
 
+// --- clip mask (DevDocs/DESIGN_UI_CLIP_MASK.md) --------------------------------------
+// RmlUi asks for "mask to the area outside this element, then draw the shadow". The mask
+// is a coverage texture rather than a stencil buffer because the UI pass's depth
+// attachment is D32_SFLOAT (no stencil aspect) and offscreen effect layers carry no depth
+// at all -- stencil would have meant changing the engine's depth format for the scene
+// pass. Everything below stays inside this file.
+
+bool RmlVulkanRenderer::ensureMaskTargets(VkExtent2D extent) {
+    if (extent.width == 0 || extent.height == 0) {
+        return false;
+    }
+    if (maskTargets[0].image != VK_NULL_HANDLE && maskExtent.width == extent.width &&
+        maskExtent.height == extent.height) {
+        return true;
+    }
+    destroyMaskTargets();
+
+    for (MaskTarget& target : maskTargets) {
+        VkImageCreateInfo imageInfo{};
+        imageInfo.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+        imageInfo.imageType = VK_IMAGE_TYPE_2D;
+        imageInfo.format = VK_FORMAT_R8_UNORM; // coverage only
+        imageInfo.extent = {extent.width, extent.height, 1};
+        imageInfo.mipLevels = 1;
+        imageInfo.arrayLayers = 1;
+        imageInfo.samples = VK_SAMPLE_COUNT_1_BIT;
+        imageInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
+        imageInfo.usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+        imageInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+        imageInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        if (vkCreateImage(device, &imageInfo, nullptr, &target.image) != VK_SUCCESS) {
+            destroyMaskTargets();
+            return false;
+        }
+
+        VkMemoryRequirements requirements{};
+        vkGetImageMemoryRequirements(device, target.image, &requirements);
+        VkPhysicalDeviceMemoryProperties memoryProperties{};
+        vkGetPhysicalDeviceMemoryProperties(physicalDevice, &memoryProperties);
+        uint32_t memoryType = UINT32_MAX;
+        for (uint32_t i = 0; i < memoryProperties.memoryTypeCount; i++) {
+            const bool typeAllowed = (requirements.memoryTypeBits & (1u << i)) != 0;
+            const bool deviceLocal = (memoryProperties.memoryTypes[i].propertyFlags &
+                                      VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT) != 0;
+            if (typeAllowed && deviceLocal) {
+                memoryType = i;
+                break;
+            }
+        }
+        if (memoryType == UINT32_MAX) {
+            destroyMaskTargets();
+            return false;
+        }
+
+        VkMemoryAllocateInfo allocInfo{};
+        allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+        allocInfo.allocationSize = requirements.size;
+        allocInfo.memoryTypeIndex = memoryType;
+        if (vkAllocateMemory(device, &allocInfo, nullptr, &target.memory) != VK_SUCCESS ||
+            vkBindImageMemory(device, target.image, target.memory, 0) != VK_SUCCESS) {
+            destroyMaskTargets();
+            return false;
+        }
+
+        VkImageViewCreateInfo viewInfo{};
+        viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+        viewInfo.image = target.image;
+        viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
+        viewInfo.format = VK_FORMAT_R8_UNORM;
+        viewInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        viewInfo.subresourceRange.levelCount = 1;
+        viewInfo.subresourceRange.layerCount = 1;
+        if (vkCreateImageView(device, &viewInfo, nullptr, &target.view) != VK_SUCCESS) {
+            destroyMaskTargets();
+            return false;
+        }
+
+        VkFramebufferCreateInfo framebufferInfo{};
+        framebufferInfo.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
+        framebufferInfo.renderPass = maskPass;
+        framebufferInfo.attachmentCount = 1;
+        framebufferInfo.pAttachments = &target.view;
+        framebufferInfo.width = extent.width;
+        framebufferInfo.height = extent.height;
+        framebufferInfo.layers = 1;
+        if (vkCreateFramebuffer(device, &framebufferInfo, nullptr, &target.framebuffer) != VK_SUCCESS) {
+            destroyMaskTargets();
+            return false;
+        }
+
+        target.sampleSet = createDescriptorSetForView(target.view, layerSampler);
+        target.layout = VK_IMAGE_LAYOUT_UNDEFINED;
+    }
+
+    maskExtent = extent;
+    return true;
+}
+
+void RmlVulkanRenderer::destroyMaskTargets() {
+    for (MaskTarget& target : maskTargets) {
+        if (target.framebuffer != VK_NULL_HANDLE) {
+            vkDestroyFramebuffer(device, target.framebuffer, nullptr);
+        }
+        if (target.view != VK_NULL_HANDLE) {
+            vkDestroyImageView(device, target.view, nullptr);
+        }
+        if (target.image != VK_NULL_HANDLE) {
+            vkDestroyImage(device, target.image, nullptr);
+        }
+        if (target.memory != VK_NULL_HANDLE) {
+            vkFreeMemory(device, target.memory, nullptr);
+        }
+        target = MaskTarget{};
+    }
+    maskExtent = {0, 0};
+}
+
+VkDescriptorSet RmlVulkanRenderer::activeMaskSet() const {
+    if (maskActive && maskTargets[currentMask].sampleSet != VK_NULL_HANDLE) {
+        return maskTargets[currentMask].sampleSet;
+    }
+    return whiteMaskSet;
+}
+
+void RmlVulkanRenderer::resetClipMask() {
+    maskActive = false;
+    currentMask = 0;
+}
+
+void RmlVulkanRenderer::EnableClipMask(bool enable) {
+    // RmlUi turns the mask off for ordinary draws; off means "bind the white mask", so a
+    // document that never masks renders exactly as it did before this existed.
+    if (!enable) {
+        maskActive = false;
+    }
+}
+
+void RmlVulkanRenderer::RenderToClipMask(Rml::ClipMaskOperation operation,
+                                         Rml::CompiledGeometryHandle geometry,
+                                         Rml::Vector2f translation) {
+    if (currentCommandBuffer == VK_NULL_HANDLE || maskPipeline == VK_NULL_HANDLE) {
+        return;
+    }
+    const auto it = geometries.find(static_cast<uintptr_t>(geometry));
+    if (it == geometries.end() || !ensureMaskTargets(currentExtent)) {
+        return;
+    }
+
+    // The four operations, expressed as (clear value, written value, source, blend):
+    //   Set          clear 0, write 1                  -- coverage is exactly the geometry
+    //   SetInverse   clear 1, write 0                  -- everything except the geometry
+    //   Intersect    clear 0, write the PREVIOUS mask  -- old AND new
+    // RmlUi 6.3 defines exactly these three (RenderInterface.h); there is no Union, so
+    // none is implemented. Intersect reads the mask while writing one, which is a
+    // feedback loop on a single image, so the two targets ping-pong.
+    const ClipMask::Op op = operation == Rml::ClipMaskOperation::Intersect
+                                ? ClipMask::Op::Intersect
+                                : (operation == Rml::ClipMaskOperation::SetInverse
+                                       ? ClipMask::Op::SetInverse
+                                       : ClipMask::Op::Set);
+    const ClipMask::Plan plan = ClipMask::plan(op, maskActive);
+    const bool sampling = plan.samplePrevious;
+
+    const int writeIndex = sampling ? (1 - currentMask) : currentMask;
+    MaskTarget& target = maskTargets[writeIndex];
+    const MaskTarget& source = maskTargets[currentMask];
+
+    endActivePass(); // the mask is drawn in its own pass, not into the UI layer
+
+    // The mask being sampled must be readable; the one being written must be writable.
+    const auto transition = [this](MaskTarget& image, VkImageLayout newLayout,
+                                   VkAccessFlags srcAccess, VkAccessFlags dstAccess,
+                                   VkPipelineStageFlags srcStage, VkPipelineStageFlags dstStage) {
+        if (image.layout == newLayout) {
+            return;
+        }
+        VkImageMemoryBarrier barrier{};
+        barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+        barrier.oldLayout = image.layout;
+        barrier.newLayout = newLayout;
+        barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        barrier.image = image.image;
+        barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        barrier.subresourceRange.levelCount = 1;
+        barrier.subresourceRange.layerCount = 1;
+        barrier.srcAccessMask = srcAccess;
+        barrier.dstAccessMask = dstAccess;
+        vkCmdPipelineBarrier(currentCommandBuffer, srcStage, dstStage, 0, 0, nullptr, 0, nullptr, 1,
+                             &barrier);
+        image.layout = newLayout;
+    };
+
+    if (sampling) {
+        transition(maskTargets[currentMask], VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                   VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT,
+                   VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+                   VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
+    }
+    transition(target, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_ACCESS_SHADER_READ_BIT,
+               VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+               VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT);
+
+    VkRenderPassBeginInfo passInfo{};
+    passInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
+    passInfo.renderPass = maskPass;
+    passInfo.framebuffer = target.framebuffer;
+    passInfo.renderArea.offset = {0, 0};
+    passInfo.renderArea.extent = maskExtent;
+    vkCmdBeginRenderPass(currentCommandBuffer, &passInfo, VK_SUBPASS_CONTENTS_INLINE);
+
+    VkViewport viewport{};
+    viewport.width = static_cast<float>(maskExtent.width);
+    viewport.height = static_cast<float>(maskExtent.height);
+    viewport.maxDepth = 1.0f;
+    vkCmdSetViewport(currentCommandBuffer, 0, 1, &viewport);
+    VkRect2D scissor{};
+    scissor.extent = maskExtent;
+    vkCmdSetScissor(currentCommandBuffer, 0, 1, &scissor);
+
+    // Every operation starts from a known full-target value.
+    {
+        VkClearAttachment clear{};
+        clear.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        clear.colorAttachment = 0;
+        clear.clearValue.color.float32[0] = plan.clearValue;
+        VkClearRect clearRect{};
+        clearRect.rect.extent = maskExtent;
+        clearRect.layerCount = 1;
+        vkCmdClearAttachments(currentCommandBuffer, 1, &clear, 1, &clearRect);
+    }
+
+    vkCmdBindPipeline(currentCommandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, maskPipeline);
+
+    RmlMaskPushConstants push{};
+    push.viewport[0] = static_cast<float>(maskExtent.width);
+    push.viewport[1] = static_cast<float>(maskExtent.height);
+    push.translation[0] = translation.x;
+    push.translation[1] = translation.y;
+    push.value = plan.writeValue;
+    push.sampleMode = sampling ? 1.0f : 0.0f;
+    vkCmdPushConstants(currentCommandBuffer, pipelineLayout,
+                       VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(push),
+                       &push);
+
+    // Set 0 is unused by the mask shader but the layout declares it; bind the white
+    // texture so the set is never left dangling. Set 1 is the mask being sampled.
+    const auto whiteIt = textures.find(static_cast<uintptr_t>(whiteTextureHandle));
+    const VkDescriptorSet sets[2] = {
+        whiteIt != textures.end() ? whiteIt->second.descriptorSet : whiteMaskSet,
+        sampling && source.sampleSet != VK_NULL_HANDLE ? source.sampleSet : whiteMaskSet};
+    vkCmdBindDescriptorSets(currentCommandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout, 0,
+                            2, sets, 0, nullptr);
+
+    VkDeviceSize offset = 0;
+    vkCmdBindVertexBuffers(currentCommandBuffer, 0, 1, &it->second.vertexBuffer, &offset);
+    vkCmdBindIndexBuffer(currentCommandBuffer, it->second.indexBuffer, 0, VK_INDEX_TYPE_UINT32);
+    vkCmdDrawIndexed(currentCommandBuffer, it->second.indexCount, 1, 0, 0, 0);
+
+    vkCmdEndRenderPass(currentCommandBuffer);
+
+    transition(target, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+               VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT,
+               VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+               VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
+
+    currentMask = writeIndex;
+    maskActive = true;
+    ensureActivePass(); // reopen whatever the compositor was drawing into
+}
+
 Rml::LayerHandle RmlVulkanRenderer::PushLayer() {
     endActivePass();
     const int idx = acquireLayer();
@@ -887,6 +1303,7 @@ void RmlVulkanRenderer::beginFrame(VkCommandBuffer commandBuffer, VkExtent2D ext
     ++frameCounter;
     collectRetiredGeometry(false); // free buffers no longer referenced in flight
     collectRetiredTextures(false); // and the textures/descriptors released with them
+    resetClipMask();               // RmlUi re-declares any mask each frame
 
     // Compositor state resets each frame. No pass is opened yet: the first RenderGeometry
     // (via ensureActivePass) opens layer 0; effect methods open/close offscreen passes.
@@ -1045,10 +1462,20 @@ void RmlVulkanRenderer::RenderGeometry(Rml::CompiledGeometryHandle geometryHandl
     push.viewport[1] = static_cast<float>(currentExtent.height);
     push.translation[0] = translation.x;
     push.translation[1] = translation.y;
-    vkCmdPushConstants(currentCommandBuffer, pipelineLayout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(push), &push);
+    // The layout's range covers both stages (the mask shader writes coverage in the
+    // fragment stage), and vkCmdPushConstants must name every stage of an overlapping
+    // range even when this shader only reads the vertex half.
+    vkCmdPushConstants(currentCommandBuffer, pipelineLayout,
+                       VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(push),
+                       &push);
 
     vkCmdBindDescriptorSets(currentCommandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout, 0, 1,
                             &textureIt->second.descriptorSet, 0, nullptr);
+    // Set 1 is the clip mask: the active coverage texture, or a 1x1 white one when
+    // nothing is masked, which makes the multiply in rml.frag inert.
+    const VkDescriptorSet maskSet = activeMaskSet();
+    vkCmdBindDescriptorSets(currentCommandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                            pipelineLayout, 1, 1, &maskSet, 0, nullptr);
 
     const VkDeviceSize offset = 0;
     vkCmdBindVertexBuffers(currentCommandBuffer, 0, 1, &geometryIt->second.vertexBuffer, &offset);
@@ -1178,6 +1605,9 @@ void RmlVulkanRenderer::shutdown() {
     }
 
     // Callers idle the device before shutdown, so everything is safe to free now.
+    destroyMaskTargets();
+    if (maskPipeline != VK_NULL_HANDLE) { vkDestroyPipeline(device, maskPipeline, nullptr); maskPipeline = VK_NULL_HANDLE; }
+    if (maskPass != VK_NULL_HANDLE) { vkDestroyRenderPass(device, maskPass, nullptr); maskPass = VK_NULL_HANDLE; }
     collectRetiredGeometry(true);
     collectRetiredTextures(true);
     for (auto& [handle, geometry] : geometries) {

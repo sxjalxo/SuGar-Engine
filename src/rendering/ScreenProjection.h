@@ -3,7 +3,7 @@
 #include <glm/glm.hpp>
 
 // World point -> viewport pixel. The one piece of real math behind world-space labels
-// (docs/DESIGN_RUNTIME_UI.md addendum), kept in Core and pure so it is testable without a
+// (DevDocs/DESIGN_RUNTIME_UI.md addendum), kept in Core and pure so it is testable without a
 // device — the renderer supplies the matrices it already has and nothing else.
 namespace ScreenProjection {
 

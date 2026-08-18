@@ -31,6 +31,7 @@
 #include "scene/SceneSerializer.h"
 #include "scene/TransformMath.h"
 #include "core/EnginePaths.h"
+#include "rendering/WorldLabelVisibility.h"
 #include "rendering/Texture.h"
 #include "stb_image.h"
 #include "rendering/UniformBufferObject.h"
@@ -277,8 +278,14 @@ void Renderer::shutdown() {
 void Renderer::drawFrame() {
     vkWaitForFences(app->getDevice(), 1, &inFlightFences[currentFrame], VK_TRUE, UINT64_MAX);
 
+    // One frame has completed: age the retirement queue and destroy whatever has now
+    // outlived every frame that could have been reading it
+    // (DevDocs/DESIGN_GPU_RETIREMENT.md). This is the engine's only drain point.
+    ResourceManager::endFrame();
+
+    // Editor asset swaps. No device wait: release() retires GPU resources rather than
+    // destroying them, so dropping the last reference here is already in-flight-safe.
     if (!deferredResourceReleases.empty()) {
-        vkDeviceWaitIdle(app->getDevice());
         for (AssetHandle handle : deferredResourceReleases) {
             ResourceManager::release(handle);
         }
@@ -2697,7 +2704,7 @@ void Renderer::drawHierarchyPanel() {
 }
 
 // Every WorldLabelComponent, projected through this frame's camera. Nearest first, capped,
-// and faded with distance — see the world-label addendum in docs/DESIGN_RUNTIME_UI.md.
+// and faded with distance — see the world-label addendum in DevDocs/DESIGN_RUNTIME_UI.md.
 void Renderer::updateWorldLabels() {
     std::vector<ScreenLabel> labels;
     if (registry == nullptr || activePass == nullptr || viewportExtent.width == 0 ||
@@ -2736,6 +2743,13 @@ void Renderer::updateWorldLabels() {
         // nameplate) is a policy, and this is where the policy lives.
         if (projected.x < -80.0f || projected.y < -40.0f || projected.x > width + 80.0f ||
             projected.y > height + 40.0f) {
+            continue;
+        }
+        // Hidden behind geometry the game calls solid. Opt-in per label
+        // (rendering/WorldLabelVisibility.h): a zero mask never occludes, so scenes
+        // written before this behave exactly as they did.
+        if (WorldLabelVisibility::occluded(*registry, getCameraWorldPosition(), anchor,
+                                           entity, label.occluderMask)) {
             continue;
         }
 
@@ -2989,7 +3003,7 @@ void Renderer::drawInspectorPanel() {
         }
     }
 
-    // M4 L3 — a light on this entity (docs/DESIGN_LIGHTING.md). No position/direction
+    // M4 L3 — a light on this entity (DevDocs/DESIGN_LIGHTING.md). No position/direction
     // fields: both come from the transform above, which is the whole point of the seam.
     if (registry->lights.has(selectedEntity)) {
         ImGui::Separator();
@@ -3016,7 +3030,7 @@ void Renderer::drawInspectorPanel() {
         }
     }
 
-    // M4 L3 — game-defined per-entity state (docs/DESIGN_GAME_DATA.md). The editor is a
+    // M4 L3 — game-defined per-entity state (DevDocs/DESIGN_GAME_DATA.md). The editor is a
     // *viewer* of the game's keys: it never invents one, and it shows exactly what the
     // running game put there — which is what makes "why is this mob not moving?" a
     // question you answer by looking rather than by adding a log line.

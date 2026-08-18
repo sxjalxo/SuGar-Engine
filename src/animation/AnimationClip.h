@@ -17,11 +17,11 @@
 //
 // This header is pure data + pure math, which is exactly why it lives in Core: no
 // Vulkan, no ResourceManager, and therefore testable headlessly (RULES.md Rule 9,
-// Rule 15). See docs/DESIGN_ANIMATION.md.
+// Rule 15). See DevDocs/DESIGN_ANIMATION.md.
 
 // How a channel interpolates between two keys. glTF also defines CUBICSPLINE; it
 // is deliberately absent until a real asset needs it, rather than speculatively
-// implemented (docs/DESIGN_ANIMATION.md, open question 4).
+// implemented (DevDocs/DESIGN_ANIMATION.md, open question 4).
 enum class Interpolation {
     Linear,
     Step
@@ -49,7 +49,7 @@ using QuatChannel = Channel<glm::quat>;
 // `target` names an entity, resolved against the subtree of the entity carrying
 // the AnimationPlayerComponent; empty means that entity itself. Name-based
 // because it serializes to a string and matches the engine's existing indirection
-// idiom (behaviors, screens, focus elements) — see docs/DESIGN_ANIMATION.md for
+// idiom (behaviors, screens, focus elements) — see DevDocs/DESIGN_ANIMATION.md for
 // the trade-off (duplicate names under one root are ambiguous; first match wins).
 struct TransformTrack {
     std::string target;

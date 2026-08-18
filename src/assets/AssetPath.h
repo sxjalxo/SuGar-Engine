@@ -2,7 +2,7 @@
 
 #include <string>
 
-// The asset identity function (docs/DESIGN_ASSET_PIPELINE.md).
+// The asset identity function (DevDocs/DESIGN_ASSET_PIPELINE.md).
 //
 // A component stores an asset *key*, never a pointer and never a GUID (Rule 21a), so
 // this normalization IS the identity: two strings that normalize the same name the same

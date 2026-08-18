@@ -25,6 +25,11 @@
 #include "animation/AnimationSystem.h"
 #include "core/SnapshotStorage.h"
 #include "ecs/Registry.h"
+#include "navigation/NavComponents.h"
+#include "navigation/NavigationSystem.h"
+#include "navigation/NavPath.h"
+#include "navigation/NavMeshBuilder.h"
+#include "navigation/NavMeshRegistry.h"
 #include "physics/PhysicsWorld.h"
 #include "scene/Light.h"
 #include "scene/SceneSerializer.h"
@@ -171,6 +176,134 @@ inline bool gridEdgeCases() {
         ok &= world.getCollisionEvents().empty();
     }
 
+    return ok;
+}
+
+// The property the two tests above cannot see: that the grid is still a grid.
+//
+// Cell size used to come from the LARGEST shape, so one arena wall among a thousand
+// projectiles made every cell wider than the playfield, every shape landed in one
+// bucket, and the broadphase quietly became the all-pairs scan it replaced. Both
+// correctness tests kept passing throughout — a degenerate grid answers every query
+// right; it just takes O(n^2) comparisons to do it. So this one measures the work
+// (DevDocs/DESIGN_BROADPHASE_SCALE.md).
+inline bool gridScaleWithLargeShape() {
+    const auto candidatesFor = [](int n) -> size_t {
+        Registry reg;
+        PhysicsWorld world;
+        // The shape every game has: a floor far larger than anything standing on it.
+        (void)addStaticBox(reg, glm::vec3(0.0f, -1.0f, 0.0f), 40.0f);
+        // Small bodies spread out so almost none of them touch — the candidate count
+        // is then a pure measure of how well the grid separates them.
+        const int side = static_cast<int>(std::sqrt(static_cast<float>(n))) + 1;
+        for (int i = 0; i < n; ++i) {
+            const float x = static_cast<float>(i % side) * 2.0f - 60.0f;
+            const float z = static_cast<float>(i / side) * 2.0f - 60.0f;
+            (void)addStaticBox(reg, glm::vec3(x, 4.0f, z), 0.25f);
+        }
+        world.step(reg, 1.0f / 60.0f);
+        return world.lastBroadphaseCandidateCount();
+    };
+
+    const size_t small = candidatesFor(300);
+    const size_t large = candidatesFor(1200);
+
+    // Linear-ish: 4x the bodies must not cost more than ~6x the tests. The degenerate
+    // grid cost 16x (n^2), and the measured game case was 1 524 shapes -> 23 221 pairs.
+    const bool ok = large < small * 6 && large < 12000;
+    if (!ok) {
+        std::cout << "[stress]   broadphase candidates: 300 -> " << small
+                  << ", 1200 -> " << large << " (expected near-linear)\n";
+    }
+    return ok;
+}
+
+// A* work done by agents that cannot reach their goal.
+//
+// The pathology (friction log #36, second half): gameplay re-issues a destination every
+// step — the natural way to write "chase the player" — and every agent whose goal is
+// unreachable pays a **full A\* over the reachable component, every step, forever**. It
+// was measured once at 58 agents: 243 FPS with the route open, 0.89 FPS with it closed.
+//
+// Nothing about it is visible to a correctness test: every one of those searches returns
+// the right answer (Unreachable). Only the count shows the waste, which is why
+// NavPath::searchesPerformed() exists (DevDocs/DESIGN_REPLAN_BACKOFF.md).
+inline bool navReplanBackoff() {
+    bool ok = true;
+
+    // Two disconnected islands: agents stand on one, the goal is on the other, so every
+    // search legitimately fails.
+    // Built through the public builder, the way a game builds one: a triangle soup.
+    std::vector<NavTriangle> triangles;
+    const auto addQuad = [&triangles](float x0, float z0, float x1, float z1) {
+        const glm::vec3 a(x0, 0.0f, z0), b(x0, 0.0f, z1), c(x1, 0.0f, z1), d(x1, 0.0f, z0);
+        triangles.push_back({ a, b, c });
+        triangles.push_back({ a, c, d });
+    };
+    addQuad(-10.0f, -10.0f, -2.0f, 10.0f);  // island A, where the agents stand
+    addQuad(20.0f, -10.0f, 28.0f, 10.0f);   // island B, where the goal is
+    NavMeshRegistry::registerNavMesh("islands", buildNavMesh(triangles));
+
+    Registry reg;
+    constexpr int AgentCount = 40;
+    constexpr int Steps = 120;               // 2 seconds of fixed steps
+    constexpr float Step = 1.0f / 60.0f;
+    const glm::vec3 goal(24.0f, 0.0f, 0.0f); // on the far island: never reachable
+
+    std::vector<Entity> agents;
+    for (int i = 0; i < AgentCount; ++i) {
+        const Entity e = reg.createEntity();
+        Transform t;
+        t.position = glm::vec3(-6.0f, 0.0f, -8.0f + 0.4f * static_cast<float>(i));
+        reg.transforms.add(e, { t });
+        NavAgentComponent agent;
+        agent.navMesh = "islands";
+        agent.speed = 3.0f;
+        reg.navAgents.add(e, agent);
+        agents.push_back(e);
+    }
+
+    NavPath::resetSearchCount();
+    for (int step = 0; step < Steps; ++step) {
+        // Gameplay re-issues the same unreachable destination every step — the shape
+        // every chase behaviour has.
+        for (const Entity e : agents) {
+            reg.navAgents.get(e).setDestination(goal);
+        }
+        NavigationSystem::update(reg, Step);
+    }
+    const std::size_t searches = NavPath::searchesPerformed();
+    std::cout << "[stress]   replan searches " << searches << " (unthrottled "
+              << static_cast<std::size_t>(AgentCount) * Steps << ")" << std::endl;
+
+    // Every agent must have *tried* — the backoff throttles retries, it does not
+    // abandon the goal — and every one must still report Unreachable.
+    for (const Entity e : agents) {
+        ok &= reg.navAgents.get(e).status == NavAgentStatus::Unreachable;
+    }
+    ok &= searches >= static_cast<std::size_t>(AgentCount);
+
+    // The property: bounded by the retry interval, not by the frame rate. Two seconds
+    // at the default interval is a handful of attempts per agent, not one per step.
+    const std::size_t unthrottled = static_cast<std::size_t>(AgentCount) * Steps;
+    const std::size_t budget = static_cast<std::size_t>(AgentCount) * 8;
+    if (searches > budget) {
+        std::cout << "[stress]   replan searches " << searches << " (unthrottled would be "
+                  << unthrottled << ", budget " << budget << ")\n";
+        ok = false;
+    }
+
+    // A destination that actually CHANGES must still search immediately: the backoff
+    // throttles repeats of a failed goal, never a new decision.
+    NavPath::resetSearchCount();
+    for (int i = 0; i < AgentCount; ++i) {
+        reg.navAgents.get(agents[static_cast<std::size_t>(i)])
+            .setDestination(goal + glm::vec3(0.0f, 0.0f, static_cast<float>(i) * 0.01f + 0.5f));
+    }
+    NavigationSystem::update(reg, Step);
+    ok &= NavPath::searchesPerformed() == static_cast<std::size_t>(AgentCount);
+
+    NavMeshRegistry::clear();
     return ok;
 }
 
@@ -480,6 +613,8 @@ inline std::pair<int, int> run() {
     const Case cases[] = {
         { "GridVsBruteForce",   gridMatchesBruteForce },
         { "GridEdgeCases",      gridEdgeCases },
+        { "GridScale(1200)",    gridScaleWithLargeShape },
+        { "NavReplanBackoff",   navReplanBackoff },
         { "PhysicsDeterminism", physicsDeterministic },
         { "PatchStress(30x)",   patchStress },
         { "IdChurn(50x)",       idChurn },

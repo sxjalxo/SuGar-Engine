@@ -15,7 +15,7 @@
 // Navmeshes are assets, not state: nothing here is snapshotted. Core owns only the
 // registry *mechanism*; the Engine layer will fill it from a bake (Phase 18B), and
 // headless tests fill it with synthetic meshes — which is what keeps the whole
-// planning path testable without a GPU. See docs/DESIGN_NAVIGATION.md.
+// planning path testable without a GPU. See DevDocs/DESIGN_NAVIGATION.md.
 class NavMeshRegistry {
 public:
     // Registering an existing name replaces the mesh (that is what a re-bake is).

@@ -18,7 +18,7 @@ class Registry;
 //
 // A Pose is **derived**, always: it is recomputed from (clip, time) every step and
 // never stored, never serialized. It has no ECS presence. See
-// docs/DESIGN_ANIMATION.md.
+// DevDocs/DESIGN_ANIMATION.md.
 struct PoseEntry {
     std::string target; // entity name, resolved against the player's subtree
     TransformSample sample;

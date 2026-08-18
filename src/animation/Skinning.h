@@ -21,7 +21,7 @@ struct Skin;
 // to skin on the CPU instead.
 //
 // It lives in Core because it is pure math over the registry — no Vulkan — which is
-// what keeps it headless-testable (Rule 9, Rule 15). See docs/DESIGN_ANIMATION.md.
+// what keeps it headless-testable (Rule 9, Rule 15). See DevDocs/DESIGN_ANIMATION.md.
 namespace Skinning {
 
 // Fills `out` with one matrix per joint, in the skin's joint-index order — the

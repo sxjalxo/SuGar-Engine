@@ -22,7 +22,7 @@ namespace {
 constexpr int ReloadRetryCount = 10;
 constexpr auto ReloadRetryDelay = std::chrono::milliseconds(50);
 
-// Runtime = f(cooked) (docs/DESIGN_ASSET_PIPELINE.md). Every load below goes through
+// Runtime = f(cooked) (DevDocs/DESIGN_ASSET_PIPELINE.md). Every load below goes through
 // the cooker and reads a cooked artifact; no source format is parsed here any more.
 // That is what 19B bought: this file used to know about glTF mesh indices, OBJ and
 // stb_image, so every new source format touched the runtime load path. Cooking happens
@@ -92,6 +92,10 @@ VkCommandPool ResourceManager::commandPool = VK_NULL_HANDLE;
 VkQueue ResourceManager::graphicsQueue = VK_NULL_HANDLE;
 bool ResourceManager::initialized = false;
 AssetHandle ResourceManager::nextHandle = 1;
+std::vector<ResourceManager::RetiredResource> ResourceManager::retiredResources;
+// Two is what Renderer::MAX_FRAMES_IN_FLIGHT is today; setFramesInFlight makes that
+// the renderer's statement rather than this file's assumption.
+uint32_t ResourceManager::framesInFlight = 2;
 std::unordered_map<AssetHandle, ResourceEntry<Mesh>> ResourceManager::meshTable;
 std::unordered_map<AssetHandle, ResourceEntry<Texture>> ResourceManager::textureTable;
 std::unordered_map<AssetHandle, ResourceEntry<AudioClip>> ResourceManager::audioClipTable;
@@ -448,21 +452,14 @@ void ResourceManager::release(AssetHandle handle) {
         }
 
         if (meshIt->second.refCount == 0) {
-            if (meshIt->second.resource) {
-                // A runtime mesh (docs/DESIGN_RUNTIME_MESH.md) is typically released to
-                // swap in a freshly re-meshed chunk, so its GPU buffer may still be
-                // referenced by a frame in flight — idle before destroy so it can't be
-                // freed underneath the GPU. First-slice policy: player-paced edits make
-                // the stall invisible; a per-frame deferred-free queue is the upgrade if
-                // it ever shows up in a measurement. Source assets keep the old path.
-                if (device != VK_NULL_HANDLE &&
-                    meshIt->second.resourceKey.rfind("runtime://", 0) == 0) {
-                    vkDeviceWaitIdle(device);
-                }
-                meshIt->second.resource->destroy(device);
-            }
+            // Retire, don't destroy: a frame in flight may still be drawing with this
+            // buffer (DevDocs/DESIGN_GPU_RETIREMENT.md). The key mapping goes now, so the
+            // same key can be loaded again in this very step and gets a fresh handle.
+            RetiredResource retired;
+            retired.mesh = std::move(meshIt->second.resource);
             meshPathToHandle.erase(meshIt->second.resourceKey);
             meshTable.erase(meshIt);
+            retire(std::move(retired));
         }
         return;
     }
@@ -474,11 +471,11 @@ void ResourceManager::release(AssetHandle handle) {
         }
 
         if (textureIt->second.refCount == 0) {
-            if (textureIt->second.resource) {
-                textureIt->second.resource->destroy(device);
-            }
+            RetiredResource retired;
+            retired.texture = std::move(textureIt->second.resource);
             texturePathToHandle.erase(textureIt->second.resourceKey);
             textureTable.erase(textureIt);
+            retire(std::move(retired));
         }
         return;
     }
@@ -509,6 +506,67 @@ bool ResourceManager::isValid(AssetHandle handle) {
            audioClipTable.find(handle) != audioClipTable.end();
 }
 
+void ResourceManager::setFramesInFlight(uint32_t frames) {
+    framesInFlight = frames;
+}
+
+void ResourceManager::retire(RetiredResource resource) {
+    if (!resource.mesh && !resource.texture) {
+        return;
+    }
+    // Headless (no device): nothing is in flight, so there is nothing to outlive and
+    // the queue must stay empty — a test run has no frame loop to drain it.
+    if (device == VK_NULL_HANDLE) {
+        if (resource.mesh) {
+            resource.mesh->destroy(device);
+        }
+        if (resource.texture) {
+            resource.texture->destroy(device);
+        }
+        return;
+    }
+    resource.framesRemaining = framesInFlight;
+    retiredResources.push_back(std::move(resource));
+}
+
+void ResourceManager::endFrame() {
+    if (retiredResources.empty()) {
+        return;
+    }
+    for (size_t i = 0; i < retiredResources.size();) {
+        RetiredResource& retired = retiredResources[i];
+        if (retired.framesRemaining > 0) {
+            retired.framesRemaining--;
+            i++;
+            continue;
+        }
+        if (retired.mesh) {
+            retired.mesh->destroy(device);
+        }
+        if (retired.texture) {
+            retired.texture->destroy(device);
+        }
+        retiredResources[i] = std::move(retiredResources.back());
+        retiredResources.pop_back();
+    }
+}
+
+size_t ResourceManager::retiredCount() {
+    return retiredResources.size();
+}
+
+size_t ResourceManager::liveMeshCount() {
+    return meshTable.size();
+}
+
+size_t ResourceManager::liveTextureCount() {
+    return textureTable.size();
+}
+
+size_t ResourceManager::liveAudioClipCount() {
+    return audioClipTable.size();
+}
+
 void ResourceManager::shutdown() {
     if (!initialized) {
         return;
@@ -527,6 +585,18 @@ void ResourceManager::shutdown() {
             entry.resource->destroy(device);
         }
     }
+
+    // Anything still retired is destroyed now: shutdown idles the device, so the frame
+    // countdown has nothing left to wait for.
+    for (RetiredResource& retired : retiredResources) {
+        if (retired.mesh) {
+            retired.mesh->destroy(device);
+        }
+        if (retired.texture) {
+            retired.texture->destroy(device);
+        }
+    }
+    retiredResources.clear();
 
     Mesh::shutdownUploadResources(device); // the shared staging buffer outlives the meshes
 

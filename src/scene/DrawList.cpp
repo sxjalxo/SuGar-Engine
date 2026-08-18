@@ -113,7 +113,7 @@ void buildDrawListFromECS(const Registry& registry, const std::vector<Light>& li
 
     // Lights: the scene-level array (authored in the scene file, the editor's default
     // lighting) plus every active LightComponent entity, whose position and direction are
-    // DERIVED from its world transform — never stored twice (docs/DESIGN_LIGHTING.md).
+    // DERIVED from its world transform — never stored twice (DevDocs/DESIGN_LIGHTING.md).
     out.lights = lights;
     for (Entity entity : orderedEntities) {
         if (!registry.lights.has(entity)) {

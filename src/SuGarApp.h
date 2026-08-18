@@ -121,7 +121,7 @@ private:
 
     // Populated only in a packaged build (a manifest sits next to the executable). It
     // outlives the AssetCooker pointer that references it, so it is a member, not a
-    // local (docs/DESIGN_PACKAGING.md).
+    // local (DevDocs/DESIGN_PACKAGING.md).
     AssetManifest packageManifest;
     Registry registry;
     std::vector<Light> sceneLights;
@@ -145,7 +145,7 @@ private:
 
     // Runtime UI intents (Phase 16B.3): queued at render rate by input/UI callbacks,
     // drained on the fixed step by the RuntimeUI system so authoritative UI-state
-    // changes stay deterministic. See docs/DESIGN_RUNTIME_UI.md.
+    // changes stay deterministic. See DevDocs/DESIGN_RUNTIME_UI.md.
     UIIntentQueue uiIntents;
 
     // Phase 13A: the fixed-step gameplay pipeline as declared systems (script ->

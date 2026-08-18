@@ -34,7 +34,7 @@ struct Backend {
     std::function<AssetHandle(const std::string& key)> acquireTexture;
     std::function<AssetHandle(const std::string& key)> acquireAudioClip;
     // Create + upload a mesh from game-generated vertices (a *derived*, non-source GPU
-    // resource — docs/DESIGN_RUNTIME_MESH.md). The engine copies the data and returns an
+    // resource — DevDocs/DESIGN_RUNTIME_MESH.md). The engine copies the data and returns an
     // increfed handle; the caller keeps ownership of `data`. Not for source assets.
     std::function<AssetHandle(const RuntimeMeshData& data)> createMesh;
     std::function<void(AssetHandle handle)> release;

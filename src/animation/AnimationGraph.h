@@ -7,7 +7,7 @@
 // classification as AnimationClip and Skin: the graph's shape never changes at
 // runtime, so none of this is snapshotted. What *does* change — which state is
 // active, how far a transition has run — is authoritative and lives in ECS
-// (AnimationStateComponent). See docs/DESIGN_ANIMATION.md.
+// (AnimationStateComponent). See DevDocs/DESIGN_ANIMATION.md.
 //
 // Everything here refers to clips and states **by name**, for the same reason
 // components do: names survive serialization and a re-imported graph, indices don't.

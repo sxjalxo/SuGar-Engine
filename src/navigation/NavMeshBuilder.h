@@ -23,7 +23,7 @@
 // vulkan.h) would be untestable headlessly, and Phase 18A's own coverage audit found
 // exactly what that costs — the scene *load* path went untested for the engine's
 // entire history because it could not run without a device. See
-// docs/DESIGN_NAVIGATION.md.
+// DevDocs/DESIGN_NAVIGATION.md.
 struct NavTriangle {
     glm::vec3 a{0.0f};
     glm::vec3 b{0.0f};

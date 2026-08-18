@@ -4,7 +4,7 @@
 
 #include <glm/glm.hpp>
 
-// How a light reaches a surface. See docs/DESIGN_LIGHTING.md.
+// How a light reaches a surface. See DevDocs/DESIGN_LIGHTING.md.
 //   Directional - sun/moon: a direction, no position, no falloff.
 //   Point       - torch/lamp: a position and a range it fades out over.
 //   Ambient     - the sky term: no position, no direction; lifts everything equally.

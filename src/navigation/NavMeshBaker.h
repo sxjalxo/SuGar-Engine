@@ -12,7 +12,7 @@ class Registry;
 // triangles out of the scene and hands them to Core's buildNavMesh, which knows none
 // of that. Same boundary GltfLoader draws for animation.
 //
-// See docs/DESIGN_NAVIGATION.md.
+// See DevDocs/DESIGN_NAVIGATION.md.
 namespace NavMeshBaker {
 
 // Every entity carrying NavMeshSourceComponent{navMesh == name} plus a MeshComponent,

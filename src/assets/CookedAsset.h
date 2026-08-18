@@ -7,7 +7,7 @@
 class Mesh;
 class AudioClip;
 
-// The cooked container format (docs/DESIGN_ASSET_PIPELINE.md, Phase 19B).
+// The cooked container format (DevDocs/DESIGN_ASSET_PIPELINE.md, Phase 19B).
 //
 // Runtime = f(cooked): ResourceManager reads these files and nothing else. glTF, OBJ,
 // PNG and WAV parsing happens only inside the cooker, so the runtime load path has one
@@ -41,7 +41,7 @@ constexpr uint32_t FormatVersion = 2; // 2: cooked textures carry their sampler 
 
 // How a texture is sampled. Baked into the artifact rather than resolved at load time
 // because a packaged runtime has no source tree and therefore no .meta to consult --
-// every import decision has to survive into the cooked bytes (docs/DESIGN_PACKAGING.md).
+// every import decision has to survive into the cooked bytes (DevDocs/DESIGN_PACKAGING.md).
 enum class TextureFilter : uint32_t {
     Linear = 0,  // the default; smooth magnification
     Nearest = 1, // pixel-art / texture atlases: crisp texels, no bleed between tiles

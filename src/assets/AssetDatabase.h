@@ -7,7 +7,7 @@
 
 #include "assets/AssetMeta.h"
 
-// The asset catalog (docs/DESIGN_ASSET_PIPELINE.md, Phase 19A).
+// The asset catalog (DevDocs/DESIGN_ASSET_PIPELINE.md, Phase 19A).
 //
 // Owns exactly one thing: what assets exist, what their import settings are, and
 // whether their cooked form is stale. It owns no loaded resource and no GPU object --
@@ -80,7 +80,7 @@ public:
     // The database OWNS this metadata; only the cooker can DISCOVER it, because the
     // edges come out of parsing a source format. So the cooker reports edges here
     // rather than keeping its own table -- storage stays with the catalog, discovery
-    // stays with the parser (docs/DESIGN_ASSET_PIPELINE.md).
+    // stays with the parser (DevDocs/DESIGN_ASSET_PIPELINE.md).
     //
     // Edges are derived (Rule 21b): recomputed from the present source bytes, never
     // serialized, never in a snapshot. A rescan clears them; a missing edge is a

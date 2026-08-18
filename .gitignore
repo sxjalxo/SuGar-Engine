@@ -25,7 +25,7 @@ compile_commands.json
 imgui.ini
 
 # Ad-hoc debug logs. The GUI build produces no capturable stdout (see
-# docs/DEV_ENVIRONMENT.md #2), so logging to a file is the documented way to get
+# DevDocs/DEV_ENVIRONMENT.md #2), so logging to a file is the documented way to get
 # runtime diagnostics — which means stray *.log files are a normal by-product of
 # debugging, not something to commit.
 *.log
@@ -59,7 +59,7 @@ save.dat.tmp
 save.good
 
 # Measurement and probe output. The dogfood harnesses each write their own file rather than
-# stdout, because a GUI build has no capturable stdout (docs/DEV_ENVIRONMENT.md #2). Covered
+# stdout, because a GUI build has no capturable stdout (DevDocs/DEV_ENVIRONMENT.md #2). Covered
 # by *.log above; named here so it is obvious these are *results*, reproducible by re-running
 # the harness, and never source:
 #   stream_test.log  chunk-boundary lifetime counters   (SUGAR_VOXEL_STREAMTEST)
@@ -69,6 +69,9 @@ save.good
 #   swim_test.log    off-mesh link traversal            (SUGAR_VOXEL_SWIMTEST)
 #   torture.log      adversarial stress pass            (SUGAR_VOXEL_TORTURE)
 #   voxel_debug.log  the voxel game's own trace
+#   arena_debug.log  the combat arena's trace + torture counters (SUGAR_ARENA_TORTURE)
+# Engine-side probes print to stderr instead and are not files: SUGAR_FPSLOG (frame +
+# live resource counters), SUGAR_PHYSDBG (broadphase cell/bucket/pair counts).
 
 # Standalone export output for an EXTERNAL game (M4). `SUGAR_PACKAGE=1 SUGAR_GAME=<dir>`
 # writes <dir>/dist, which is outside this repo by policy — but a game configured inside the
@@ -85,8 +88,15 @@ Thumbs.db
 # the platform does; the design record behind Runtime UI is the first one earmarked
 # for publication (see ROADMAP.md, M3 completion).
 #
-# The top-level docs (README, ROADMAP, RULES, REQUIREMENTS_AND_SCOPE) stay tracked.
-/DevDocs/
+# RULES.md and REQUIREMENTS_AND_SCOPE.md are the exception: they are *contracts*, not
+# working records -- the rules the engine is built to and the scope each dependency is
+# allowed. They were moved into DevDocs/ but must stay tracked, so the directory is
+# excluded by CONTENTS (`/DevDocs/*`) rather than as a directory: git cannot re-include a
+# file whose parent directory is itself excluded, so `/DevDocs/` + `!` would silently do
+# nothing.
+/DevDocs/*
+!/DevDocs/RULES.md
+!/DevDocs/REQUIREMENTS_AND_SCOPE.md
 
 # Cooked asset artifacts (Phase 19B). Derived from source assets + .meta settings,
 # reproducible byte-for-byte, and safe to delete wholesale -- so never committed.
