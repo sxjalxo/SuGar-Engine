@@ -568,6 +568,91 @@ The counterweight is Rule 8: do **not** implement speculative cases behind the s
 Rule 22 future-proofs the *interface*; Rule 8 keeps the *implementation* minimal. Design
 the seam wide; build through it narrow.
 
+**Which engine you look at, and how, is governed by Rule 23.** "Reference their docs" above
+is deliberate: docs are always safe, source is not always licensed for it.
+
+---
+
+# Rule 23 — Reference Engines Are Studied Per-Problem, Under Their License
+
+SuGar is published — GitHub, articles, technical writing. That makes the *provenance* of its
+architecture part of the product. Rule 22 says to study how mature engines place a seam; this
+rule says which engines, at what depth, and in what order.
+
+## The order is never reversed
+
+```
+real SuGar game → observed problem → measurement/evidence → design the seam
+  → research comparable architectures → choose SuGar's own solution
+  → implement → test → dogfood again
+```
+
+Never: *reference engine has feature → SuGar should implement feature.* That is the
+feature-checklist failure Rule 8 and the dogfood discipline exist to prevent, and a complete
+engine is the most tempting possible source of it. A reference engine is consulted **after**
+SuGar has a measured problem, to understand tradeoffs — never to supply the problem.
+
+## There is no canonical reference engine
+
+Pick the closest reference **per problem**, not one engine for everything:
+
+| Problem | Look at |
+| --- | --- |
+| Entity identity, storage, iteration | EnTT, Bevy |
+| Editor workflow, undo, scene tooling | Godot, Fyrox |
+| Native module hot reload | Fyrox |
+| Asset pipeline / asset database | engines with a real asset DB, chosen when the problem arrives |
+
+The list is not closed. The requirement is that the reference actually solved *the same
+problem*, and that its license permits source-level study.
+
+## Two depths, and the license decides which
+
+**Source-level study** — reading implementation to learn where a seam goes. Requires a
+permissive/open license that allows it (MIT, Apache-2.0, BSD, and similar). Godot, Bevy, EnTT
+and Fyrox qualify.
+
+**Black-box study** — running the engine, using its editor, reading its public docs and
+README, observing behaviour and workflow. Always available. Never involves its source.
+
+Source-available is **not** the same as permissive. Unreal's EULA and the Nu Game Engine
+Noncommercial License both restrict use in a competing engine — and both define "competing"
+broadly enough to cover a free, open-source engine written in a different language. For those,
+black-box only.
+
+## The Nu Game Engine, specifically
+
+Nu is an F# engine with the same stated goal as SuGar — instant iteration, debuggable systems
+— and it is much further along. It is kept as a **maturity benchmark**, answering *"what does
+an engine built on this philosophy look and feel like when it is years ahead?"*
+
+Permitted: run it, use Gaia, evaluate its editor and runtime experience, read its public
+README/wiki/docs, take **questions** from them.
+
+Forbidden: inspecting, searching, grepping, copying, adapting or deriving from Nu's source.
+No code, algorithms, data structures, APIs, naming or implementation patterns. Nu is not a
+roadmap and not a specification.
+
+## When writing a comparison, separate four things
+
+1. What the reference engine does.
+2. What problem *it* was solving.
+3. What SuGar's actual, measured requirement is.
+4. Why SuGar should or should not adopt a similar approach.
+
+Collapsing (1) into (3) is how a reference engine's roadmap becomes yours by accident.
+
+## In public writing
+
+Describe SuGar's actual evolution — its games, its measurements, its dogfooding, its design
+records. Do not imply SuGar copied or derives its architecture from another engine, because it
+does not. Citing a reference for a seam is fine and Rule 22 asks for it; presenting SuGar as a
+port or a reimplementation of anything is not.
+
+The point of reference engines is to avoid rediscovering avoidable engineering mistakes while
+SuGar develops its own iteration-first, debuggability-first architecture. The goal is not to
+resemble a mature engine.
+
 ---
 
 # Decision Checklist

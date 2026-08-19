@@ -98,13 +98,44 @@ bool GameModuleLoader::load(std::string name, const fs::path& directory) {
     }
     currentLive = live;
 
+    // Refuse a module built against a different Core contract BEFORE calling anything
+    // in it. The mismatch this exists for is silent: generational entity ids changed
+    // what an Entity's bits mean without changing its size, so a stale DLL would load
+    // cleanly and then misread every handle it was given. Checked before the entry
+    // point is even resolved, so a rejected module never runs a line of its code.
+    // A module that loaded but is definitively WRONG (missing or mismatched symbols)
+    // is not a transient failure: the same bytes will be just as wrong next frame. Bank
+    // its timestamp so the hot-reload watch waits for a genuine rebuild instead of
+    // retrying — without this an unrebuilt game DLL is rejected every single frame,
+    // measured at 204 attempts in 10 seconds. A copy/IO failure keeps the old behaviour
+    // (timestamp untouched, so it is retried) because that one really can succeed later.
+    auto rejectModule = [&](HMODULE rejected) {
+        FreeLibrary(rejected);
+        loadedWriteTime = newWriteTime;
+        lastSeenWriteTime = newWriteTime;
+        return false;
+    };
+
+    using AbiVersionFn = unsigned int (*)();
+    auto coreABIVersion =
+        reinterpret_cast<AbiVersionFn>(GetProcAddress(module, kCoreABIVersionSymbol));
+    if (coreABIVersion == nullptr) {
+        std::cerr << "[GameModule] " << moduleName << " exports no '" << kCoreABIVersionSymbol
+                  << "': built against a Core older than the ABI stamp. Rebuild the game module.\n";
+        return rejectModule(module);
+    }
+    if (const unsigned int moduleABI = coreABIVersion(); moduleABI != kSuGarCoreABIVersion) {
+        std::cerr << "[GameModule] " << moduleName << " was built against Core ABI " << moduleABI
+                  << ", engine is " << kSuGarCoreABIVersion << ". Rebuild the game module.\n";
+        return rejectModule(module);
+    }
+
     using RegisterFn = void (*)();
     auto registerGameBehaviors =
         reinterpret_cast<RegisterFn>(GetProcAddress(module, kRegisterGameBehaviorsSymbol));
     if (registerGameBehaviors == nullptr) {
         std::cerr << "[GameModule] '" << kRegisterGameBehaviorsSymbol << "' not found\n";
-        FreeLibrary(module);
-        return false;
+        return rejectModule(module);
     }
 
     handle = module;

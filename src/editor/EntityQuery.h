@@ -60,7 +60,7 @@ inline bool collectEntitiesWith(const Registry& registry, const std::string& com
     else {
         return false;
     }
-    std::sort(out.begin(), out.end());
+    std::sort(out.begin(), out.end(), entityOrderLess);
     return true;
 }
 

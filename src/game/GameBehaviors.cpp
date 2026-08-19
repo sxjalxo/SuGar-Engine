@@ -64,6 +64,10 @@ public:
 
 } // namespace
 
+// States the Core contract this module was compiled against; the loader refuses the
+// DLL if it disagrees. Every game module needs exactly one of these.
+SUGAR_DECLARE_GAME_MODULE_ABI()
+
 // Entry point the engine resolves and calls after loading the DLL. Idempotent, so
 // reloading (register again after clear) is safe.
 SUGAR_GAME_EXPORT void registerGameBehaviors() {

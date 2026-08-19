@@ -3,6 +3,8 @@
 #include <map>
 #include <string>
 
+#include "ecs/Entity.h"
+
 // Game-defined per-entity state (M4 Level 3 — see DevDocs/DESIGN_GAME_DATA.md).
 //
 // A game module links only Core and cannot add a component type to Registry, yet
@@ -65,6 +67,30 @@ struct GameDataComponent {
     void setBool(const std::string& key, bool value) { setNumber(key, value ? 1.0 : 0.0); }
     void setString(const std::string& key, std::string value) {
         values[key] = GameValue(std::move(value));
+    }
+
+    // An entity handle a game chose to store — a UI label it owns, a projectile's
+    // shooter, the villager the player is trading with.
+    //
+    // Separate from setInt/getInt on purpose. A handle is not an int: generation bits
+    // occupy the TOP of the 32-bit value (Entity.h), so `static_cast<int>(entity)`
+    // turns negative as soon as a slot has been reused a few times. It would still
+    // round-trip — two's complement, exactly — but the scene file would hold a
+    // negative number that reads as corrupt and is one careless `>= 0` check away
+    // from a real bug. The double underneath holds every handle exactly: the largest
+    // packed value, 4 294 967 295, is six orders of magnitude below 2^53.
+    //
+    // Values outside the handle range (a hand-edited or hostile scene file, or a -1
+    // written by older game code) come back as INVALID_ENTITY rather than as garbage.
+    Entity getEntity(const std::string& key, Entity fallback = INVALID_ENTITY) const {
+        const double value = getNumber(key, static_cast<double>(fallback));
+        if (value < 0.0 || value > 4294967295.0) {
+            return INVALID_ENTITY;
+        }
+        return static_cast<Entity>(value);
+    }
+    void setEntity(const std::string& key, Entity entity) {
+        setNumber(key, static_cast<double>(entity));
     }
 
     void remove(const std::string& key) { values.erase(key); }

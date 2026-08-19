@@ -32,15 +32,19 @@ ListenerState findListener(const Registry& registry) {
     ListenerState state;
     // "First listener wins" must be deterministic: the storage is an unordered_map,
     // so iterating it directly makes the winner depend on hash order when a scene has
-    // more than one listener. Pick the lowest entity id instead — stable run-to-run
-    // and across a snapshot restore, matching the id-order discipline used elsewhere.
+    // more than one listener. Pick the lowest entity instead — stable run-to-run and
+    // across a snapshot restore, matching the id-order discipline used elsewhere.
+    // entityOrderLess (not `<`) so "lowest" keeps meaning "oldest slot": a recycled
+    // low index carries a high generation and would otherwise sort last, handing the
+    // listener role to a different entity purely because one was destroyed and
+    // recreated. See DevDocs/DESIGN_GENERATIONAL_IDS.md.
     Entity chosen = INVALID_ENTITY;
     for (const auto& [entity, listener] : registry.audioListeners.getAll()) {
         (void)listener;
         if (!registry.transforms.has(entity)) {
             continue;
         }
-        if (chosen == INVALID_ENTITY || entity < chosen) {
+        if (chosen == INVALID_ENTITY || entityOrderLess(entity, chosen)) {
             chosen = entity;
         }
     }

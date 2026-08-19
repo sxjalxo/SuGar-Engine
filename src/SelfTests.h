@@ -151,25 +151,144 @@ inline bool testEntityIdRecycling() {
         ok &= reg.createEntity() != a && reg.createEntity() != b; // never double-issued
     }
 
-    { // reserving a future id banks the skipped ids for later createEntity()
+    { // reserving a future id banks the skipped indices for later createEntity()
         Registry reg;
-        const Entity first = reg.createEntity(); // 1
-        const Entity target = first + 5;
+        const Entity first = reg.createEntity(); // index 1
+        const Entity target = makeEntity(entityIndex(first) + 5, 1);
         ok &= reg.createEntityWithId(target) == target;
-        // The gap (first+1 .. target-1) is now free and gets handed out next.
+        // The gap (index 2 .. 5) is now free and gets handed out next.
         const Entity next = reg.createEntity();
-        ok &= next > first && next < target;
+        ok &= entityIndex(next) > entityIndex(first) && entityIndex(next) < entityIndex(target);
     }
 
-    { // an absurd id must not bank its whole gap (OOM/O(n^2) bomb): it is still
-      // honored, but the leaped ids are dropped rather than pushed one-by-one.
+    { // an absurd index must not bank its whole gap (O(n^2) free list): it is still
+      // honored, but the leaped indices are dropped rather than pushed one-by-one.
         Registry reg;
-        reg.createEntity(); // nextEntity -> 2
-        const Entity huge = 300000000u; // ~300M: banking each would blow memory
+        reg.createEntity(); // next free index -> 2
+        const Entity huge = makeEntity(500000u, 1); // banking each would build a 500k free list
         ok &= reg.createEntityWithId(huge) == huge; // request still honored
-        // nextEntity advanced past it, so the next fresh id is above the huge one
+        // The counter advanced past it, so the next fresh index is above the huge one
         // (the gap was NOT banked for reuse — that is the point).
-        ok &= reg.createEntity() > huge;
+        ok &= entityIndex(reg.createEntity()) > entityIndex(huge);
+    }
+
+    return ok;
+}
+
+// --- Generational identity: a handle names a slot AND its tenant, so a destroyed
+// entity's handle stays distinguishable from whoever gets the slot next
+// (DevDocs/DESIGN_GENERATIONAL_IDS.md). --------------------------------------
+inline bool testEntityGenerations() {
+    bool ok = true;
+
+    { // the packing itself, including the two reserved values
+        ok &= entityIndex(INVALID_ENTITY) == 0 && entityGeneration(INVALID_ENTITY) == 0;
+        const Entity packed = makeEntity(MAX_ENTITY_INDEX, MAX_ENTITY_GENERATION);
+        ok &= entityIndex(packed) == MAX_ENTITY_INDEX;
+        ok &= entityGeneration(packed) == MAX_ENTITY_GENERATION;
+        ok &= packed == 0xFFFFFFFFu; // the packing fills the handle; nothing is wasted
+        // Generation must not leak into the index half, which is the one thing that
+        // would corrupt addressing rather than merely identity.
+        ok &= entityIndex(makeEntity(7, MAX_ENTITY_GENERATION)) == 7;
+    }
+
+    { // a live handle is alive; a destroyed one is not, even before anything reuses it
+        Registry reg;
+        const Entity entity = reg.createEntity();
+        ok &= entityIndex(entity) == 1 && entityGeneration(entity) == 1;
+        ok &= reg.isAlive(entity) && !reg.isAlive(INVALID_ENTITY);
+        reg.destroyEntity(entity);
+        ok &= !reg.isAlive(entity);
+    }
+
+    { // THE POINT: the slot comes back under a new tenant and the old handle knows.
+      // Before generations both handles were the same integer and this was undetectable.
+        Registry reg;
+        const Entity first = reg.createEntity();
+        reg.destroyEntity(first);
+        const Entity second = reg.createEntity();
+        ok &= entityIndex(second) == entityIndex(first); // the slot WAS recycled
+        ok &= second != first;                           // but the handle is not the same
+        ok &= entityGeneration(second) == entityGeneration(first) + 1;
+        ok &= reg.isAlive(second) && !reg.isAlive(first);
+
+        // Component storages are keyed by the whole packed handle, so the new tenant's
+        // data does not answer to the old handle either — a second, free line of
+        // defence that fell out of the packing at no cost. isAlive() is still the one
+        // to ask, because it answers for an entity with no components at all.
+        reg.transforms.add(second, {});
+        ok &= reg.transforms.has(second) && !reg.transforms.has(first);
+    }
+
+    { // a stale or repeated destroy must not free a slot twice — the bare counter
+      // handed the same id out to two live entities when that happened
+        Registry reg;
+        const Entity first = reg.createEntity();
+        reg.destroyEntity(first);
+        const Entity second = reg.createEntity(); // same slot, new tenant
+        reg.destroyEntity(first);                 // stale: must be ignored
+        ok &= reg.isAlive(second);
+        const Entity third = reg.createEntity();
+        ok &= entityIndex(third) != entityIndex(second); // slot was not double-freed
+        reg.destroyEntity(second);
+        reg.destroyEntity(second); // double destroy: also ignored
+        const Entity fourth = reg.createEntity();
+        const Entity fifth = reg.createEntity();
+        ok &= entityIndex(fourth) != entityIndex(fifth);
+    }
+
+    { // wrap: after MAX_ENTITY_GENERATION reuses of one slot the counter returns to 1
+      // (never 0, which would make a zeroed handle look valid) and stays usable
+        Registry reg;
+        Entity entity = reg.createEntity();
+        const Entity slot = entityIndex(entity);
+        bool sawWrap = false;
+        for (Entity i = 0; i < MAX_ENTITY_GENERATION + 4; ++i) {
+            reg.destroyEntity(entity);
+            entity = reg.createEntity();
+            ok &= entityIndex(entity) == slot; // LIFO: the same hot slot every time
+            ok &= entityGeneration(entity) != 0;
+            ok &= reg.isAlive(entity);
+            if (entityGeneration(entity) == 1 && i > 0) {
+                sawWrap = true;
+            }
+        }
+        ok &= sawWrap; // the wrap is exercised, not assumed unreachable
+    }
+
+    { // undo's time machine: a restore resurrects the EXACT handle, generation and all,
+      // so editor commands still holding raw ids stay valid across delete-then-undo
+        Registry reg;
+        const Entity entity = reg.createEntity();
+        reg.transforms.add(entity, {});
+        reg.destroyEntity(entity);
+        ok &= !reg.isAlive(entity);
+        const Entity squatter = reg.createEntity(); // the slot gets reused in between
+        reg.destroyEntity(squatter);
+        ok &= reg.createEntityWithId(entity) == entity;
+        ok &= reg.isAlive(entity); // deliberately re-validated; see createEntityWithId
+    }
+
+    { // reserved halves are refused rather than seated in slot 0
+        Registry reg;
+        ok &= reg.createEntityWithId(INVALID_ENTITY) == INVALID_ENTITY;
+        ok &= reg.createEntityWithId(makeEntity(0, 5)) == INVALID_ENTITY; // index 0
+        ok &= reg.createEntityWithId(makeEntity(5, 0)) == INVALID_ENTITY; // generation 0
+    }
+
+    { // GameData is the one place a game persists a handle, and the widest possible
+      // handle must survive it exactly — the measurement that ruled out 64-bit ids
+        GameDataComponent data;
+        const Entity widest = makeEntity(MAX_ENTITY_INDEX, MAX_ENTITY_GENERATION);
+        data.setEntity("target", widest);
+        ok &= data.getEntity("target") == widest;
+        ok &= data.getEntity("missing") == INVALID_ENTITY;
+        // A negative or oversized value (older game code wrote -1; a hand-edited scene
+        // could write anything) degrades to INVALID_ENTITY, never to a garbage handle.
+        data.setNumber("bogus", -1.0);
+        ok &= data.getEntity("bogus") == INVALID_ENTITY;
+        data.setNumber("huge", 1e18);
+        ok &= data.getEntity("huge") == INVALID_ENTITY;
     }
 
     return ok;
@@ -3466,6 +3585,12 @@ inline bool testGameData() {
     authored.setInt("seed", 20260811);   // 6-digit float output would round this
     authored.setBool("angry", true);
     authored.setNumber("cooldown", 0.75);
+    // The widest possible entity handle, through the real save/load text. This is the
+    // measurement that settled the width in DESIGN_GENERATIONAL_IDS.md: GameValue is a
+    // double, so a 64-bit handle could not survive this line, while every 32-bit
+    // packed handle is six orders of magnitude inside what a double holds exactly.
+    const Entity widestHandle = makeEntity(MAX_ENTITY_INDEX, MAX_ENTITY_GENERATION);
+    authored.setEntity("target", widestHandle);
 
     const std::string text = SceneSerializer::saveToString(source, lights);
 
@@ -3493,6 +3618,7 @@ inline bool testGameData() {
     ok &= data.getInt("seed") == 20260811;
     ok &= data.getBool("angry");
     ok &= std::fabs(data.getNumber("cooldown") - 0.75) < 1e-9;
+    ok &= data.getEntity("target") == widestHandle;
 
     // A missing key, and a key read as the wrong type, both yield the fallback rather
     // than a silent zero-shaped lie.
@@ -5406,6 +5532,7 @@ inline std::pair<int, int> run() {
         { "CoreBoundary",     testCoreBoundary },
         { "CommandHistory",   testCommandHistory },
         { "EntityIdRecycling", testEntityIdRecycling },
+        { "EntityGenerations", testEntityGenerations },
         { "EntityQuery",      testEntityQuery },
         { "SnapshotStorage",  testSnapshotStorage },
         { "Physics",          testPhysics },

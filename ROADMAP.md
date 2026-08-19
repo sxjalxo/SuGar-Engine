@@ -1426,6 +1426,80 @@ overlapping range even when the shader reads only half of it —
 
 Gate 62 -> **63/63** Debug + Release (+`ClipMaskPolicy`).
 
+**Generational entity ids — the audit's one "widen now" item, designed then built.**
+*Not forced by a defect. `DevDocs/DESIGN_GENERATIONAL_IDS.md` was written first and
+deliberately implemented nothing; this is that record executed, on the schedule it set (its
+own phase, behind L3 game 2).*
+
+`Entity` is still `uint32_t` and `INVALID_ENTITY` is still literal `0`. What changed is what
+the bits mean: **20-bit index, 12-bit generation**, with index 0 and generation 0 both
+reserved. The index is the half the free list recycles and the only half allowed to address
+anything; the generation counts how many tenants a slot has had. Both numbers are measured
+rather than chosen — 1 048 575 simultaneous entities against a highest-ever 2 846, and 4 095
+reuses of one slot against a measured worst case of ~250 in 90 seconds (which is what rules
+out an 8-bit generation).
+
+*The payoff:* `Registry::isAlive(Entity)`. The engine has never been able to answer "is this
+handle still the entity I got it for?", because a recycled id was the same integer as the
+original — the only detectable case was the one where nothing had reused the slot yet.
+
+*What did not change, as the design predicted:* no scene file, prefab, snapshot or golden,
+and no format version. `parent` is an index into the objects array, not an entity id. The
+local variable that made that confusing is now `objectIndex`, because "entity index" means
+something specific after this change.
+
+*Ordering needed care at six sites, not the three the design counted.* "Lowest id" stops
+meaning "oldest" once a recycled low slot carries a high generation, so every site got
+`entityOrderLess` (index, then generation): the audio listener, the game camera, the editor's
+orbit-parent pick, `EntityQuery`, `DrawList`, and — the one that mattered —
+`SceneSerializer::collectOrderedEntities`, whose sort decides **the order objects are written
+to the scene file**, with `parent` referring to positions in that array. Sorting packed values
+there would have churned every scene file the first time an entity was recycled.
+
+*Three defects fell out of the migration itself:*
+
+**#45 `destroyEntity` banked its argument unconditionally**, so a double destroy — or a
+destroy through a stale handle — pushed one id onto the free list twice and later handed it to
+two live entities. Undetectable before; the generation check makes it a no-op now.
+
+**#46 a `GameData` handle read with a `-1` fallback produced `0xFFFFFFFF`.** The arena's
+torture harness did `static_cast<Entity>(data.getInt(key, -1))`, so a *missing* key sailed
+past the `!= INVALID_ENTITY` guard and was handed to `destroyEntityTree`. Rather than fix ~30
+`static_cast<int>(entity)` sites across two games (the design's stated plan, written when it
+believed there were two), the seam went into the engine: `GameDataComponent::setEntity` /
+`getEntity`, which stores a handle exactly as a `double` and returns `INVALID_ENTITY` for
+anything outside the handle range. Rule 22 — the category, not the case.
+
+**#47 a refused game module was retried every frame.** `Entity` keeps its size, so a stale
+`Game.dll` would link, load and silently misread handles — the design called this out and asked
+for a Core version stamp, which now ships (`SUGAR_DECLARE_GAME_MODULE_ABI`, checked before the
+entry point is even resolved). Shipping it exposed the second half: the hot-reload watch never
+banks the timestamp of a *failed* load, deliberately, so it can recover from a mid-build copy.
+Against a permanently-wrong DLL that means retrying identical bytes forever — measured at
+**204 rejections in 10 seconds**. A definitively-wrong module now banks its timestamp and waits
+for a real rebuild; a copy/IO failure still retries. 204 → 1.
+
+*Verified:* gate 63 → **64/64** Debug + Release (+`EntityGenerations`, which exercises the
+generation **wrap** past 4 095 rather than assuming it unreachable). All nine game modules
+rebuilt against the new ABI. The arena's `gpu` torture pass — 16 000 spawns / 15 920 destroys
+over 200 cycles at ~80 live — ran with the transform count flat at 513–528. The voxel game's
+autoplay ran 65 mobs and 2 088 block edits with navigation and HUD intact, and a window capture
+confirms every HUD element (all of them addressed through `getEntity` now) still renders.
+
+*Two decisions the design left open, settled in code:* `reset()` clears generations, because
+carrying them would make loading the same scene twice produce different handles and break
+run-to-run comparison (Rule 10) — the cost is that a handle held across a scene load stays
+undetectable. And `kMaxBankGap` dropped `1<<20` → `1<<16`: the index space is now capped at
+2²⁰, so the OOM the guard was written for is structurally impossible and the old constant had
+become unreachable, but the O(n) free-list scan is still real.
+
+*Unclaimed, and worth keeping visible:* **no game has ever hit a stale-handle bug** (~35 000
+destroys across the arena's adversarial passes), and **no game calls `isAlive()` yet**. By this
+project's own rule that makes it an unused seam — the next game to hold a handle across frames
+is the one that gets to judge the API.
+
+Gate 63 -> **64/64** Debug + Release (+`EntityGenerations`).
+
 ---
 
 ## Phase detail — M3 (Phases 16–21)
@@ -2288,7 +2362,7 @@ worth spending. The first pass under that rule retired three items and refused s
 | World-label depth occlusion | **built** | Nameplates showing through arena walls; resolved as an opt-in layer mask because "solid" is a game's word, not the engine's |
 | Failed-replan backoff (**#43**) | **built** | 40 agents on an unreachable goal measured at **4 800 A\* searches** in 120 steps; per-agent cooldown took it to **160** |
 | Stencil/clip masks (**#44**) | **built**, but *not* as stencil | The arena's translucent pause panel measured a **53 RGB** interior darkening; stencil was then rejected on evidence (the UI pass is `D32_SFLOAT`, effect layers have no depth) in favour of a coverage texture |
-| Generational entity ids | **designed, not built** | The audit's one "widen now" row. `DevDocs/DESIGN_GENERATIONAL_IDS.md` settled 20/12 bit packing by measurement and found the audit's premise half wrong — no file stores an entity id — so it does not get harder while it waits |
+| Generational entity ids | **designed, then built** (2026-08-19) | The audit's one "widen now" row. `DevDocs/DESIGN_GENERATIONAL_IDS.md` settled 20/12 bit packing by measurement and found the audit's premise half wrong — no file stores an entity id — so nothing had to be migrated when it landed. Built as its own phase behind L3 game 2, exactly as the record scheduled it. Gate 63 → **64/64** |
 | CCD, `MAX_SKINNED_DRAWS`, batched-submit upload, binary snapshots, greedy face-merge, async chunk generation, `MAX_LIGHTS` clustering | **still deferred** | Each measured as not-forced. A projectile tunnels at 400–800 m/s and the game throws at 34; skinned draws cap at 64 and a game has never passed 24 |
 
 The pattern worth keeping: **an item can be promoted and then have its first implementation
@@ -2345,11 +2419,18 @@ Small, deliberate "later, not now" items:
   into the hole the mask punched — measured at ~7 RGB of the original 53. Inherent to
   blur-after-mask and what other backends do; masking *again* after the composite would fix
   it and nothing has asked (`DevDocs/DESIGN_UI_CLIP_MASK.md`).
-- **Entity identity is designed but unbuilt.** `DevDocs/DESIGN_GENERATIONAL_IDS.md` specifies
-  20-bit index / 12-bit generation packed into the existing `uint32_t`, and states the one
-  decision that makes it more than a typedef change: undo must resurrect an exact packed id
-  *including its generation*, so the staleness guard protects gameplay reuse and explicitly
-  not the editor's time machine.
+- **Entity identity is ~~designed but unbuilt~~ built** (2026-08-19).
+  `DevDocs/DESIGN_GENERATIONAL_IDS.md` specified 20-bit index / 12-bit generation packed into
+  the existing `uint32_t`, and stated the one decision that makes it more than a typedef
+  change: undo must resurrect an exact packed id *including its generation*, so the staleness
+  guard protects gameplay reuse and explicitly not the editor's time machine. That is what
+  shipped, and the comment saying so lives in `EntityManager::createEntityWithId` rather than
+  only in the record. What stays open is smaller and sharper: **`Registry::isAlive()` is an
+  implemented seam no game calls yet**, and `reset()` deliberately clears generations (a
+  handle held across a scene load is still undetectable) because carrying them would make the
+  same scene load twice produce different handles and break run-to-run comparison (Rule 10).
+  A game that persists a handle across a scene load reopens that, and would need a
+  deterministic generation seed rather than a carried counter.
 
 ---
 
@@ -2448,7 +2529,13 @@ method, because the method is the evidence.
   runtime UI's interactive half, unreachable by any game). A **deferred-backlog pass** then
   worked three long-standing items down by evidence: world-label occlusion, **#43** replan
   backoff, **#44** clip masks — plus a design record for generational entity ids that was
-  deliberately *not* implemented. Gate 56 → **63/63**.
+  deliberately *not* implemented at the time. Gate 56 → **63/63**. **Generational entity ids
+  were then built as their own phase** (2026-08-19), on the schedule that record set: packing
+  and `isAlive()` landed with no artifact, format or golden change, and the migration itself
+  produced **#45** (double destroy reissuing a live id), **#46** (a game's `-1` handle
+  fallback reaching `destroyEntityTree`) and **#47** (a rejected game module retried every
+  frame — 204 times in 10 s — once the new Core ABI stamp started refusing stale DLLs).
+  Gate 63 → **64/64**.
 - **Level 4 (not started)** — the *other branch* of M4, not L3's successor: advanced systems
   and quality, opened by a workload rather than by L3 running out. Rendering beyond the forward path,
   high-DPI/4K and dynamic resolution, vendor features (FreeSync/G-Sync, DLSS/FSR), GPU-driven

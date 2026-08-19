@@ -194,17 +194,27 @@ demo document — which uses no `box-shadow`, so no mask is ever set — pixel-i
 
 Gate **56 → 63/63** Debug + Release across the arena's whole arc.
 
-**One deferred item was designed and deliberately not built.** Generational entity ids are the
-single row the platform audit marked "widen now", and
-[the design record](DevDocs/DESIGN_GENERATIONAL_IDS.md) settled the representation with
-measurement rather than taste: `GameData` stores numbers as `double`, so a **64-bit handle
-cannot round-trip** while any 32-bit packing sits six orders of magnitude inside the
-guarantee — and the GPU torture's ~250 reuses of a single slot in 90 seconds rules out an
-8-bit generation. It also corrected the audit's own rationale: scene files, prefabs and
-snapshots store **no entity ids at all** (`parent` is an array index), so the migration needs
-no artifact conversion and no format bump, and does not get harder while it waits. It is
-scheduled as its own phase behind the next L3 game, because in ~35 000 entity destroys across
-the arena's adversarial passes, not one stale-handle defect has ever been observed.
+**Then the one item the platform audit marked "widen now" was designed, and built.**
+Generational entity ids ([design and implementation record](DevDocs/DESIGN_GENERATIONAL_IDS.md))
+settled the representation with measurement rather than taste: `GameData` stores numbers as
+`double`, so a **64-bit handle cannot round-trip** while any 32-bit packing sits six orders of
+magnitude inside the guarantee — and the GPU torture's ~250 reuses of a single slot in 90
+seconds rules out an 8-bit generation. **20-bit index, 12-bit generation, inside the existing
+`uint32_t`**: the width never changed, only the meaning of its bits, so `INVALID_ENTITY` is
+still literal `0` and not one `== INVALID_ENTITY` check in the engine or in nine games needed
+touching. The design also corrected the audit's own rationale — scene files, prefabs and
+snapshots store **no entity ids at all** (`parent` is an array index) — and the build confirmed
+it: no artifact conversion, no format bump, no golden churn.
+
+`Registry::isAlive()` exists for the first time. The engine could not previously answer "is
+this handle still the entity I got it for?" at any price, because a recycled id was the same
+integer as the original. Three real defects fell out of the migration itself — a double
+destroy reissued a live id to two entities, a `-1` fallback in a game's `GameData` read
+produced `0xFFFFFFFF` and handed it to `destroyEntityTree`, and a game DLL refused by the new
+Core ABI stamp was retried **204 times in 10 seconds** by the hot-reload watch. Gate **64/64**
+Debug + Release, with the generation wrap exercised past 4 095 rather than assumed
+unreachable. Still unclaimed, and stated plainly in the record: **no game has ever hit a
+stale-handle bug, and no game calls `isAlive()` yet.**
 
 **Level 4 has not started** — but it is a *branch* of M4 rather than the phase after L3, and a
 workload can open it at any time. L3 asks whether SuGar can **build** serious games; L4 asks

@@ -25,7 +25,7 @@ void buildDrawListFromECS(const Registry& registry, const std::vector<Light>& li
         orderedEntities.push_back(entity);
     }
 
-    std::sort(orderedEntities.begin(), orderedEntities.end());
+    std::sort(orderedEntities.begin(), orderedEntities.end(), entityOrderLess);
 
     for (Entity entity : orderedEntities) {
         if (!registry.meshes.has(entity) || !registry.materials.has(entity)) {

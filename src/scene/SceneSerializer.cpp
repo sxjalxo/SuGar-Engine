@@ -1186,7 +1186,7 @@ std::vector<Entity> collectOrderedEntities(const Registry& registry) {
         (void)transformComponent;
         orderedEntities.push_back(entity);
     }
-    std::sort(orderedEntities.begin(), orderedEntities.end());
+    std::sort(orderedEntities.begin(), orderedEntities.end(), entityOrderLess);
     return orderedEntities;
 }
 
@@ -1721,10 +1721,14 @@ std::vector<Entity> createEntitiesFromObjects(Registry& registry, const std::vec
     std::vector<Entity> createdEntities;
     createdEntities.reserve(pendingEntities.size());
 
-    for (size_t entityIndex = 0; entityIndex < pendingEntities.size(); entityIndex++) {
-        const PendingEntityData& pendingEntity = pendingEntities[entityIndex];
+    // `objectIndex`, not `entityIndex`: this is a position in the objects array, which
+    // is what the file's `parent` field refers to. An entity's *index* is now the low
+    // half of its handle and is a different thing entirely (Entity.h) — the file
+    // format has never stored one, which is why the packing needed no version bump.
+    for (size_t objectIndex = 0; objectIndex < pendingEntities.size(); objectIndex++) {
+        const PendingEntityData& pendingEntity = pendingEntities[objectIndex];
         const Entity entity = forcedIds != nullptr
-            ? registry.createEntityWithId((*forcedIds)[entityIndex])
+            ? registry.createEntityWithId((*forcedIds)[objectIndex])
             : registry.createEntity();
         createdEntities.push_back(entity);
 

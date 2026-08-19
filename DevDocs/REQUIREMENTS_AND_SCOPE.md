@@ -811,7 +811,12 @@ Authoritative runtime world.
 
 Owns:
 
-- Entities
+- Entities — **identity is generational**: `Entity` is a `uint32_t` packing a 20-bit slot
+  index with a 12-bit generation counter, so a handle held past its entity's destruction is
+  detectable (`Registry::isAlive`) instead of silently addressing whoever got the slot next.
+  The generation is part of *identity* and never of *addressing*: nothing indexes an array by
+  an `Entity`, and the split is measured against real game workloads rather than chosen — see
+  `DevDocs/DESIGN_GENERATIONAL_IDS.md`. No file format stores an entity id.
 - Components
 - Hierarchy
 - Systems
@@ -819,7 +824,9 @@ Owns:
   and strings the engine stores, serializes, snapshots and inspects but never *reads*.
   Keys belong to the game. It exists because a game module links only Core and cannot add
   a component type, while `Behavior`'s contract requires per-entity state to live in
-  components — see `DevDocs/DESIGN_GAME_DATA.md`.
+  components — see `DevDocs/DESIGN_GAME_DATA.md`. Handles get typed accessors
+  (`setEntity`/`getEntity`) rather than going through `setInt`: a packed handle is not an
+  `int`, and out-of-range values degrade to `INVALID_ENTITY` instead of to a garbage handle.
 
 Never replaced by an external ECS library.
 
@@ -1006,6 +1013,14 @@ Does not reload:
 - Renderer
 - Core
 - Editor
+
+A game module must export a **Core ABI version** (`SUGAR_DECLARE_GAME_MODULE_ABI`, resolved
+before the entry point) and the loader refuses any DLL that disagrees or omits it. Most Core
+changes announce a stale module loudly — a missing symbol, a resized struct. Generational
+entity ids did not: `Entity` kept its name and its size while its bits changed meaning, so a
+stale `Game.dll` would have loaded cleanly and misread every handle. A rejected module banks
+its source timestamp so the reload watch waits for a real rebuild instead of retrying identical
+bytes every frame.
 
 ---
 

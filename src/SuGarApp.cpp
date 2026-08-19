@@ -133,7 +133,7 @@ static Entity findOrbitParentEntity(const Registry& registry) {
         orderedEntities.push_back(entity);
     }
 
-    std::sort(orderedEntities.begin(), orderedEntities.end());
+    std::sort(orderedEntities.begin(), orderedEntities.end(), entityOrderLess);
 
     for (Entity entity : orderedEntities) {
         if (registry.names.has(entity) && registry.names.get(entity).name == "Parent") {
@@ -765,14 +765,15 @@ void SuGarApp::updateCameraTargets() {
 
     // A game camera (Core CameraComponent) supersedes the editor orbit/follow rig:
     // the active camera entity's world transform *is* the view (position = world
-    // translation, forward = rotation * -Z). Lowest active entity id wins, for the
-    // same determinism reason the rest of the engine sorts by id. Absent ⇒ fall
+    // translation, forward = rotation * -Z). Lowest active entity wins (by index —
+    // entityOrderLess, so a recycled camera does not jump the queue), for the same
+    // determinism reason the rest of the engine sorts by id. Absent ⇒ fall
     // through to the orbit/follow behavior below, so non-game scenes are unchanged.
     if (runningGame) {
         Entity cameraEntity = INVALID_ENTITY;
         for (const auto& [entity, camera] : registry.cameras.getAll()) {
             if (camera.active && registry.transforms.has(entity) &&
-                (cameraEntity == INVALID_ENTITY || entity < cameraEntity)) {
+                (cameraEntity == INVALID_ENTITY || entityOrderLess(entity, cameraEntity))) {
                 cameraEntity = entity;
             }
         }

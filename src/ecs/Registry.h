@@ -72,6 +72,19 @@ public:
         return entityManager.createEntityWithId(id);
     }
 
+    // True if `entity` still names the entity it was created for — false if it was
+    // destroyed, whether or not its slot has since been reused
+    // (DevDocs/DESIGN_GENERATIONAL_IDS.md).
+    //
+    // This is not the same question as `transforms.has(entity)`. A component query
+    // answers "does this handle address something now", which a recycled handle
+    // answers *yes* to while addressing a different entity. Gameplay that keeps a
+    // handle across frames — a target, an owner, a projectile's shooter — wants this
+    // one.
+    bool isAlive(Entity entity) const {
+        return entityManager.isAlive(entity);
+    }
+
     void destroyEntity(Entity entity) {
         detachFromParent(entity);
         releaseResources(entity);
