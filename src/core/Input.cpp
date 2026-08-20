@@ -5,8 +5,10 @@
 
 std::unordered_map<int, bool> Input::keys;
 std::unordered_map<int, bool> Input::pressedKeys;
+std::unordered_map<int, bool> Input::stepPressedKeys;
 std::unordered_map<int, bool> Input::mouseButtons;
 std::unordered_map<int, bool> Input::pressedMouseButtons;
+std::unordered_map<int, bool> Input::stepPressedMouseButtons;
 glm::vec2 Input::lastMousePos = {0.0f, 0.0f};
 glm::vec2 Input::mouseDelta = {0.0f, 0.0f};
 MouseRay Input::mouseRay;
@@ -17,13 +19,24 @@ std::string Input::frameText;
 void Input::init() {
     keys.clear();
     pressedKeys.clear();
+    stepPressedKeys.clear();
     mouseButtons.clear();
     pressedMouseButtons.clear();
+    stepPressedMouseButtons.clear();
     frameText.clear();
     lastMousePos = {0.0f, 0.0f};
     mouseDelta = {0.0f, 0.0f};
     mouseRay = MouseRay{};
     firstMouse = true;
+}
+
+void Input::endFixedStep() {
+    // Cleared at the END of the step, not the start: the step that runs must be able to
+    // see an edge latched since the last one. Clearing here gives both guarantees at
+    // once -- a frame that runs no step leaves the latch standing (no press is lost),
+    // and a frame that runs several has it cleared by the first (no press is doubled).
+    stepPressedKeys.clear();
+    stepPressedMouseButtons.clear();
 }
 
 void Input::beginFrame() {
@@ -47,6 +60,9 @@ void Input::setKey(int key, bool pressed) {
 
     if (pressed && !wasPressed) {
         pressedKeys[key] = true;
+        // The step-domain latch is NOT cleared by beginFrame. It stands until a fixed
+        // step consumes it, so a press that lands in a frame running no step survives.
+        stepPressedKeys[key] = true;
     }
 }
 
@@ -58,6 +74,11 @@ bool Input::isKeyDown(int key) {
 bool Input::isKeyPressed(int key) {
     auto it = pressedKeys.find(key);
     return it != pressedKeys.end() && it->second;
+}
+
+bool Input::isKeyPressedThisStep(int key) {
+    auto it = stepPressedKeys.find(key);
+    return it != stepPressedKeys.end() && it->second;
 }
 
 void Input::setMousePosition(double x, double y) {
@@ -90,6 +111,7 @@ void Input::setMouseButton(int button, bool pressed) {
 
     if (pressed && !wasPressed) {
         pressedMouseButtons[button] = true;
+        stepPressedMouseButtons[button] = true;
     }
 }
 
@@ -101,6 +123,11 @@ bool Input::isMouseButtonDown(int button) {
 bool Input::isMouseButtonPressed(int button) {
     auto it = pressedMouseButtons.find(button);
     return it != pressedMouseButtons.end() && it->second;
+}
+
+bool Input::isMouseButtonPressedThisStep(int button) {
+    auto it = stepPressedMouseButtons.find(button);
+    return it != stepPressedMouseButtons.end() && it->second;
 }
 
 void Input::setMouseRay(const MouseRay& ray) {

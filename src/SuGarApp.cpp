@@ -1392,6 +1392,12 @@ void SuGarApp::mainLoop() {
             }
             while (fixedAccumulator >= FIXED_TIMESTEP) {
                 updateSystems(FIXED_TIMESTEP);
+                // Consume the simulation-domain input edges this step observed. Behaviours
+                // run here and nowhere else, so this is the only correct place to clear
+                // them; clearing per render frame (as the frame-domain edges are) silently
+                // dropped ~3 of every 4 presses at 248 FPS. Defect #48,
+                // DevDocs/DESIGN_INPUT_EDGE_SEMANTICS.md.
+                Input::endFixedStep();
                 captureSnapshotBudgeted(); // record each fixed step for time travel (budget-gated)
                 fixedAccumulator -= FIXED_TIMESTEP;
             }

@@ -216,6 +216,33 @@ Debug + Release, with the generation wrap exercised past 4 095 rather than assum
 unreachable. Still unclaimed, and stated plainly in the record: **no game has ever hit a
 stale-handle bug, and no game calls `isAlive()` yet.**
 
+**Then game 3 asked a different question: is the engine genre-neutral, or only robust for
+real-time games?** Every dogfood game so far had been real-time. A turn-based dungeon crawler
+holds still for seconds, mutates the world atomically, then animates the consequences — a shape
+the fixed-step loop had never been shown. The experiment's contract was
+[frozen before the first line of game code](DevDocs/DESIGN_TURN_BASED_PROBE.md): nine watch
+areas, each with an instrument and a numeric promotion threshold, so that "no engine change was
+needed" would be **falsifiable** rather than a description of how hard anyone looked.
+
+**The engine survived, and exactly two assumptions were exposed.** The first is the one worth
+telling: `Input::beginFrame()` clears press-edges once per *render frame*, while gameplay runs
+on a 60 Hz accumulator. At 248 FPS that is ~4.1 frames per step, so **20 physical presses
+produced 4 committed turns** — and a repeat run produced 5, making it nondeterministic as well
+as lossy. The property is backwards: *faster hardware loses more input.* It was never a
+turn-based problem — FlappyBird's only button, the platformer's jump, the arena's attacks and
+Minecraft's hotbar were all silently dropping presses, and no test caught it because the
+existing one asserts the edge's **value** and never its **lifetime across a frame/step
+boundary**. Fixed at the layering that already existed: `InputActions` is now the
+simulation-domain input layer, `Input` stays frame-domain for the editor, and five of six
+shipped call sites were fixed **with no game code change at all**. The second,
+[idle physics on a static world](DevDocs/DESIGN_STATIC_PHYSICS_COST.md), is designed and not
+built: 186 colliders that never move cost 2.975 ms per frame.
+
+The third finding is the one that could not be measured. The snapshot watch area asked for a
+capture-to-turn ratio, and there were **no captures** — 4.104 ms at 91 entities against a 4 ms
+budget, so time travel is now auto-disabled in all three L3 games. SuGar's headline
+debuggability feature is unavailable in every real game it has. Gate **64 → 65/65**.
+
 **Level 4 has not started** — but it is a *branch* of M4 rather than the phase after L3, and a
 workload can open it at any time. L3 asks whether SuGar can **build** serious games; L4 asks
 whether it can **run** them to production standards. L4's questions stop being "can this mechanic be built"

@@ -20,9 +20,25 @@ public:
     static void init();
     static void beginFrame();
 
+    // Ends one fixed gameplay step: clears the simulation-domain edges so a single press
+    // is observed by exactly one step. Called by the engine after each updateSystems().
+    static void endFixedStep();
+
     static void setKey(int key, bool pressed);
     static bool isKeyDown(int key);
+
+    // FRAME-domain edge: true if the key went down since the last beginFrame(). This is
+    // the clock the editor's own shortcuts run on (processInput, once per frame) and its
+    // meaning is unchanged.
     static bool isKeyPressed(int key);
+
+    // SIMULATION-domain edge: true if the key went down since the last fixed step
+    // consumed one. Defect #48 — gameplay runs on a 60 Hz accumulator while rendering
+    // does not, so a frame-domain edge is invisible to a step that did not happen in
+    // that frame (measured: 20 presses -> 4 commits at 248 FPS, and worse on faster
+    // hardware). Behaviours reach this through InputActions, never directly.
+    // See DevDocs/DESIGN_INPUT_EDGE_SEMANTICS.md.
+    static bool isKeyPressedThisStep(int key);
 
     static void setMousePosition(double x, double y);
     static glm::vec2 getMouseDelta();
@@ -35,6 +51,7 @@ public:
     static void setMouseButton(int button, bool pressed);
     static bool isMouseButtonDown(int button);
     static bool isMouseButtonPressed(int button);
+    static bool isMouseButtonPressedThisStep(int button);
 
     // Cursor ray in world space for the current frame. Core only stores it; the
     // renderer (which owns the camera + viewport) computes and writes it each frame,
@@ -67,9 +84,11 @@ public:
 
 private:
     static std::unordered_map<int, bool> keys;
-    static std::unordered_map<int, bool> pressedKeys;
+    static std::unordered_map<int, bool> pressedKeys;          // cleared per frame
+    static std::unordered_map<int, bool> stepPressedKeys;      // cleared per fixed step
     static std::unordered_map<int, bool> mouseButtons;
-    static std::unordered_map<int, bool> pressedMouseButtons;
+    static std::unordered_map<int, bool> pressedMouseButtons;      // cleared per frame
+    static std::unordered_map<int, bool> stepPressedMouseButtons;  // cleared per fixed step
     static glm::vec2 lastMousePos;
     static glm::vec2 mouseDelta;
     static MouseRay mouseRay;

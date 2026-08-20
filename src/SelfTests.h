@@ -5300,6 +5300,48 @@ inline bool testSaveData() {
 // stored cursor ray against an arbitrary plane. The renderer's pixel->ray unprojection
 // is not tested here (it needs a camera + viewport); this pins the Core contract
 // behaviours actually call.
+// --- Input edge LIFETIME across the frame/step boundary (defect #48) ----------
+//
+// The engine has two clocks: rendering runs every frame, gameplay runs on a 60 Hz
+// fixed-step accumulator. A press-edge cleared per FRAME is invisible to a step that
+// did not happen in that frame -- measured at 248 FPS as 20 physical presses producing
+// 4 committed turns, and it gets WORSE on faster hardware.
+//
+// testMouseInput below pins the edge's VALUE. This pins its LIFETIME, which is the
+// property that was broken while every existing test passed.
+// See DevDocs/DESIGN_INPUT_EDGE_SEMANTICS.md.
+inline bool testInputEdgeLifetime() {
+    bool ok = true;
+
+    Input::init();
+    InputActions::clear();
+    constexpr int KeyCommit = 65; // 'A'
+    InputActions::bindAction("Commit", KeyCommit);
+
+    // Frame 1: the press arrives during glfwPollEvents. No fixed step runs this frame --
+    // at 248 FPS against a 60 Hz step, roughly four frames in five run none.
+    Input::beginFrame();
+    Input::setKey(KeyCommit, true);
+
+    // Frame 2 begins. The FRAME-domain edge is gone by design, and must stay gone: the
+    // editor's F-key shortcuts read it once per frame and work correctly today.
+    Input::beginFrame();
+    ok &= !Input::isKeyPressed(KeyCommit);
+
+    // A fixed step now runs. The simulation-domain layer must still see the press --
+    // the player pressed the key exactly once, and no frame boundary may swallow it.
+    ok &= InputActions::isActionPressed("Commit");
+
+    // ...and exactly ONE step may see it. A stalled frame drains several steps in a row
+    // (the accumulator is clamped, not discarded), and one physical press must not become
+    // several actions -- the mirror-image failure of the dropped edge above.
+    Input::endFixedStep();
+    ok &= !InputActions::isActionPressed("Commit");
+    ok &= InputActions::isActionDown("Commit"); // held state is untouched by consumption
+
+    return ok;
+}
+
 inline bool testMouseInput() {
     bool ok = true;
 
@@ -5315,11 +5357,16 @@ inline bool testMouseInput() {
 
     Input::setMouseButton(0, true); // GLFW_MOUSE_BUTTON_LEFT
     ok &= InputActions::isActionDown("Fire");
-    ok &= InputActions::isActionPressed("Fire"); // pressed-this-frame edge
+    ok &= InputActions::isActionPressed("Fire"); // the action layer's edge
 
-    Input::beginFrame();                          // clears the pressed edge, keeps held
+    // beginFrame clears the FRAME-domain edge and keeps held state. It deliberately does
+    // NOT clear the simulation-domain one: InputActions is the gameplay layer and gameplay
+    // runs on the fixed step, so its edge survives until a step consumes it (defect #48,
+    // DevDocs/DESIGN_INPUT_EDGE_SEMANTICS.md). Each domain is asserted through its own API.
+    Input::beginFrame();
     ok &= InputActions::isActionDown("Fire");
-    ok &= !InputActions::isActionPressed("Fire");
+    ok &= !Input::isMouseButtonPressed(0);       // frame domain: cleared, as the editor needs
+    ok &= InputActions::isActionPressed("Fire"); // simulation domain: still pending
 
     Input::setMouseButton(0, false);
     ok &= !InputActions::isActionDown("Fire");
@@ -5584,6 +5631,7 @@ inline std::pair<int, int> run() {
         { "SaveData",         testSaveData },
         { "AssetGateway",     testAssetGateway },
         { "MouseInput",       testMouseInput },
+        { "InputEdgeLifetime", testInputEdgeLifetime },
     };
 
     int passed = 0;

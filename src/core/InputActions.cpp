@@ -13,10 +13,15 @@ bool codeDown(int code) {
                ? Input::isMouseButtonDown(code - InputActions::MouseButtonBase)
                : Input::isKeyDown(code);
 }
+// InputActions is the SIMULATION-domain input layer (its header says "gameplay-facing"),
+// and gameplay runs on the fixed step. So its edge reads the step-domain latch, not the
+// per-frame one: at 248 FPS a frame-domain edge is invisible to ~3 of every 4 presses.
+// Input's frame-domain edge is untouched and stays the engine/editor's clock.
+// Defect #48, DevDocs/DESIGN_INPUT_EDGE_SEMANTICS.md.
 bool codePressed(int code) {
     return code >= InputActions::MouseButtonBase
-               ? Input::isMouseButtonPressed(code - InputActions::MouseButtonBase)
-               : Input::isKeyPressed(code);
+               ? Input::isMouseButtonPressedThisStep(code - InputActions::MouseButtonBase)
+               : Input::isKeyPressedThisStep(code);
 }
 } // namespace
 

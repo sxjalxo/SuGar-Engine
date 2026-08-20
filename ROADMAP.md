@@ -1500,6 +1500,83 @@ is the one that gets to judge the API.
 
 Gate 63 -> **64/64** Debug + Release (+`EntityGenerations`).
 
+**L3 game 3 — the turn-based dungeon crawler: is the engine genre-neutral?**
+*Every dogfood game so far has been real-time. The engine had been shown robust for real-time
+games; it had never been shown genre-neutral. The contract
+(`DevDocs/DESIGN_TURN_BASED_PROBE.md`) was **frozen before the first line of game code**, with
+nine watch areas each carrying an instrument and a numeric promotion threshold, so that "no
+engine change was needed" would be a falsifiable result rather than a description of how hard
+anyone looked.*
+
+**Result: the fixed-step engine survived a fundamentally different time model, and exactly two
+assumptions were exposed.** Six areas answered `SUFFICIENT`, two `PROMOTES`, and one turned out
+to be unmeasurable — which was the sharpest finding of the three.
+
+**#48 press-edges are lossy for every fixed-step consumer.** `Input::beginFrame()` clears
+press-edges once per RENDER frame while behaviours run on the 60 Hz accumulator. At 248 FPS
+that is ~4.1 frames per step, so a press survives only if it lands in a frame that also runs a
+step: **20 physical presses produced 4 commits**, and a repeat run produced 5 — lossy *and*
+nondeterministic. The property is backwards: faster hardware loses more input.
+
+Not a turn-based problem. Six shipped call sites were affected — FlappyBird's only button,
+Platformer's jump, the arena's pause/swing/throw, Minecraft's hotbar. No test caught it because
+`SelfTests.h` asserts the edge's *value* and never its *lifetime across a frame/step boundary*;
+there is no frame and no accumulator in a self-test. The [[property-not-watched]] pattern again:
+a lifetime bug in a function that returns the right answer.
+
+Fixed at the seam (`DevDocs/DESIGN_INPUT_EDGE_SEMANTICS.md`, option D): `InputActions` became
+the declared simulation-domain layer with a latch consumed at fixed-step end; `Input` kept
+frame-domain semantics, so the editor's F-keys are untouched. **Five of six call sites were
+fixed with no game code change at all** — the function now means what every caller already
+assumed. Minecraft's eight ordinary sites were migrated; its two *parametric* ones
+(`GLFW_KEY_1 + slot`) stay on raw `Input` and are recorded as an `InputActions` expressiveness
+gap rather than answered with eighteen invented bindings. Verified by parity, not by a smoke
+test: an inventory toggle pressed 4 times ends closed and 3 times ends open, which zero
+registered presses would not produce.
+
+**#49 idle physics on a world that cannot move** (designed, not implemented —
+`DevDocs/DESIGN_STATIC_PHYSICS_COST.md`). 186 static box colliders, no rigid bodies at all,
+cost **2.975 ms/frame** — 17.8 % of the step budget against a 10 % threshold. `PhysicsWorld::step`
+rebuilds the world-shape array and the uniform grid from scratch every step and narrowphases
+static-vs-static pairs that can never resolve. Distinct from **#41**, which was about pair
+*count*; #49 is about paying at all when nothing can have changed. The information needed to
+fix it already exists — a collider with no dynamic body cannot have moved.
+
+**The unmeasurable one, and why it matters most.** The snapshot watch area asked for a
+capture:turn ratio. There were no captures: **4.104 ms at 91 entities and 12.507 ms at 348,
+against a 4 ms budget**, so the budget admits roughly 90 entities — smaller than one furnished
+room. The contract assumed 200–400 would fit. Invoking the freeze clause's single permitted
+amendment (an instrument genuinely incapable of measuring what it claimed), the result is
+recorded as unmeasured, with what *was* measured stated separately: 20.4 steps per turn at
+machine speed, ~115 at a human's input cadence, unbounded while a player thinks — so per-step
+capture would record 20–115+ identical snapshots per turn, on inference rather than
+observation. **Time travel is now off in all three L3 games.** SuGar's headline debuggability
+feature is unavailable in every real game it has.
+
+*Answered `SUFFICIENT`, with numbers:* ordered inventory as `bag0..bagN` (touched once per turn,
+~10 lines, no correctness issue); animation across the commit→complete gap (the engine's
+one-shot contract expressed it, 6-line behaviour picks the next clip, no game-side state
+machine); `NavAgent` unused (characterization — grid movement is a different representation,
+not a missing capability); audio one-shot per committed action (`oneShots == commits == turns`
+over ~1 400 steps); lighting at 17 visible point lights against 7 slots (30 churn events but
+per-turn brightness deltas max 8.1 and monotone — **nearest-N churns hardest where it matters
+least**, at the selection boundary); runtime UI at 0.439 ms/frame for 4 labels (6.5 % of frame,
+under threshold, but per-frame-per-label rather than per-model-change, so the figure is
+recorded for a game with thirty).
+
+*`Registry::isAlive()` stopped being an unused seam.* A monster holds a target handle across
+turns and a projectile holds an owner handle across the steps it flies. The design's named case
+was forced deliberately — a thrower destroyed mid-flight — and produced `orphanImpacts=1` with
+`ownerAlive=0`. Before generational ids that handle would have named whoever inherited the slot.
+
+*Determinism:* byte-identical replay logs at **different run durations**, converged by a
+terminal marker. The byte-compare immediately earned itself by finding a livelock nothing else
+had — autoplay indexed its script by `turn`, and a wall bump deliberately does not advance the
+turn, so a scripted move into stone retried forever.
+
+Gate 64 -> **65/65** Debug + Release (+`InputEdgeLifetime`). Game report:
+`E:\Sugar Engine - Games\Level 3\DungeonCrawler\Report.md`.
+
 ---
 
 ## Phase detail — M3 (Phases 16–21)
