@@ -1,0 +1,37 @@
+# CodeQL scope for SuGar Engine.
+#
+# The repository is ~4 280 vendored files under external/ against ~166 engine files under
+# src/. Scanning the vendored tree produces alerts SuGar cannot act on: patching a vendored
+# library means maintaining a fork of it, which contradicts Rule 4 (a library supports a
+# system, it never becomes the system) and SECURITY.md, which says a vulnerability in a
+# bundled dependency is reported upstream first — that is where the fix belongs and where
+# every other project consuming it will get the fix.
+#
+# Much of what was flagged is not even in the build: doctest.h is RmlUi's *test* framework
+# (external/RmlUi/Tests/Dependencies/), test_bbox.c is a FreeType tool. Nothing in SuGar
+# compiles, links or ships them, so an alert there describes no reachable behaviour of this
+# engine.
+#
+# Vendored code is therefore excluded from scanning, deliberately and on the record.
+# Keeping it in scope does not make the engine safer; it buries the alerts that would.
+#
+# paths/paths-ignore are honoured for C/C++ when the analysis runs with `build-mode: none`,
+# which is what .github/workflows/codeql.yml pins.
+
+name: "SuGar Engine CodeQL config"
+
+paths:
+  - src
+
+paths-ignore:
+  - external
+  - build
+  - assets
+  - shaders
+
+# Default queries plus the security-and-quality suite. The engine's real attack surface is
+# its deserializers — scene.json, glTF, cooked .sgc, package manifests, SaveData (see
+# SECURITY.md) — so the extra taint and resource-lifetime queries are worth the noise on a
+# 166-file tree.
+queries:
+  - uses: security-and-quality

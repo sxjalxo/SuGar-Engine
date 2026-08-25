@@ -123,6 +123,28 @@ of them, **report it upstream first** — that is where the fix belongs and wher
 projects will get it. Then open an issue here, or tell us privately if the vendored copy
 is exploitable through SuGar specifically, so the copy can be updated.
 
+SuGar does not carry patches to vendored source. Rule 4 keeps a library confined to one
+layer rather than absorbed into the engine, and a local patch turns a pinned dependency
+into a fork that has to be re-applied and re-argued at every update. The exception is a
+vulnerability that is reachable through SuGar and that upstream will not fix — that is a
+dependency decision (update, replace, or drop it), taken in the open, not a silent edit to
+someone else's file.
+
+### Static analysis scope
+
+CodeQL runs on `src/` only. `external/` is excluded on purpose — see
+[`.github/codeql/codeql-config.yml`](.github/codeql/codeql-config.yml) for the full
+reasoning. In short: the repository is ~4 280 vendored files against ~166 engine files, a
+large share of what gets flagged there is not even in the build (RmlUi's `doctest` test
+framework, FreeType's `tools/`), and an alert nothing compiles describes no reachable
+behaviour of this engine. Keeping the vendored tree in scope does not make the engine
+safer; it buries the alerts that would.
+
+An alert in `src/` is treated as a normal finding: triaged, fixed or dismissed with a
+written reason. Automated-scanner output is a lead, not a verdict — a report that quotes an
+alert without a reachable path through one of the inputs in the trust-boundary table above
+will be asked for that path first.
+
 ---
 
 ## Hardening notes for people shipping a game

@@ -1,0 +1,56 @@
+# CodeQL, scoped to code SuGar actually owns.
+#
+# This is CodeQL *advanced* setup. It exists because default setup cannot restrict which
+# paths are analysed, and on this repository that is the whole problem: ~4 280 of ~4 450
+# tracked files are vendored dependencies under external/. Scope lives in
+# .github/codeql/codeql-config.yml, next to the reasoning for it.
+#
+# BEFORE THIS RUNS: CodeQL default setup must be turned off, or GitHub refuses the advanced
+# workflow. Settings -> Code security -> Code scanning -> CodeQL analysis -> Disable, then
+# push this file. Existing alerts under external/ can then be dismissed in bulk as
+# "Won't fix - used in tests / vendored dependency"; they do not reappear once the path is
+# out of scope.
+#
+# build-mode: none analyses C/C++ without compiling. It is what makes paths-ignore work for
+# a compiled language, and it also means this job needs neither the Vulkan SDK nor a
+# 90-minute build. Correctness is gated separately by validate.yml (SUGAR_VALIDATE).
+
+name: codeql
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    # Weekly, so a newly published query rule surfaces without waiting for a push.
+    - cron: "27 4 * * 1"
+  workflow_dispatch:
+
+concurrency:
+  group: codeql-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  analyze:
+    name: Analyze (c-cpp)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      security-events: write
+      contents: read
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v3
+        with:
+          languages: c-cpp
+          build-mode: none
+          config-file: ./.github/codeql/codeql-config.yml
+
+      - name: Analyze
+        uses: github/codeql-action/analyze@v3
+        with:
+          category: "/language:c-cpp"
