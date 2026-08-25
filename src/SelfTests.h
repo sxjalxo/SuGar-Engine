@@ -387,6 +387,81 @@ inline bool testPhysics() {
 
 // --- Physics broadphase: the uniform grid finds exactly the overlapping pairs
 // (no spurious, no missed) and does so deterministically (Phase 15) -----------
+// --- Physics does work proportional to what MOVED, not to what exists (defect #49).
+//
+// Measured on the turn-based crawler: 186 static colliders and zero rigid bodies cost
+// 2.975 ms/frame, because PhysicsWorld::step rebuilds the world-shape array and the
+// uniform grid from scratch every step and narrowphases pairs whose answer cannot have
+// changed. testPhysicsBroadphase below pins the RESULT of a step; this pins the WORK.
+//
+// Deliberately NOT a timing test: it asserts the rebuild happened once and then stopped,
+// which is the property, rather than a millisecond figure that varies by machine.
+// See DevDocs/DESIGN_STATIC_PHYSICS_COST.md.
+inline bool testPhysicsStaticRebuild() {
+    auto addStatic = [](Registry& reg, float x, float z) {
+        const Entity e = reg.createEntity();
+        Transform t;
+        t.position = glm::vec3(x, 0.0f, z);
+        reg.transforms.add(e, { t });
+        ColliderComponent collider{};
+        collider.type = ColliderType::Box;
+        collider.halfExtents = glm::vec3(0.5f);
+        reg.colliders.add(e, collider);
+        return e;
+    };
+
+    Registry reg;
+    Entity first = INVALID_ENTITY;
+    for (int i = 0; i < 64; ++i) {
+        const Entity e = addStatic(reg, static_cast<float>(i % 8) * 4.0f,
+                                        static_cast<float>(i / 8) * 4.0f);
+        if (first == INVALID_ENTITY) {
+            first = e;
+        }
+    }
+
+    PhysicsWorld world;
+    bool ok = true;
+
+    world.step(reg, 1.0f / 60.0f);
+    ok &= world.broadphaseRebuildCount() == 1; // first step must build
+
+    world.step(reg, 1.0f / 60.0f);
+    world.step(reg, 1.0f / 60.0f);
+    ok &= world.broadphaseRebuildCount() == 1; // nothing moved: nothing to rebuild
+
+    // A transform written by gameplay is the only way a collider can move when there is
+    // no rigid body, and it must be noticed -- a missed invalidation is a collider that
+    // silently stops colliding, which is the failure mode this design most feared.
+    reg.transforms.get(first).transform.position.x += 5.0f;
+    world.step(reg, 1.0f / 60.0f);
+    ok &= world.broadphaseRebuildCount() == 2; // exactly one rebuild for one change
+
+    world.step(reg, 1.0f / 60.0f);
+    ok &= world.broadphaseRebuildCount() == 2; // and then quiet again
+
+    // The dangerous half. A cache that never invalidated would satisfy every assertion
+    // above -- rebuild counts would simply stay low. What it could NOT do is notice a
+    // static sliding into another one, so the events themselves are pinned: move `first`
+    // onto its neighbour's cell and a contact must appear.
+    const Entity neighbour = addStatic(reg, 400.0f, 400.0f);
+    world.step(reg, 1.0f / 60.0f);
+    ok &= world.getCollisionEvents().empty(); // far away, nothing touching
+
+    reg.transforms.get(first).transform.position = glm::vec3(400.2f, 0.0f, 400.0f);
+    world.step(reg, 1.0f / 60.0f);
+    bool touching = false;
+    for (const CollisionEvent& event : world.getCollisionEvents()) {
+        if ((event.a == first && event.b == neighbour) ||
+            (event.a == neighbour && event.b == first)) {
+            touching = true;
+        }
+    }
+    ok &= touching; // a stale cache reports the old, empty answer here
+
+    return ok;
+}
+
 inline bool testPhysicsBroadphase() {
     // A helper to drop a static unit box (spans center +/- 0.5 on each axis).
     auto addBox = [](Registry& reg, float x) {
@@ -5584,6 +5659,7 @@ inline std::pair<int, int> run() {
         { "SnapshotStorage",  testSnapshotStorage },
         { "Physics",          testPhysics },
         { "PhysicsBroadphase", testPhysicsBroadphase },
+        { "PhysicsStaticRebuild", testPhysicsStaticRebuild },
         { "ColliderFilter",   testColliderFilter },
         { "Raycast",          testRaycast },
         { "ScriptSystem",     testScriptSystem },

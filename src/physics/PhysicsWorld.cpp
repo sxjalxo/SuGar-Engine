@@ -464,11 +464,28 @@ void PhysicsWorld::step(Registry& registry, float deltaTime) {
         body.accumulatedForce = glm::vec3(0.0f);
     }
 
+    // 1b) Nothing moved? Then nothing can have collided differently.
+    //
+    // Defect #49: a world of static colliders rebuilt the shape array and the uniform
+    // grid, and narrowphased every candidate pair, on every fixed step -- recomputing an
+    // unchanging answer sixty times a second. 186 static boxes with no rigid bodies at
+    // all measured 2.975 ms/frame in the turn-based crawler.
+    //
+    // The check is a VALUE comparison of every collider and its pose against what the
+    // last rebuild saw, not a dirty flag: gameplay may write a transform directly, and a
+    // missed invalidation would be a collider that silently stops colliding. A dynamic
+    // body under gravity moves every step and so invalidates this immediately, which is
+    // the intended behaviour -- the cache only survives when literally nothing changed.
+    const Registry& readOnly = registry;
+    if (!colliderStateChanged(readOnly)) {
+        collisionEvents = cachedEvents;
+        return;
+    }
+
     // 2) Broadphase: gather world shapes, then let the uniform grid produce only
     //    the candidate pairs that share a cell (was O(n^2) all-pairs). Read through
     //    a const view so colliders are recorded as a read, not a write — physics
     //    declares Collider read-only (Phase 13B).
-    const Registry& readOnly = registry;
     std::vector<WorldShape> shapes;
     shapes.reserve(readOnly.colliders.getAll().size());
     for (const auto& [entity, collider] : readOnly.colliders.getAll()) {
@@ -511,4 +528,53 @@ void PhysicsWorld::step(Registry& registry, float deltaTime) {
         event.impulse = impulse;
         collisionEvents.push_back(event);
     }
+
+    rememberColliderState(readOnly);
+}
+
+// True if any collider was added, removed, moved or edited since the last rebuild.
+// Deliberately exact: bitwise-equal floats only, so a transform written by gameplay is
+// caught even when the change is a fraction of a millimetre.
+bool PhysicsWorld::colliderStateChanged(const Registry& registry) {
+    if (!hasCache) {
+        return true;
+    }
+    const auto& colliders = registry.colliders.getAll();
+    if (colliders.size() != cachedBodies.size()) {
+        return true; // one added or removed
+    }
+    for (const auto& [entity, collider] : colliders) {
+        if (!registry.transforms.has(entity)) {
+            return true;
+        }
+        const auto it = cachedBodies.find(entity);
+        if (it == cachedBodies.end()) {
+            return true; // same count, different membership
+        }
+        const CachedBody& was = it->second;
+        const Transform& now = registry.transforms.get(entity).transform;
+        if (now.position != was.transform.position || now.rotation != was.transform.rotation ||
+            now.scale != was.transform.scale) {
+            return true;
+        }
+        if (collider.type != was.collider.type || collider.halfExtents != was.collider.halfExtents ||
+            collider.radius != was.collider.radius || collider.isTrigger != was.collider.isTrigger ||
+            collider.layer != was.collider.layer || collider.mask != was.collider.mask) {
+            return true;
+        }
+    }
+    return false;
+}
+
+void PhysicsWorld::rememberColliderState(const Registry& registry) {
+    cachedBodies.clear();
+    for (const auto& [entity, collider] : registry.colliders.getAll()) {
+        if (!registry.transforms.has(entity)) {
+            continue;
+        }
+        cachedBodies[entity] = CachedBody{ registry.transforms.get(entity).transform, collider };
+    }
+    cachedEvents = collisionEvents;
+    hasCache = true;
+    ++broadphaseRebuilds;
 }

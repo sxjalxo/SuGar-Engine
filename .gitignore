@@ -82,21 +82,31 @@ dist/
 Thumbs.db
 .DS_Store
 
-# Development docs (docs/) stay out of the repo until the engine is complete.
-# They are working records -- architecture decisions mid-flight, toolchain traps,
-# per-phase lessons -- and they change with the code they describe. They ship when
-# the platform does; the design record behind Runtime UI is the first one earmarked
-# for publication (see ROADMAP.md, M3 completion).
+# Development docs (DevDocs/) stay out of the repo until the engine is complete.
+# They are working records -- architecture decisions mid-flight, per-phase lessons --
+# and they change with the code they describe. They ship when the platform does; the
+# design record behind Runtime UI is the first one earmarked for publication (see
+# ROADMAP.md, M3 completion).
 #
-# RULES.md and REQUIREMENTS_AND_SCOPE.md are the exception: they are *contracts*, not
-# working records -- the rules the engine is built to and the scope each dependency is
-# allowed. They were moved into DevDocs/ but must stay tracked, so the directory is
-# excluded by CONTENTS (`/DevDocs/*`) rather than as a directory: git cannot re-include a
-# file whose parent directory is itself excluded, so `/DevDocs/` + `!` would silently do
-# nothing.
+# Three files are the exception and stay tracked:
+#
+#   RULES.md, REQUIREMENTS_AND_SCOPE.md -- *contracts*, not working records: the rules
+#   the engine is built to, and the scope each dependency is allowed. CONTRIBUTING.md
+#   judges every pull request against them, so they have to be readable from a clone.
+#
+#   DEV_ENVIRONMENT.md -- the toolchain traps. Every entry cost real debugging time, and
+#   README.md tells a contributor to read it before debugging a build or GUI issue. An
+#   ignored file behind that instruction is a dead reference, and the traps (configure
+#   twice, no capturable stdout, stale Game.dll) block a first build for everyone, not
+#   only the maintainer. It expires when the tooling changes -- delete entries freely.
+#
+# The directory is excluded by CONTENTS (`/DevDocs/*`) rather than as a directory: git
+# cannot re-include a file whose parent directory is itself excluded, so `/DevDocs/`
+# plus `!` would silently do nothing.
 /DevDocs/*
 !/DevDocs/RULES.md
 !/DevDocs/REQUIREMENTS_AND_SCOPE.md
+!/DevDocs/DEV_ENVIRONMENT.md
 
 # Cooked asset artifacts (Phase 19B). Derived from source assets + .meta settings,
 # reproducible byte-for-byte, and safe to delete wholesale -- so never committed.

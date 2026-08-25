@@ -1574,6 +1574,36 @@ terminal marker. The byte-compare immediately earned itself by finding a liveloc
 had — autoplay indexed its script by `turn`, and a wall bump deliberately does not advance the
 turn, so a scripted move into stone retried forever.
 
+**#49 built the same day** (`DevDocs/DESIGN_STATIC_PHYSICS_COST.md`). **2.975 ms -> 0.258 ms,
+a 91 % reduction**, now 1.5 % of the step budget. The design record had recommended a
+static/dynamic split; writing the failing test proved that wrong, because
+`testPhysicsBroadphase` asserts that two overlapping **static** boxes produce collision events
+— static-vs-static event generation is contractual, and the split would have deleted it
+silently. The implementation instead *does not recompute what cannot have changed*: a world
+whose colliders and poses are bit-for-bit last step's re-emits cached events and returns before
+the shape gather, grid build and narrowphase.
+
+Invalidation is a **value comparison, not a dirty flag** — the design's own stated fear was
+that a missed invalidation is a collider that silently stops colliding, and comparing the real
+data removes that failure mode instead of managing it. The new `PhysicsStaticRebuild` test
+pins *work proportional to change*: 64 statics and zero bodies rebuild once across three steps,
+one hand-moved collider forces exactly one more, then quiet. It was **proven able to fail** —
+with invalidation deliberately disabled it reports FAIL while `PhysicsBroadphase` still passes.
+Determinism: the crawler's replay log came back **byte-identical to the pre-fix hash**, so the
+change altered simulation output by zero bytes. Gate 65 -> **66/66**.
+
+**Two HUD defects, both game-side, both cross-game** (2026-08-20, reported after the crawler
+shipped and recorded in `DevDocs/RUNTIME_UI_LESSONS.md`). RmlUi's box model is `content-box`, so
+`padding` widens a panel past its slot — the arena's `WAVE`/`KILLS`/`BEST COMBO` and the
+crawler's `TURN`/`HEALTH`/`BAG` each overlapped their neighbours by 14 px, fixed with
+`box-sizing: border-box`. And **world labels are not a separate pass**: the engine writes them
+into a pooled set of spans inside the *game's own* `#worldlabels` container, so paint order is
+ordinary RCSS sibling order and belongs to the game. The arena had that container as its LAST
+child, so enemy nameplates painted over the pause panel, the upgrades panel and `YOU DIED`;
+moved to first child. The voxel game already had it first, which is why it never showed the bug
+— the arena was the outlier, not a missing engine feature. Neither is an engine change, and the
+label pool living in the game's document is precisely what gives a game this control.
+
 Gate 64 -> **65/65** Debug + Release (+`InputEdgeLifetime`). Game report:
 `E:\Sugar Engine - Games\Level 3\DungeonCrawler\Report.md`.
 

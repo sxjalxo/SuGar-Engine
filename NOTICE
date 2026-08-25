@@ -1,0 +1,27 @@
+SuGar Engine
+Copyright 2025-2026 Sujal Garje
+
+This product includes software developed by Sujal Garje and the SuGar Engine
+contributors.
+
+Licensed under the Apache License, Version 2.0 (the "License"); you may not use
+this file except in compliance with the License. You may obtain a copy of the
+License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software distributed
+under the License is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR
+CONDITIONS OF ANY KIND, either express or implied. See the License for the
+specific language governing permissions and limitations under the License.
+
+--------------------------------------------------------------------------------
+
+This product bundles third-party software under separate licenses. Those
+components are vendored under external/ and assets/, each retaining its own
+copyright and license notice. The full list, with license identifiers and the
+path to each license text, is in THIRD_PARTY_NOTICES.md.
+
+This product uses FreeType under the terms of the FreeType License (FTL), not
+the GPLv2 alternative. Portions of this software are copyright (c) 2025 The
+FreeType Project (www.freetype.org). All rights reserved.

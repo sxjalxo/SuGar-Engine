@@ -1,0 +1,45 @@
+# SuGar Engine — editor defaults.
+# There is no .clang-format yet; when in doubt, match the file you are editing.
+# Vendored dependencies under external/ keep their own upstream style.
+
+root = true
+
+[*]
+charset = utf-8
+end_of_line = crlf
+insert_final_newline = true
+trim_trailing_whitespace = true
+indent_style = space
+indent_size = 4
+
+[*.{c,cpp,h,hpp,inl,rc}]
+indent_size = 4
+max_line_length = 100
+
+[*.{vert,frag,glsl,comp}]
+indent_size = 4
+
+[*.{json,yml,yaml,rml,rcss}]
+indent_size = 2
+
+[*.md]
+indent_size = 2
+# Markdown uses two trailing spaces for a hard line break.
+trim_trailing_whitespace = false
+
+[*.{cmake,txt}]
+indent_size = 4
+
+[CMakeLists.txt]
+indent_size = 4
+
+[*.{ps1,psm1}]
+indent_size = 4
+
+[*.py]
+indent_size = 4
+
+[external/**]
+# Not ours — do not reformat.
+trim_trailing_whitespace = false
+insert_final_newline = false

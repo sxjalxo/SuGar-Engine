@@ -1,0 +1,106 @@
+name: Bug report
+description: Something in the engine behaves incorrectly, crashes, or fails its own gate.
+title: "[bug] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Before filing, three checks resolve most reports — see
+        [Toolchain traps](https://github.com/sxjalxo/SuGar-Engine/blob/main/CONTRIBUTING.md#toolchain-traps-that-cost-real-time):
+
+        1. **Configure twice.** A fresh CMake configure sometimes fails on the vendored FreeType; running it again succeeds.
+        2. **A crash inside `BehaviorRegistry::registerBehavior` / `::has` at startup is a stale or mismatched `Game.dll`**, not an engine bug. Delete `Game.dll` / `Game_live_*.dll` and rebuild the game for the config you are running.
+        3. **Read `crashes/crash_*.txt`.** Every unhandled exception writes one, with a symbolized stack.
+
+        **Do not report security vulnerabilities here** — see [SECURITY.md](https://github.com/sxjalxo/SuGar-Engine/blob/main/SECURITY.md).
+
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you did, what happened, and what you expected instead.
+      placeholder: |
+        Loaded a scene with a directional light pointing straight down, entered Play, and
+        the shadow map went black. Expected shadows.
+    validations:
+      required: true
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: Reproduction
+      description: |
+        Smallest thing that shows it. Best to worst: a failing self-test, a minimal
+        `scene.json` or asset, a scripted repro, exact click-by-click steps.
+      placeholder: |
+        1. ...
+        2. ...
+        3. ...
+    validations:
+      required: true
+
+  - type: dropdown
+    id: config
+    attributes:
+      label: Build configuration
+      options:
+        - Debug
+        - Release
+        - Both
+        - A packaged standalone (SUGAR_PACKAGE)
+    validations:
+      required: true
+
+  - type: input
+    id: commit
+    attributes:
+      label: Commit
+      description: "`git rev-parse --short HEAD`, or the commit line from a crash report."
+      placeholder: ce55d13
+    validations:
+      required: true
+
+  - type: textarea
+    id: gate
+    attributes:
+      label: Gate result
+      description: |
+        Output of `SUGAR_VALIDATE=1` (headless, no GPU needed). A failing gate is the
+        strongest possible bug report.
+      render: text
+      placeholder: "=== 66/66 checks passed, 0 failure(s) ==="
+    validations:
+      required: false
+
+  - type: textarea
+    id: crash
+    attributes:
+      label: Crash report
+      description: Paste `crashes/crash_*.txt` if the engine crashed, or attach the `.dmp`.
+      render: text
+    validations:
+      required: false
+
+  - type: textarea
+    id: env
+    attributes:
+      label: Environment
+      description: OS, GPU + driver, Vulkan SDK version, Visual Studio version. A crash report already contains most of this.
+      placeholder: |
+        Windows 11 26200 / RTX 4060, driver 566.xx / Vulkan SDK 1.3.290 / VS 2022 17.11
+    validations:
+      required: false
+
+  - type: textarea
+    id: knobs
+    attributes:
+      label: Diagnostics already tried
+      description: |
+        `SUGAR_FPSLOG` (frame + live resource counters, to stderr), `SUGAR_PHYSDBG`
+        (broadphase cell/bucket/pair counts), `SUGAR_STRICT` (Debug: fail-fast on
+        undeclared component access), `SUGAR_SELFTEST`, `SUGAR_STRESS`. Note the GUI build
+        produces no capturable stdout — these go to stderr or a file.
+      render: text
+    validations:
+      required: false

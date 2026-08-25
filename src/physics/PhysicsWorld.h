@@ -1,9 +1,13 @@
 #pragma once
 
+#include <unordered_map>
 #include <vector>
 #include <glm/vec3.hpp>
 
+#include "ecs/Entity.h"
 #include "physics/CollisionEvent.h"
+#include "physics/PhysicsComponents.h"
+#include "scene/Transform.h"
 
 class Registry;
 
@@ -28,7 +32,32 @@ public:
     // (DevDocs/DESIGN_BROADPHASE_SCALE.md).
     size_t lastBroadphaseCandidateCount() const { return broadphaseCandidateCount; }
 
+    // How many times the broadphase has been rebuilt since this world was created.
+    // Diagnostic in the same spirit as the candidate count: a step that recomputes an
+    // unchanging answer is invisible to a correctness test, because it produces the right
+    // answer every time. The property has to be measured (defect #49).
+    size_t broadphaseRebuildCount() const { return broadphaseRebuilds; }
+
 private:
+    // What the last rebuild saw. A step whose colliders and their poses are bit-for-bit
+    // what they were last step cannot produce a different answer, so it re-emits the
+    // cached events instead of recomputing them (defect #49).
+    //
+    // Compared by VALUE rather than trusted from a dirty flag: gameplay may write a
+    // transform directly at any time, and a missed invalidation is a collider that
+    // silently stops colliding -- the one failure mode the design record singled out.
+    struct CachedBody {
+        Transform transform;
+        ColliderComponent collider;
+    };
+
+    bool colliderStateChanged(const Registry& registry);
+    void rememberColliderState(const Registry& registry);
+
     std::vector<CollisionEvent> collisionEvents;
+    std::unordered_map<Entity, CachedBody> cachedBodies;
+    std::vector<CollisionEvent> cachedEvents;
+    bool hasCache = false;
     size_t broadphaseCandidateCount = 0;
+    size_t broadphaseRebuilds = 0;
 };

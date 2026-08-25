@@ -1,0 +1,72 @@
+name: Capability request
+description: A real project needed something the engine could not do.
+title: "[capability] "
+labels: ["capability"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        SuGar is developed **evidence-first**. Since M4, engine work is what real games
+        force — not what an engine "should have". Every seam added since M4 exists because
+        a game could not be finished without it.
+
+        So this template asks about your *project*, not about the feature. A request that
+        names no project is a wish, and will be handled as one — see
+        [What SuGar accepts](https://github.com/sxjalxo/SuGar-Engine/blob/main/CONTRIBUTING.md#what-sugar-accepts).
+
+        That is not a judgement on the idea. Rule 8 counts deleting complexity as
+        progress, so the default answer to an unforced feature is "not yet".
+
+  - type: textarea
+    id: project
+    attributes:
+      label: What are you building
+      description: The game or tool, and roughly what it does. A link if it is public.
+    validations:
+      required: true
+
+  - type: textarea
+    id: blocked
+    attributes:
+      label: What could you not do
+      description: The specific point where the engine stopped you. Be concrete about the mechanic, not the feature name.
+      placeholder: |
+        Mobs needed per-entity state (health, aggro target, spawn tick) that survives a
+        snapshot restore. Components are fixed at compile time in the engine, and the game
+        module cannot add one.
+    validations:
+      required: true
+
+  - type: textarea
+    id: workaround
+    attributes:
+      label: What did you do instead
+      description: |
+        The workaround, and what it cost — performance, correctness, determinism, or just
+        the hours. This is usually the most persuasive part of the request.
+    validations:
+      required: true
+
+  - type: textarea
+    id: seam
+    attributes:
+      label: Where do you think the seam belongs (Rule 22)
+      description: |
+        Optional but valuable. What is the general category this is one case of, and where
+        would the second case force a change? If you looked at how another engine models
+        the same problem, cite which engine and which of its **docs** — Rule 23, docs only,
+        and never Nu Game Engine source.
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checks
+      options:
+        - label: I read [RULES.md](https://github.com/sxjalxo/SuGar-Engine/blob/main/DevDocs/RULES.md) and this does not ask the engine to replace a hand-rolled system with a library (Rule 3), or to contain project-specific gameplay (Rule 16).
+          required: true
+        - label: This is something a real project needed, not a feature-parity item from another engine's list.
+          required: true
+        - label: I am willing to help implement it (optional — say so either way).
+          required: false

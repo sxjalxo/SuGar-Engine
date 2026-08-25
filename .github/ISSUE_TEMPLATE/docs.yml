@@ -1,0 +1,41 @@
+name: Documentation problem
+description: Something in the docs is wrong, stale, missing, or misleading.
+title: "[docs] "
+labels: ["documentation"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Rule 19 makes documentation part of the feature, so wrong docs are a real defect
+        and these get fixed quickly. Small corrections are very welcome as a direct PR
+        instead of an issue.
+
+  - type: input
+    id: where
+    attributes:
+      label: Which document
+      description: File and section, or a heading anchor.
+      placeholder: README.md → "Build & Run", or DevDocs/RULES.md Rule 21b
+    validations:
+      required: true
+
+  - type: dropdown
+    id: kind
+    attributes:
+      label: Kind of problem
+      options:
+        - Wrong — states something that is not true
+        - Stale — was true, no longer is
+        - Missing — a step or concept is absent
+        - Broken link or path
+        - Confusing — technically correct, reads wrong
+    validations:
+      required: true
+
+  - type: textarea
+    id: detail
+    attributes:
+      label: What it says vs what is true
+      description: Quote the passage, then say what actually happens.
+    validations:
+      required: true

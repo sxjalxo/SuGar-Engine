@@ -1,0 +1,86 @@
+# SuGar Engine correctness gate.
+#
+# SUGAR_VALIDATE runs every self-test and stress test headlessly — no window, no GPU —
+# and exits nonzero on any failure, which is exactly what a CI runner can do. Both
+# configurations are gated because the two disagree in ways that matter: Debug compiles
+# in component-access tracking (Rule 13) that Release compiles out entirely, and Release
+# is where timings are honest.
+#
+# NOTE: this workflow has not yet been observed green on a GitHub runner. The build is
+# large (RmlUi + FreeType + GLFW are all built from vendored source) and the Vulkan SDK
+# is installed by a third-party action. Treat the first run as the thing that validates
+# the workflow, and adjust the SDK action or the timeout rather than assuming an engine
+# regression.
+
+name: validate
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: validate-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  gate:
+    name: SUGAR_VALIDATE (${{ matrix.config }})
+    runs-on: windows-latest
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        config: [Debug, Release]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # glslc comes from the SDK: CMakeLists compiles shaders/*.vert|frag to SPIR-V as
+      # part of the default target.
+      - name: Install Vulkan SDK
+        uses: jakoch/install-vulkan-sdk-action@v1
+        with:
+          install_runtime: true
+          cache: true
+          stripdown: true
+
+      # DevDocs/DEV_ENVIRONMENT.md #1: a fresh configure occasionally fails resolving the
+      # vendored FreeType dependency and succeeds on an immediate second run. Retrying
+      # once here is the documented workaround, not a mask for a flaky build.
+      - name: Configure (retry once — known FreeType ordering issue)
+        shell: pwsh
+        run: |
+          cmake -S . -B build
+          if ($LASTEXITCODE -ne 0) {
+            Write-Host "::warning::First configure failed; retrying (known vendored-FreeType ordering issue)"
+            cmake -S . -B build
+          }
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+
+      - name: Build
+        run: cmake --build build --config ${{ matrix.config }} --target SuGarEngine
+
+      # Run from the repository root so assets and shaders resolve.
+      - name: Gate
+        shell: pwsh
+        env:
+          SUGAR_VALIDATE: "1"
+        run: |
+          & "build\${{ matrix.config }}\SuGarEngine.exe"
+          if ($LASTEXITCODE -ne 0) {
+            Write-Host "::error::SUGAR_VALIDATE failed in ${{ matrix.config }} (exit $LASTEXITCODE)"
+            exit $LASTEXITCODE
+          }
+
+      # A crash writes crashes/crash_*.txt with the commit, machine, scene and a
+      # symbolized stack. Far more useful than the log when the gate dies mid-run.
+      - name: Upload crash reports
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: crashes-${{ matrix.config }}
+          path: crashes/
+          if-no-files-found: ignore
