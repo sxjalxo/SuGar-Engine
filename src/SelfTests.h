@@ -64,6 +64,7 @@
 #include "rendering/DeviceMemoryPool.h"
 #include "physics/PhysicsQuery.h"
 #include "scene/ScriptSystem.h"
+#include "core/SnapshotBudget.h"
 #include "core/SnapshotCapturePolicy.h"
 #include "audio/AudioClip.h"
 #include "audio/AudioEngine.h"
@@ -518,6 +519,23 @@ inline bool testPhysicsBroadphase() {
 
 // --- Snapshot capture policy: budget-gate + packaged disable (#44/#45 scaling). The
 // ring/format are untouched; this only decides WHEN to capture. Headless -----------
+inline bool testSnapshotBudgetOverride() {
+    bool ok = true;
+
+    // Parsing is separated from getenv so this test never mutates the process
+    // environment -- a self-test that sets env vars leaks into every test after it.
+    ok &= snapshotBudgetFromEnv(nullptr, 4.0) == 4.0;      // unset -> fallback
+    ok &= snapshotBudgetFromEnv("", 4.0) == 4.0;           // empty -> fallback
+    ok &= snapshotBudgetFromEnv("12.5", 4.0) == 12.5;      // plain value parses
+    ok &= snapshotBudgetFromEnv("  8 ", 4.0) == 8.0;       // surrounding space tolerated
+    ok &= snapshotBudgetFromEnv("garbage", 4.0) == 4.0;    // non-numeric -> fallback
+    ok &= snapshotBudgetFromEnv("0", 4.0) == 4.0;          // zero rejected -> fallback
+    ok &= snapshotBudgetFromEnv("-3", 4.0) == 4.0;         // negative rejected -> fallback
+    ok &= snapshotBudgetFromEnv("100000", 4.0) == 100000.0; // the measurement case: no latch
+
+    return ok;
+}
+
 inline bool testSnapshotCapturePolicy() {
     bool ok = true;
 
@@ -5664,6 +5682,7 @@ inline std::pair<int, int> run() {
         { "Raycast",          testRaycast },
         { "ScriptSystem",     testScriptSystem },
         { "SnapshotPolicy",   testSnapshotCapturePolicy },
+        { "SnapshotBudget",   testSnapshotBudgetOverride },
         { "ContactPoint",     testContactPoint },
         { "DestroyEntityTree", testDestroyEntityTree },
         { "BuiltinCubeMesh",  testBuiltinCubeMesh },
