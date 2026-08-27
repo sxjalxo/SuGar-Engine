@@ -188,6 +188,9 @@ Other harnesses, when you want just one:
 | `SUGAR_BENCH=1` | profiler over a representative scene (`SUGAR_BENCH_FORMAT=csv\|json`) |
 | `SUGAR_STRICT=1` | Debug only: the first undeclared component access throws and exits nonzero |
 | `SUGAR_COOK=1` / `SUGAR_PACKAGE=1` | headless asset cook / standalone export |
+| `SUGAR_SNAPDBG=1` | per-capture time-travel snapshot phase breakdown to stderr |
+| `SUGAR_SNAP_BUDGET=<ms>` | overrides `SnapshotCapturePolicy`'s 4 ms capture budget, for measurement runs |
+| `SUGAR_SNAP_CORPUS=<path>` | dumps snapshot bytes to disk each capture — **never combine with a timing run** |
 
 Run benchmarks in **Release** or the numbers are fiction.
 

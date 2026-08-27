@@ -262,6 +262,27 @@ game module.
 **Both times the crash reporter identified the frame immediately** — `crashes/crash_*.txt`
 carries the stack, the config, and the commit. Read it before debugging anything else.
 
+## 10. Comparing Debug against Release on a real game costs two rebuilds, not zero
+
+§8 already covers the mechanism: Debug and Release both emit `<gameDir>/Game.dll`, so MSBuild
+can leave the wrong config's DLL on disk for the other config's engine to load. §8's framing
+is "build the config you're about to run last." This entry is the specific consequence when
+the point of the run is a **Debug-vs-Release comparison**, e.g. measuring how much slower a
+real game is in Debug: there is no single "last" build, because *both* configs must be
+current at the moment their respective run happens. Doing this with `rm -f Game.dll
+Game_live_*.dll && cmake --build <gameBuildDir> --config <Config>` once per side, immediately
+before that side's run, is not optional — skipping the second rebuild silently reuses the
+first config's DLL and either crashes at startup (`BehaviorRegistry::registerBehavior` /
+`std::hash<std::string>`, §8's symptom) or, worse, runs and produces numbers for the wrong
+configuration with no error at all.
+
+This cost a failed run during the snapshot capture-cost investigation
+(`DESIGN_SNAPSHOT_CAPTURE_COST.md`): a Debug engine run against a Release-built crawler
+`Game.dll` crashed at startup inside `std::hash<std::string>`
+(`crashes/crash_20260827_003106.txt`), diagnosed as exactly this collision, and resolved by
+rebuilding the module Debug, running, then rebuilding it Release again before the next run.
+**Budget two module rebuilds for every Debug-vs-Release comparison on a real game, not one.**
+
 ## Env knobs, current list
 
 Runtime, engine:
@@ -273,6 +294,9 @@ Runtime, engine:
 | `SUGAR_PHYSDBG=1` | broadphase shape count, cell size, bucket count, oversized count, pair count |
 | `SUGAR_PACKAGE=1` | headless standalone export to `<gameDir>/dist`; exits non-zero if anything fails to ship |
 | `SUGAR_VALIDATE` / `SUGAR_SELFTEST` / `SUGAR_STRESS` / `SUGAR_BENCH` / `SUGAR_UITEST` / `SUGAR_COOK` | the headless gates |
+| `SUGAR_SNAPDBG=1` | per-capture snapshot phase breakdown to stderr — `total`/`null_sink`/`materialize`/`bytes`/`entities`/`ns_per_byte` (`DESIGN_SNAPSHOT_CAPTURE_COST.md`) |
+| `SUGAR_SNAP_BUDGET=<ms>` | overrides `SnapshotCapturePolicy`'s 4.0 ms budget; use a large value on a measurement run so the one-strike latch never engages and every capture is timed |
+| `SUGAR_SNAP_CORPUS=<path>` | dumps formatted snapshot bytes to disk on every capture, overwriting; **never combine with a timing run** — the dump is inside the timed region and inflates `total` (F14) |
 
 Game-defined (they live in the game's behaviours, not the engine) — the combat arena:
 

@@ -45,6 +45,7 @@
 #include "core/Input.h"
 #include "core/InputActions.h"
 #include "core/SaveData.h"
+#include "core/SnapshotProfile.h"
 #include "core/SnapshotStorage.h"
 #include "ecs/Registry.h"
 #include "ecs/SystemSchedule.h"
@@ -513,6 +514,35 @@ inline bool testPhysicsBroadphase() {
     for (size_t i = 0; i < events.size() && i < events2.size(); ++i) {
         ok &= events[i].a == events2[i].a && events[i].b == events2[i].b;
     }
+
+    return ok;
+}
+
+inline bool testSnapshotSinkBytes() {
+    bool ok = true;
+
+    // The instrument's one real self-check, gated so it cannot silently rot: NullSink
+    // and SceneSerializer::saveToString are independent paths over the same scene, so
+    // their byte counts must agree. If they diverge, the discarding sink is not seeing
+    // everything the writer emits and the measured "formatting" phase is understated.
+    // The phase-sum residual cannot do this job -- it is an algebraic identity
+    // (DESIGN_SNAPSHOT_CAPTURE_COST.md 5.3) and can never fail.
+    Registry reg;
+    std::vector<Light> lights;
+    const Entity e = reg.createEntity();
+    reg.names.add(e, { "SinkProbe" });
+    Transform t;
+    t.position = glm::vec3(1.0f, 2.0f, 3.0f);
+    reg.transforms.add(e, { t });
+    reg.hierarchy.add(e, {});
+
+    const std::string real = SceneSerializer::saveToString(reg, lights);
+    ok &= !real.empty();                       // the scene serialized at all
+
+    NullSink sink;
+    std::ostream out(&sink);
+    SceneSerializer::writeToStream(out, reg, lights);
+    ok &= sink.written() == real.size();       // both paths saw the same bytes
 
     return ok;
 }
@@ -5683,6 +5713,7 @@ inline std::pair<int, int> run() {
         { "ScriptSystem",     testScriptSystem },
         { "SnapshotPolicy",   testSnapshotCapturePolicy },
         { "SnapshotBudget",   testSnapshotBudgetOverride },
+        { "SnapshotSinkBytes", testSnapshotSinkBytes },
         { "ContactPoint",     testContactPoint },
         { "DestroyEntityTree", testDestroyEntityTree },
         { "BuiltinCubeMesh",  testBuiltinCubeMesh },

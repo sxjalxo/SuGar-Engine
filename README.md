@@ -49,7 +49,7 @@ a runtime-mesh upload that was 91 % Vulkan object churn (`vkAllocateMemory` call
 a draw list spending 17 ms a frame drawing 16 000 zero-scaled particles, half of every shadow
 map discarded for as long as the shadow pass had existed.
 
-Correctness gate: **66/66**, Debug and Release.
+Correctness gate: **68/68**, Debug and Release.
 
 ---
 
@@ -130,12 +130,21 @@ nonzero if any fail. Headless: no window, no GPU, so it drops straight into CI.
 
 ```powershell
 $env:SUGAR_VALIDATE = "1"; build\Release\SuGarEngine.exe; $env:SUGAR_VALIDATE = ""
-# ... [validate] === 66/66 checks passed, 0 failure(s) ===
+# ... [validate] === 68/68 checks passed, 0 failure(s) ===
 ```
 
 Individual harnesses (`SUGAR_SELFTEST`, `SUGAR_STRESS`, `SUGAR_UITEST`, `SUGAR_BENCH`,
 `SUGAR_STRICT`, `SUGAR_COOK`, `SUGAR_PACKAGE`) and what each one covers are documented in
 [FEATURES.md](FEATURES.md#verification--tooling).
+
+Snapshot capture-cost measurement (`DevDocs/DESIGN_SNAPSHOT_CAPTURE_COST.md`) adds three
+knobs, off by default and dev-only: `SUGAR_SNAPDBG=1` prints a per-phase capture-cost
+breakdown (`total`/`null_sink`/`materialize`/`bytes`/`entities`/`ns_per_byte`) to stderr on
+every snapshot capture; `SUGAR_SNAP_BUDGET=<ms>` overrides `SnapshotCapturePolicy`'s 4.0 ms
+budget so a measurement run captures every step instead of latching off after the first
+over-budget frame; `SUGAR_SNAP_CORPUS=<path>` additionally dumps the formatted snapshot bytes
+to disk on every capture — **never set together with a timing measurement**, since the dump
+runs inside the timed region and inflates `total`.
 
 ### Controls
 

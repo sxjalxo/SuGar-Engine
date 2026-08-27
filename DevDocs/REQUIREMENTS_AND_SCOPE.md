@@ -993,6 +993,25 @@ editor-only, affordable-by-default affordance without touching the snapshot form
 survivors-like at 1000 entities forced it (full-scene JSON per step was ~160 ms/frame).
 A binary/delta storage backend remains future work, unblocked by this separation.
 
+**Measured 2026-08-27** (`DevDocs/DESIGN_SNAPSHOT_CAPTURE_COST.md`, Phase 1 — measurement
+only, no code change). In **Release**, at the real entity counts of all three L3 games,
+per-step capture is already inside the 4 ms budget on the median: crawler 0.554 ms @ 91 and
+2.302 ms @ 348, Minecraft 2.328 ms @ 295, arena 1.323 ms @ 182 — headroom 1.7x to 7.2x. The
+figures that had previously retired time travel (4.104 / 12.507 ms) are consistent with a
+**Debug** build, not Release. So the *representation* is not what makes the feature
+unavailable.
+
+What does is the policy's **one-strike latch**: `recordCaptureCost` disables capture
+permanently on a single over-budget capture, with no hysteresis and re-arming only on a new
+Play session, while Release still shows a 0.08-0.12 % tail above budget. Scope note for
+whoever changes this: the latch is a **policy** decision and belongs here, in
+`SnapshotCapturePolicy`; it is not a reason to change `ISnapshotStorage`, the snapshot format,
+or the capture rate. Those are separate questions with separate evidence.
+
+Where the cost sits, if it is ever optimized: formatting is 89-92 % of a capture (per-token
+`std::ostream` machinery — defect #26's `to_chars` fix is intact and digit conversion is no
+longer the cost), materialization 7-9 %, storage ~0.1 %, traversal ~0.2 %.
+
 ---
 
 ## Hot Reload

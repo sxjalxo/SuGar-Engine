@@ -329,7 +329,7 @@ and exits nonzero if any fail, so it drops straight into CI:
 
 ```powershell
 $env:SUGAR_VALIDATE = "1"; build\Release\SuGarEngine.exe; $env:SUGAR_VALIDATE = ""
-# ... [validate] === 66/66 checks passed, 0 failure(s) ===
+# ... [validate] === 68/68 checks passed, 0 failure(s) ===
 ```
 
 Benchmarks are intentionally excluded — they're measurements, not pass/fail gates
@@ -406,6 +406,33 @@ $env:SUGAR_STRICT = "1"; build\Debug\SuGarEngine.exe; $env:SUGAR_STRICT = ""
 ```
 
 Release builds compile the tracking out entirely, so this costs nothing to ship.
+
+### Snapshot capture cost
+
+Three knobs instrument the time-travel snapshot path. All are **off by default**, dev-only,
+and documented in full in `DevDocs/DESIGN_SNAPSHOT_CAPTURE_COST.md`.
+
+| Knob | Effect |
+| --- | --- |
+| `SUGAR_SNAPDBG=1` | per-capture phase breakdown to **stderr** — `total`, `null_sink`, `materialize`, `bytes`, `entities`, `ns_per_byte` |
+| `SUGAR_SNAP_BUDGET=<ms>` | overrides `SnapshotCapturePolicy`'s 4 ms budget, so a measurement run captures every step instead of latching off at the first over-budget frame |
+| `SUGAR_SNAP_CORPUS=<path>` | dumps the serialized snapshot bytes to disk on every capture |
+
+`SUGAR_SNAP_CORPUS` writes from inside the region `SUGAR_SNAPDBG` times, so a run with both
+set reports an inflated `total`. **Corpus capture and timing capture are separate runs** — the
+two knobs are independent for exactly that reason.
+
+The phase split is obtained by **differential substitution**, not by timers inside the writer:
+`writeSceneJson` walks the ECS and formats tokens in one pass, and a timer per call would cost
+the same order as the work it measures. `SUGAR_BENCH` reports the same split headlessly
+(`snapshot_traversal`, `snapshot_format`, `snapshot_materialize`, `snapshot_store`) alongside
+`snapshot_sink_bytes_delta`, the instrument's self-check: the discarding sink and the real save
+are independent paths over the same scene, so their byte counts must agree.
+
+Note `snapshot_phase_identity_pct` is exactly that — an **algebraic identity**, not a validity
+check. Two of the four phases are derived by subtraction from the same measurements, so the sum
+equals the total by construction and the figure can never fail. It is retained only because it
+detects arithmetic tampering.
 
 ### Crash reports
 

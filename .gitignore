@@ -71,7 +71,27 @@ save.good
 #   voxel_debug.log  the voxel game's own trace
 #   arena_debug.log  the combat arena's trace + torture counters (SUGAR_ARENA_TORTURE)
 # Engine-side probes print to stderr instead and are not files: SUGAR_FPSLOG (frame +
-# live resource counters), SUGAR_PHYSDBG (broadphase cell/bucket/pair counts).
+# live resource counters), SUGAR_PHYSDBG (broadphase cell/bucket/pair counts) -- but a
+# measurement run REDIRECTS that stderr to a file, so those redirect targets land here as
+# .txt and need ignoring in their own right. The snapshot capture-cost investigation
+# (DevDocs/DESIGN_SNAPSHOT_CAPTURE_COST.md) produced ~20 of them in one session. All are
+# results: reproducible by re-running the harness, never source, and safe to delete.
+#   fpslog_*.txt        SUGAR_FPSLOG redirect (frame + entity/draw counts)
+#   snapdbg_*.txt       SUGAR_SNAPDBG redirect (per-capture snapshot phase breakdown)
+#   sugar_bench_*.txt   SUGAR_BENCH redirect, one per entity count swept
+#   validate_*.txt      SUGAR_VALIDATE redirect (gate output, per config)
+#   steady_fields*.txt  ad-hoc field extraction from a snapdbg log
+fpslog_*.txt
+snapdbg_*.txt
+sugar_bench_*.txt
+validate_*.txt
+steady_fields*.txt
+
+# Subagent-driven-development workspace: per-plan ledger, task briefs, reports and review
+# packages. Scratch coordination state, not project history -- the design record and the
+# commits are what survive. `.superpowers/sdd/` already self-ignores via its own .gitignore;
+# this covers anything that lands elsewhere under the directory.
+/.superpowers/
 
 # Standalone export output for an EXTERNAL game (M4). `SUGAR_PACKAGE=1 SUGAR_GAME=<dir>`
 # writes <dir>/dist, which is outside this repo by policy — but a game configured inside the

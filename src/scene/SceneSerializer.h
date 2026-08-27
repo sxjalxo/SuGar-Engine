@@ -1,5 +1,6 @@
 #pragma once
 
+#include <iosfwd>
 #include <string>
 #include <vector>
 #include "ecs/Entity.h"
@@ -17,6 +18,11 @@ public:
     // registry/lights from such a string.
     static std::string saveToString(const Registry& registry, const std::vector<Light>& lights);
     static bool loadFromString(Registry& registry, std::vector<Light>& lights, const std::string& text);
+
+    // Writes the scene as JSON to any ostream. Exposed so measurement can substitute the
+    // stream sink without touching the writer (DevDocs/DESIGN_SNAPSHOT_CAPTURE_COST.md 5.2).
+    static void writeToStream(std::ostream& output, const Registry& registry,
+                              const std::vector<Light>& lights);
 
     // Every asset key a scene references: mesh, material albedo texture, audio/animation
     // clip, skinned-mesh skin, and prefab. Packaging (Phase 20, DevDocs/DESIGN_PACKAGING.md)

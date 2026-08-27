@@ -15,8 +15,10 @@
 // instrumented directly (see reloadGameModule's "ms swap" log).
 
 #include <chrono>
+#include <cmath>
 #include <cstdint>
 #include <cstdlib>
+#include <cstring>
 #include <ctime>
 #include <fstream>
 #include <iomanip>
@@ -26,6 +28,7 @@
 #include <string>
 #include <vector>
 
+#include "core/SnapshotProfile.h"
 #include "core/SnapshotStorage.h"
 #include "ecs/Registry.h"
 #include "ecs/SystemSchedule.h"
@@ -207,6 +210,159 @@ inline void run() {
         sink += SceneSerializer::saveToString(registry, lights).size();
     });
     add("snapshot_save", saveMs, "ms", trimNum(saveMs) + " ms");
+
+    // Same writer, same scene, into a sink that discards. The difference against
+    // snapshot_save is the ostringstream's buffer growth plus the .str() copy -- the
+    // "materialization" phase. Isolated by substitution because writeSceneJson walks
+    // and formats in one pass and cannot be timed from the inside without distorting
+    // what it measures (DESIGN_SNAPSHOT_CAPTURE_COST.md 5.1).
+    const double nullSinkMs = timeBest(50, [&] {
+        NullSink nullSink;
+        std::ostream out(&nullSink);
+        SceneSerializer::writeToStream(out, registry, lights);
+        sink += nullSink.written();
+    });
+    add("snapshot_null_sink", nullSinkMs, "ms", trimNum(nullSinkMs) + " ms");
+
+    const double materializeMs = saveMs - nullSinkMs;
+    add("snapshot_materialize", materializeMs, "ms",
+        trimNum(materializeMs) + " ms (" +
+            trimNum(saveMs > 0.0 ? materializeMs / saveMs * 100.0 : 0.0) + "% of save)");
+
+    // Traversal alone: the same storages the writer visits, touched in the same order,
+    // writing nothing. This is an APPROXIMATION of writeSceneJson's walk -- it cannot
+    // be exact without duplicating the writer -- and it is a LOWER BOUND on the real
+    // cost: the writer also runs collectOrderedEntities (ordering work) and per-entity
+    // component lookups that this probe skips entirely. Because snapshot_format is
+    // derived by subtraction (nullSinkMs - traversalMs), understating traversal here
+    // silently INFLATES format into an upper bound on the real formatting cost -- and
+    // snapshot_phase_identity_pct below CANNOT catch this, because it is a tautology
+    // (see that check's own comment). This is known, unmeasured slack in the split,
+    // not a bug to fix here.
+    const double traversalMs = timeBest(50, [&] {
+        std::size_t touched = 0;
+        // Every storage the writer visits. Walking a SUBSET understates traversal and
+        // inflates formatting by exactly the difference, so the list is exhaustive on
+        // purpose -- and the residual check below is what proves it stayed exhaustive.
+        const auto walk = [&touched](const auto& storage) {
+            for (const auto& entry : storage.getAll()) {
+                touched += static_cast<std::size_t>(entry.first) + sizeof(entry.second);
+            }
+        };
+        walk(registry.names);
+        walk(registry.transforms);
+        walk(registry.meshes);
+        walk(registry.materials);
+        walk(registry.hierarchy);
+        walk(registry.scripts);
+        walk(registry.rigidBodies);
+        walk(registry.colliders);
+        walk(registry.prefabInstances);
+        walk(registry.audioSources);
+        walk(registry.audioListeners);
+        walk(registry.uiScreens);
+        walk(registry.focus);
+        walk(registry.textInputs);
+        walk(registry.uiLabels);
+        walk(registry.animations);
+        walk(registry.skinnedMeshes);
+        walk(registry.animationStates);
+        walk(registry.animationParameters);
+        walk(registry.navAgents);
+        walk(registry.navMeshSources);
+        walk(registry.navObstacles);
+        walk(registry.cameras);
+        walk(registry.gameData);
+        walk(registry.lights);
+        walk(registry.uiElementStates);
+        walk(registry.worldLabels);
+        sink += touched;
+    });
+    add("snapshot_traversal", traversalMs, "ms", trimNum(traversalMs) + " ms");
+
+    const double formatMs = nullSinkMs - traversalMs;
+    add("snapshot_format", formatMs, "ms",
+        trimNum(formatMs) + " ms (" +
+            trimNum(nullSinkMs > 0.0 ? formatMs / nullSinkMs * 100.0 : 0.0) + "% of null-sink)");
+
+    // NOT a validity check, despite the name it had before this comment was written.
+    // sum = T + (nullSink - T) + (save - nullSink) = save, IDENTICALLY, because format
+    // and materialize are both derived by subtraction from the same three measured
+    // quantities (save, nullSink, traversalMs) that traversalMs itself came from. The
+    // T terms cancel algebraically, so this is 0 by construction regardless of whether
+    // the traversal/format split is correct -- it can only detect arithmetic tampering
+    // with the phases after the fact (see the break-test in the Task 4 fix report),
+    // never a bad split. The one check that CAN fail is snapshot_sink_bytes_delta,
+    // just below.
+    const double phaseSum = traversalMs + formatMs + materializeMs;
+    const double residualPct =
+        saveMs > 0.0 ? std::abs(saveMs - phaseSum) / saveMs * 100.0 : 0.0;
+    add("snapshot_phase_identity_pct", residualPct, "%",
+        trimNum(residualPct) + "% (identity by construction -- NOT a validity check, see F4)");
+
+    // What push() costs on its own. JsonSnapshotStorage takes const std::string& and
+    // does frames.push_back(sceneState) -- a second full copy of the snapshot, after
+    // the one .str() already made. Measured separately so intervention A3 has a number
+    // to beat rather than an assumption.
+    const std::string measuredSnapshot = SceneSerializer::saveToString(registry, lights);
+    const double storeMs = timeBest(50, [&] {
+        JsonSnapshotStorage store(4);
+        store.push(measuredSnapshot);
+        sink += static_cast<uint64_t>(store.count());
+    });
+    add("snapshot_store", storeMs, "ms", trimNum(storeMs) + " ms");
+
+    // Normalization. Without ns/byte, comparing 91 entities against 348 cannot
+    // separate "more entities" from "worse per-entity cost".
+    const double snapshotBytes = static_cast<double>(measuredSnapshot.size());
+    const double saveNsPerByte = snapshotBytes > 0.0 ? saveMs * 1e6 / snapshotBytes : 0.0;
+    add("snapshot_ns_per_byte", saveNsPerByte, "ns", trimNum(saveNsPerByte) + " ns/byte (save)");
+
+    // The floor a text writer could ever reach: copying the finished bytes and nothing
+    // else. Measured here, at this size, on this machine, in this run -- a quoted
+    // memcpy figure from anywhere else would not be a valid comparison.
+    {
+        std::string destination(measuredSnapshot.size(), '\0');
+        const double memcpyMs = timeBest(200, [&] {
+            std::memcpy(destination.data(), measuredSnapshot.data(), measuredSnapshot.size());
+            // Anti-elision: the brief's original guard (sink += first byte only) lets an
+            // optimizer prove the rest of the copy is dead and drop it, since nothing
+            // downstream reads past byte 0. Sampling three points spread across the
+            // buffer -- start, middle, end -- forces the whole range to be materialized.
+            if (!destination.empty()) {
+                sink += static_cast<unsigned char>(destination[0]);
+                sink += static_cast<unsigned char>(destination[destination.size() / 2]);
+                sink += static_cast<unsigned char>(destination[destination.size() - 1]);
+            }
+        });
+        const double memcpyNsPerByte = snapshotBytes > 0.0 ? memcpyMs * 1e6 / snapshotBytes : 0.0;
+        add("snapshot_memcpy_ns_per_byte", memcpyNsPerByte, "ns",
+            trimNum(memcpyNsPerByte) + " ns/byte (memcpy floor)");
+
+        // The exact quantity section 6 branch 3 tests. Reported as a ratio so the
+        // decision does not require arithmetic at read time.
+        const double formatNsPerByte = snapshotBytes > 0.0 ? formatMs * 1e6 / snapshotBytes : 0.0;
+        const double ratio = memcpyNsPerByte > 0.0 ? formatNsPerByte / memcpyNsPerByte : 0.0;
+        add("snapshot_format_vs_memcpy", ratio, "x",
+            trimNum(ratio) + "x memcpy (>=2 authorizes A; <1.5 investigates C)");
+    }
+
+    // The instrument's ONE real self-check. The discarding sink and the real save are
+    // independent paths to the same scene, so their byte counts must agree; if they
+    // diverge, the sink is not seeing everything the writer emits and the formatting
+    // phase is understated. Unlike the phase identity above, this CAN fail.
+    NullSink sinkBytesProbe;
+    {
+        std::ostream sinkBytesOut(&sinkBytesProbe);
+        SceneSerializer::writeToStream(sinkBytesOut, registry, lights);
+    }
+    const std::size_t sinkBytes = sinkBytesProbe.written();
+    const std::size_t realBytes = oneSnapshot.size();
+    const long long sinkBytesDelta =
+        static_cast<long long>(sinkBytes) - static_cast<long long>(realBytes);
+    add("snapshot_sink_bytes_delta", static_cast<double>(sinkBytesDelta), "B",
+        std::to_string(sinkBytes) + " sink vs " + std::to_string(realBytes) + " real" +
+            (sinkBytesDelta == 0 ? " (match)" : "  ** MISMATCH **"));
 
     // The same scene with game data on every entity — the shape M4 L3's particle pool
     // produces (six keys of velocity/lifetime per pooled particle), and the thing that

@@ -1607,6 +1607,58 @@ label pool living in the game's document is precisely what gives a game this con
 Gate 64 -> **65/65** Debug + Release (+`InputEdgeLifetime`). Game report:
 `E:\Sugar Engine - Games\Level 3\DungeonCrawler\Report.md`.
 
+**Phase 1 — snapshot capture cost: measured, not fixed**
+(`DevDocs/DESIGN_SNAPSHOT_CAPTURE_COST.md`, 2026-08-27). *Forced:* the "unmeasurable one"
+above left the snapshot budget's real cost unknown — 4.104 ms @ 91 and 12.507 ms @ 348 carried
+no build-configuration label, and the `SUGAR_BENCH` figure they were checked against
+(1.99 ms @ 500, ≈4 µs/entity) turned out to be stale. *Change:* a differential-substitution
+instrument (traversal / format / materialize / storage, isolated by swapping the destination
+rather than timing inside the hot loop) was built with **zero writer changes**, gated behind
+`SUGAR_SNAPDBG` / `SUGAR_SNAP_BUDGET` / `SUGAR_SNAP_CORPUS`, all off by default.
+
+*Measured, not fixed:* in Release, at real measured entity counts (Crawler 91 / 348, Minecraft
+up to 295, the arena up to 182), median capture cost cleared the 4.0 ms budget in **every**
+game — Crawler-full's median fell to 2.29 ms, nowhere near the 12.507 ms / 3.13× speedup the
+design document had opened with. The original figures turned out to be **consistent with a
+Debug build, not Release**: Debug-vs-Release on the same crawler-small scene measured 3.251 ms
+median against 0.552 ms, a ~5.9× gap that alone accounts for the original numbers without
+invoking representation cost. The bench-vs-real "~8× per-entity gap" this document had flagged
+as unreconciled dissolved the same way — a stale bench figure compared against
+Debug-configuration real-game figures, not a genuine discrepancy; like-for-like Release
+numbers now agree within ~20%.
+
+*What is NOT fixed:* three of the four games (all but Crawler-small) each produced a small
+number of individual captures — 0.02%–0.12% of samples — that exceeded the 4.0 ms budget
+mid-run, unrelated to any first-capture cold-allocator spike (none was observed in any run).
+Under the policy's actual one-strike, no-hysteresis latch, the first such capture in a real
+session (no `SUGAR_SNAP_BUDGET` override) would permanently disable time travel — a defect in
+the *policy* (`SnapshotCapturePolicy::recordCaptureCost`), not the representation, logged and
+left for separate, cheaper, later work; it is not cited to justify any representation change.
+The design document's own decision rule was applied mechanically to the phase-share numbers
+regardless: formatting is 89–92% of `save` at every entity count measured, and its cost is
+681×–874× a plain `memcpy` of the same output size, so intervention **A** (specifically
+stream-formatting overhead — the copies the document originally staged first account for only
+~9%) is *authorized* by that evidence. With the acceptance bar already cleared on the median,
+nothing is *forced*. Rule 8: no unforced work.
+
+Gate 66 -> **68/68** Debug + Release (+`SnapshotBudget`, +`SnapshotSinkBytes` — both validate
+the instrument itself, not simulation behavior; `Serializer` golden test unchanged throughout,
+confirming no emitted byte moved).
+
+*A defect in the instrument, found by the closing review and worth recording because the class
+recurs:* the split's advertised self-check — "the four phases must sum to the measured total
+within 5%" — **was an algebraic identity and could never fail**. Two of the four phases are
+derived by subtraction from the same three measurements, so the sum equals the total by
+construction; it read 0.0000% in every run of every scene. A green self-check that cannot go red
+is worth less than no check, because it is trusted. It was replaced by one that *can* fail and
+was break-tested to prove it (`snapshot_sink_bytes_delta`: the discarding sink's byte count
+against the real save's — two independent paths over the same scene), and that check now runs in
+`SUGAR_VALIDATE` rather than only in the ungated benchmark. The same review found the
+`SUGAR_SNAP_CORPUS` knob nested inside `SUGAR_SNAPDBG`, which made the "never combine corpus
+capture with a timing run" instruction printed in three documents describe a usage that could not
+exist; the knobs are now independent. Rule 9a's discipline — break it and watch it go red — is
+what the original check never received.
+
 ---
 
 ## Phase detail — M3 (Phases 16–21)

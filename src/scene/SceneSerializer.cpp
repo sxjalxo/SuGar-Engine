@@ -2309,6 +2309,15 @@ bool loadSceneFromText(Registry& registry, std::vector<Light>& lights, const std
 }
 } // namespace
 
+// Pure forwarding. The writer, and every byte it emits, are unchanged; the Serializer
+// golden test is the proof. Exists so a measurement run can hand writeSceneJson a
+// different streambuf (DESIGN_SNAPSHOT_CAPTURE_COST.md 5.2) without the anonymous
+// namespace's internal linkage forcing a writer edit.
+void SceneSerializer::writeToStream(std::ostream& output, const Registry& registry,
+                                    const std::vector<Light>& lights) {
+    writeSceneJson(output, registry, lights);
+}
+
 bool SceneSerializer::save(const Registry& registry, const std::vector<Light>& lights, const std::string& path) {
     try {
         std::ofstream output(path);

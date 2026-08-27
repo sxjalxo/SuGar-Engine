@@ -21,6 +21,7 @@
 #include "core/Input.h"
 #include "core/InputActions.h"
 #include "core/SaveData.h"
+#include "core/SnapshotProfile.h"
 #include "rendering/Camera.h"
 #include "rendering/Material.h"
 #include "scene/Behavior.h"
@@ -42,6 +43,7 @@
 #include <set>
 #include <cstdint>
 #include <cstdlib>
+#include <cstdio>
 #include <iterator>
 #include <algorithm>
 #include <chrono>
@@ -901,10 +903,36 @@ void SuGarApp::captureSnapshotBudgeted() {
     if (!snapshotPolicy.enabled()) {
         return; // packaged build, or auto-paused for a too-large scene
     }
+    // Enabled by SUGAR_SNAPDBG. Read once: getenv per capture would itself show up in
+    // the numbers this exists to report.
+    static const bool snapDebug = std::getenv("SUGAR_SNAPDBG") != nullptr;
+
     const auto start = std::chrono::high_resolution_clock::now();
     captureSnapshot();
     const double ms =
         std::chrono::duration<double, std::milli>(std::chrono::high_resolution_clock::now() - start).count();
+
+    if (snapDebug) {
+        // The same differential substitution the benchmark uses, run once per capture
+        // against the live scene. Costs a second serialization pass, so it is only ever
+        // paid when the knob is set -- and a run with the knob set is a measurement run,
+        // not a gameplay run.
+        const auto nullStart = std::chrono::high_resolution_clock::now();
+        NullSink nullSink;
+        std::ostream nullOut(&nullSink);
+        SceneSerializer::writeToStream(nullOut, registry, sceneLights);
+        const double nullMs =
+            std::chrono::duration<double, std::milli>(std::chrono::high_resolution_clock::now() - nullStart).count();
+
+        const std::size_t bytes = nullSink.written();
+        const double materializeMs = ms - nullMs;
+        std::cerr << "[snapdbg] total=" << ms << "ms null_sink=" << nullMs
+                  << "ms materialize=" << materializeMs << "ms bytes=" << bytes
+                  << " entities=" << registry.transforms.getAll().size() // TransformComponent is on every entity
+                  << " ns_per_byte=" << (bytes > 0 ? ms * 1e6 / static_cast<double>(bytes) : 0.0)
+                  << "\n";
+    }
+
     snapshotPolicy.recordCaptureCost(ms);
     if (!snapshotPolicy.enabled()) {
         // Just crossed the budget: drop the partial history so the Timeline shows a
@@ -919,6 +947,55 @@ void SuGarApp::captureSnapshot() {
     if (snapshot.empty()) {
         return;
     }
+
+    // Task 7: fixture-corpus dump. Independent of SUGAR_SNAPDBG (I1) -- corpus capture
+    // and timing capture are two genuinely separate modes, not one nested inside the
+    // other. Nesting this under SUGAR_SNAPDBG made the documented safe usage (dump a
+    // corpus WITHOUT a timing run) impossible to perform. Read once, like the
+    // SUGAR_SNAPDBG static at :908 -- getenv per capture would itself show up in the
+    // numbers this exists to help produce (I4).
+    //
+    // F14 / NEVER COMBINE WITH A TIMING RUN: this write sits inside the region
+    // captureSnapshotBudgeted times, and that time feeds recordCaptureCost(ms) and
+    // every median in DESIGN_SNAPSHOT_CAPTURE_COST.md. A session with SUGAR_SNAP_CORPUS
+    // set reports an inflated `total` and its numbers must never be read for timing
+    // (see README.md, CONTRIBUTING.md, DEV_ENVIRONMENT.md). A corpus-only session
+    // (this knob set, SUGAR_SNAPDBG unset) is unaffected -- nothing then prints or
+    // records ms -- and is now the usage those docs describe.
+    //
+    // Deviation from the brief: the brief specified writing once, on the FIRST capture
+    // this session. Measured behavior showed that is wrong -- play() captures frame 0
+    // synchronously as Play begins (SuGarApp.cpp play()), before the game module's
+    // Behavior::onStart() has run for any entity. For every one of these games,
+    // onStart() is what spawns the populated scene (dungeon geometry, monsters, loot;
+    // voxel terrain; arena fighters), so the true first capture is taken while the
+    // scene is still just its pre-populated Edit-mode contents. Verified directly: with
+    // the once-only gate, DungeonCrawler's small AND full runs both produced a
+    // byte-identical ~2KB fixture (the same near-empty frame 0), not the expected 91-
+    // vs-348-entity scenes. Overwriting on every capture instead means whatever is on
+    // disk when the corpus-capture run is stopped is the last (steady-state, fully
+    // populated) snapshot taken -- this is what the brief's Step 4 verification
+    // (91 vs 348 entities, differing sizes) actually requires.
+    //
+    // Second deviation, also measured rather than assumed: these capture sessions are
+    // windowed GUI builds with no self-exit, stopped by `taskkill /F` from outside. A
+    // direct truncating write (open in ios::binary, which truncates immediately, then
+    // write) left a 0-byte minecraft.snapshot the first time -- the kill landed between
+    // the truncate and the write completing. Writing to a sibling ".tmp" path and only
+    // then replacing the real target with it (remove + rename) keeps that same race
+    // window, but confines it to the .tmp file: the target path only ever holds a
+    // previous, fully-written snapshot or the newest one, never a partial one.
+    static const char* const corpusPath = std::getenv("SUGAR_SNAP_CORPUS");
+    if (corpusPath != nullptr) {
+        const std::string corpusTmpPath = std::string(corpusPath) + ".tmp";
+        {
+            std::ofstream corpusOut(corpusTmpPath, std::ios::binary);
+            corpusOut.write(snapshot.data(), static_cast<std::streamsize>(snapshot.size()));
+        }
+        std::remove(corpusPath);
+        std::rename(corpusTmpPath.c_str(), corpusPath);
+    }
+
     snapshots->push(snapshot);
 
     // Drop bookmarks whose frame has scrolled out of the retained window.
