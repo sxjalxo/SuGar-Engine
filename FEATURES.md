@@ -415,7 +415,7 @@ and documented in full in `DevDocs/DESIGN_SNAPSHOT_CAPTURE_COST.md`.
 | Knob | Effect |
 | --- | --- |
 | `SUGAR_SNAPDBG=1` | per-capture phase breakdown to **stderr** — `total`, `null_sink`, `materialize`, `bytes`, `entities`, `ns_per_byte` |
-| `SUGAR_SNAP_BUDGET=<ms>` | overrides `SnapshotCapturePolicy`'s 4 ms budget, so a measurement run captures every step instead of latching off at the first over-budget frame |
+| `SUGAR_SNAP_BUDGET=<ms>` | overrides `SnapshotCapturePolicy`'s 4 ms budget, so a measurement run captures every step instead of pausing on a sustained over-budget run |
 | `SUGAR_SNAP_CORPUS=<path>` | dumps the serialized snapshot bytes to disk on every capture |
 
 `SUGAR_SNAP_CORPUS` writes from inside the region `SUGAR_SNAPDBG` times, so a run with both

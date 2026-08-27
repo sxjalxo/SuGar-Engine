@@ -295,7 +295,7 @@ Runtime, engine:
 | `SUGAR_PACKAGE=1` | headless standalone export to `<gameDir>/dist`; exits non-zero if anything fails to ship |
 | `SUGAR_VALIDATE` / `SUGAR_SELFTEST` / `SUGAR_STRESS` / `SUGAR_BENCH` / `SUGAR_UITEST` / `SUGAR_COOK` | the headless gates |
 | `SUGAR_SNAPDBG=1` | per-capture snapshot phase breakdown to stderr — `total`/`null_sink`/`materialize`/`bytes`/`entities`/`ns_per_byte` (`DESIGN_SNAPSHOT_CAPTURE_COST.md`) |
-| `SUGAR_SNAP_BUDGET=<ms>` | overrides `SnapshotCapturePolicy`'s 4.0 ms budget; use a large value on a measurement run so the one-strike latch never engages and every capture is timed |
+| `SUGAR_SNAP_BUDGET=<ms>` | overrides `SnapshotCapturePolicy`'s 4.0 ms budget; use a large value on a measurement run so the sustained-overrun cut-off never engages and every capture is timed |
 | `SUGAR_SNAP_CORPUS=<path>` | dumps formatted snapshot bytes to disk on every capture, overwriting; **never combine with a timing run** — the dump is inside the timed region and inflates `total` (F14) |
 
 Game-defined (they live in the game's behaviours, not the engine) — the combat arena:

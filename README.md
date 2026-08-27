@@ -141,8 +141,8 @@ Snapshot capture-cost measurement (`DevDocs/DESIGN_SNAPSHOT_CAPTURE_COST.md`) ad
 knobs, off by default and dev-only: `SUGAR_SNAPDBG=1` prints a per-phase capture-cost
 breakdown (`total`/`null_sink`/`materialize`/`bytes`/`entities`/`ns_per_byte`) to stderr on
 every snapshot capture; `SUGAR_SNAP_BUDGET=<ms>` overrides `SnapshotCapturePolicy`'s 4.0 ms
-budget so a measurement run captures every step instead of latching off after the first
-over-budget frame; `SUGAR_SNAP_CORPUS=<path>` additionally dumps the formatted snapshot bytes
+budget so a measurement run captures every step instead of pausing after a sustained run of
+over-budget frames; `SUGAR_SNAP_CORPUS=<path>` additionally dumps the formatted snapshot bytes
 to disk on every capture — **never set together with a timing measurement**, since the dump
 runs inside the timed region and inflates `total`.
 

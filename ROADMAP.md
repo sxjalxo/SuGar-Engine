@@ -1659,6 +1659,43 @@ capture with a timing run" instruction printed in three documents describe a usa
 exist; the knobs are now independent. Rule 9a's discipline — break it and watch it go red — is
 what the original check never received.
 
+**Phase 2 — candidate D and intervention A2: both built** (2026-08-27, same session). Phase 1's
+verdict was "authorized but not forced"; that is a correct piece of analysis and a poor stopping
+point, and the call was made to build both.
+
+***D — the capture policy no longer dies on noise.*** `SnapshotCapturePolicy` disabled capture
+permanently on the **first** over-budget capture. Release measurements showed why that was the
+real defect: every L3 game clears the 4 ms budget comfortably on the median while still producing
+a **0.08-0.12 % tail** above it, so roughly one capture in a thousand — noise, not cost — was
+switching the engine's headline debugging feature off for an entire session. *Change:* the cut-off
+now requires `kConsecutiveOverBudget` (**8**) *consecutive* over-budget captures, and any
+affordable capture resets the run. A scene that genuinely cannot be snapshotted blows every
+capture and still gives up in ~0.13 s at 60 Hz; an isolated spike can no longer accumulate.
+Mid-session re-arm was deliberately left out — once disabled the engine stops feeding costs in, so
+re-arming would need a probe capture and nothing has asked for one. The self-test that pinned the
+old one-strike contract was rewritten to pin the new one, and break-tested by setting the constant
+back to 1: `SnapshotPolicy` FAIL, gate 67/68.
+
+***A2 — the writer stopped paying for `std::ostream`.*** Formatting was 89-92 % of a capture and
+**681x-874x** a memcpy of the same bytes; after #26 removed digit-conversion cost, what remained
+was per-token sentry construction, virtual `xsputn` dispatch and locale consultation across 68
+call sites. *Change:* a minimal `JsonOut` sink appends straight into a `std::string`, with
+**explicit overloads only and no template fallback** — an unhandled type is a compile error rather
+than a silently different rendering, which is what makes byte-identity checkable. The sink *type*
+changed; **not one of the 68 `output <<` call-site lines changed textually.** Building directly
+into the destination string also removed the `ostringstream` buffer and the `.str()` copy, so
+intervention A1 came free and A3 (~0.14 %) was never worth a stage.
+
+*Verdict: fixed, and the format did not move.* The `Serializer` golden test — byte-exact text for
+an entity carrying every optional component — passes unchanged, which is the proof no emitted byte
+moved; the deterministic crawler scenes diffed against the pre-A2 immutable corpus with only
+live-varying fields differing. Measured at 500 bench entities: `snapshot_save`
+3.83 -> **0.78 ms** (~4.9x), ns/byte 11.6 -> **2.25**, format-vs-memcpy 770x -> **181x**. In-game:
+crawler-small 0.554 -> **0.139 ms**, crawler-full 2.302 -> **0.533 ms** — the 348-entity case the
+design document opened by saying needed a 3.13x speedup now sits **7.5x inside** the budget.
+Minecraft and the arena could not be byte-compared (streaming and wave nondeterminism against a
+wall-clock kill) and are recorded as unverified rather than passed. Gate **68/68** Debug + Release.
+
 ---
 
 ## Phase detail — M3 (Phases 16–21)

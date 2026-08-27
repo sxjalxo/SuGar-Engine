@@ -449,7 +449,86 @@ std::string escapeJsonString(const std::string& value) {
     return escaped;
 }
 
-void writeIndent(std::ostream& output, int indentLevel) {
+// A2: the writer's sink. std::ostream costs a sentry construction, a virtual xsputn
+// dispatch and a locale consultation on EVERY << -- measured at 89-92 % of a capture,
+// 681x-874x a memcpy of the same bytes (DESIGN_SNAPSHOT_CAPTURE_COST.md §11). Appending
+// straight into the destination string removes all of it, and removes the ostringstream
+// buffer plus the .str() copy (intervention A1) as a side effect.
+//
+// Overloads are EXPLICIT and deliberately minimal: there is no template fallback, so a
+// type nobody wrote an overload for is a COMPILE ERROR rather than a silently different
+// rendering. That property is what makes byte-identical output checkable rather than
+// hoped for.
+//
+// float uses general format at precision 6 -- std::ostream's own default, and the exact
+// same std::to_chars call writeFloat below already makes on its primary path, so its
+// "unreachable" `output << value` fallback (float doesn't fit 32 chars) produces bytes
+// identical to the path right above it by construction, not by separately re-proving the
+// ostream-equivalence writeFloat's comment already established.
+//
+// double is stateful on purpose: the ONLY call site that streams a double (the GameData
+// number fallback further down, when 64 chars isn't enough for to_chars) already wrapped
+// itself in `out.precision(15) ... out.precision(previous)`, mirroring
+// std::ostream::precision(). Keeping that behavior here means that call site's lines did
+// not need to change even though the sink type did.
+//
+// No bool overload: every bool in this file is already rendered through a ternary to a
+// string literal ("true"/"false") before it reaches <<, so a JsonOut::operator<<(bool)
+// would be dead code -- and if one ever were needed, std::ostream renders bool as 1/0 by
+// default, NOT true/false, which is exactly the trap this class is built to make a
+// compile error instead of a silent mismatch.
+class JsonOut {
+public:
+    explicit JsonOut(std::string& out) : out_(out) {}
+
+    void write(const char* data, std::size_t count) { out_.append(data, count); }
+
+    JsonOut& operator<<(const char* text) { out_.append(text); return *this; }
+    JsonOut& operator<<(const std::string& text) { out_.append(text); return *this; }
+    JsonOut& operator<<(char c) { out_.push_back(c); return *this; }
+
+    // std::ostream's default: base 10, no leading zeros, no '+' sign -- exactly what
+    // std::to_chars' no-format-arg overload already produces.
+    JsonOut& operator<<(int value) { return appendIntegral(value); }
+    JsonOut& operator<<(uint32_t value) { return appendIntegral(value); }
+
+    JsonOut& operator<<(float value) {
+        char buffer[32];
+        const std::to_chars_result result =
+            std::to_chars(buffer, buffer + sizeof(buffer), value, std::chars_format::general, 6);
+        out_.append(buffer, result.ptr - buffer);
+        return *this;
+    }
+
+    JsonOut& operator<<(double value) {
+        char buffer[64];
+        const std::to_chars_result result = std::to_chars(
+            buffer, buffer + sizeof(buffer), value, std::chars_format::general,
+            static_cast<int>(precision_));
+        out_.append(buffer, result.ptr - buffer);
+        return *this;
+    }
+
+    std::streamsize precision(std::streamsize newPrecision) {
+        const std::streamsize previous = precision_;
+        precision_ = newPrecision;
+        return previous;
+    }
+
+private:
+    template <typename Integral>
+    JsonOut& appendIntegral(Integral value) {
+        char buffer[16];
+        const std::to_chars_result result = std::to_chars(buffer, buffer + sizeof(buffer), value);
+        out_.append(buffer, result.ptr - buffer);
+        return *this;
+    }
+
+    std::string& out_;
+    std::streamsize precision_ = 6; // std::ostream's default precision
+};
+
+void writeIndent(JsonOut& output, int indentLevel) {
     for (int i = 0; i < indentLevel; i++) {
         output << "  ";
     }
@@ -463,7 +542,7 @@ void writeIndent(std::ostream& output, int indentLevel) {
 // `general` with 6 significant digits is exactly what the stream's default produced, so
 // every scene file and every golden test stays byte-identical — this is a speed change,
 // not a format change.
-void writeFloat(std::ostream& output, float value) {
+void writeFloat(JsonOut& output, float value) {
     char buffer[32];
     const std::to_chars_result result =
         std::to_chars(buffer, buffer + sizeof(buffer), value, std::chars_format::general, 6);
@@ -474,7 +553,7 @@ void writeFloat(std::ostream& output, float value) {
     }
 }
 
-void writeVec3(std::ostream& output, const glm::vec3& value) {
+void writeVec3(JsonOut& output, const glm::vec3& value) {
     output << "[";
     writeFloat(output, value.x);
     output << ", ";
@@ -503,7 +582,7 @@ BlendMode blendModeFromString(const std::string& value) {
 }
 
 // Quaternion as [x, y, z, w] to match glTF's component order.
-void writeQuat(std::ostream& output, const glm::quat& value) {
+void writeQuat(JsonOut& output, const glm::quat& value) {
     output << "[";
     writeFloat(output, value.x);
     output << ", ";
@@ -578,7 +657,7 @@ AssetHandle loadTextureWithFallback(const std::string& textureKey) {
 // Writes a single entity as a JSON object (indent level 2) WITHOUT a trailing
 // comma/newline after the closing brace — the caller adds the separator. Shared
 // by scene save and prefab save so component serialization lives in one place.
-void writeEntityObject(std::ostream& output, const Registry& registry, Entity entity, int parentIndex) {
+void writeEntityObject(JsonOut& output, const Registry& registry, Entity entity, int parentIndex) {
     const auto& transform = registry.transforms.get(entity).transform;
     const std::string name = registry.names.has(entity)
         ? registry.names.get(entity).name
@@ -663,12 +742,12 @@ void writeEntityObject(std::ostream& output, const Registry& registry, Entity en
     // compile error — see DevDocs/DEV_ENVIRONMENT.md on partially-applied edits.
     // Nothing is emitted while this vector is built, so it is safe to assemble here,
     // between the material object's contents and its closing brace.
-    std::vector<std::function<void(std::ostream&)>> fields;
+    std::vector<std::function<void(JsonOut&)>> fields;
 
     // Optional: named behavior. `started` is intentionally not written —
     // it always restores to false (behaviors only start in Play mode).
     if (registry.scripts.has(entity) && !registry.scripts.get(entity).behavior.empty()) {
-        fields.push_back([&](std::ostream& out) {
+        fields.push_back([&](JsonOut& out) {
             writeIndent(out, 3);
             out << "\"script\": \""
                 << escapeJsonString(registry.scripts.get(entity).behavior)
@@ -679,7 +758,7 @@ void writeEntityObject(std::ostream& output, const Registry& registry, Entity en
     // Optional: rigid body. `velocity` is written so an authored initial
     // velocity survives; transient force is not part of the body's state.
     if (registry.rigidBodies.has(entity)) {
-        fields.push_back([&](std::ostream& out) {
+        fields.push_back([&](JsonOut& out) {
             const auto& body = registry.rigidBodies.get(entity);
             writeIndent(out, 3);
             out << "\"rigidbody\": {\n";
@@ -704,7 +783,7 @@ void writeEntityObject(std::ostream& output, const Registry& registry, Entity en
 
     // Optional: collider.
     if (registry.colliders.has(entity)) {
-        fields.push_back([&](std::ostream& out) {
+        fields.push_back([&](JsonOut& out) {
             const auto& collider = registry.colliders.get(entity);
             writeIndent(out, 3);
             out << "\"collider\": {\n";
@@ -744,7 +823,7 @@ void writeEntityObject(std::ostream& output, const Registry& registry, Entity en
     // Optional: prefab instance link.
     if (registry.prefabInstances.has(entity) &&
         !registry.prefabInstances.get(entity).prefab.empty()) {
-        fields.push_back([&](std::ostream& out) {
+        fields.push_back([&](JsonOut& out) {
             writeIndent(out, 3);
             out << "\"prefab\": \""
                 << escapeJsonString(registry.prefabInstances.get(entity).prefab)
@@ -755,7 +834,7 @@ void writeEntityObject(std::ostream& output, const Registry& registry, Entity en
     // Optional: audio source. Runtime fields (started/voice) are not written.
     if (registry.audioSources.has(entity) &&
         registry.audioSources.get(entity).clip != INVALID_HANDLE) {
-        fields.push_back([&](std::ostream& out) {
+        fields.push_back([&](JsonOut& out) {
             const auto& source = registry.audioSources.get(entity);
             const auto clip = ResourceManager::getAudioClip(source.clip);
             writeIndent(out, 3);
@@ -779,7 +858,7 @@ void writeEntityObject(std::ostream& output, const Registry& registry, Entity en
 
     // Optional: audio listener.
     if (registry.audioListeners.has(entity)) {
-        fields.push_back([&](std::ostream& out) {
+        fields.push_back([&](JsonOut& out) {
             const auto& listener = registry.audioListeners.get(entity);
             writeIndent(out, 3);
             out << "\"audiolistener\": {\n";
@@ -796,7 +875,7 @@ void writeEntityObject(std::ostream& output, const Registry& registry, Entity en
     //
     // Optional: runtime UI screen stack — a JSON array of screen ids.
     if (registry.uiScreens.has(entity)) {
-        fields.push_back([&](std::ostream& out) {
+        fields.push_back([&](JsonOut& out) {
             const auto& screen = registry.uiScreens.get(entity);
             writeIndent(out, 3);
             out << "\"uiscreen\": [";
@@ -812,7 +891,7 @@ void writeEntityObject(std::ostream& output, const Registry& registry, Entity en
 
     // Optional: keyboard/gamepad focus.
     if (registry.focus.has(entity)) {
-        fields.push_back([&](std::ostream& out) {
+        fields.push_back([&](JsonOut& out) {
             writeIndent(out, 3);
             out << "\"focus\": \"" << escapeJsonString(registry.focus.get(entity).focusedElement)
                 << "\"";
@@ -822,7 +901,7 @@ void writeEntityObject(std::ostream& output, const Registry& registry, Entity en
     // Optional: in-progress text entry. Authoritative, so it round-trips — a scrub
     // must not lose a half-typed line. The caret blink phase is derived, not stored.
     if (registry.textInputs.has(entity)) {
-        fields.push_back([&](std::ostream& out) {
+        fields.push_back([&](JsonOut& out) {
             const auto& text = registry.textInputs.get(entity);
             writeIndent(out, 3);
             out << "\"textinput\": {\n";
@@ -844,7 +923,7 @@ void writeEntityObject(std::ostream& output, const Registry& registry, Entity en
     // never written. A player with no clip is inert, so it is omitted (the same
     // rule `script` uses for an empty behavior name). See DevDocs/DESIGN_ANIMATION.md.
     if (registry.animations.has(entity) && !registry.animations.get(entity).clip.empty()) {
-        fields.push_back([&](std::ostream& out) {
+        fields.push_back([&](JsonOut& out) {
             const auto& player = registry.animations.get(entity);
             writeIndent(out, 3);
             out << "\"animation\": {\n";
@@ -867,7 +946,7 @@ void writeEntityObject(std::ostream& output, const Registry& registry, Entity en
     // of the skin's bind data. Joint matrices are derived every frame and never
     // written here.
     if (registry.skinnedMeshes.has(entity) && !registry.skinnedMeshes.get(entity).skin.empty()) {
-        fields.push_back([&](std::ostream& out) {
+        fields.push_back([&](JsonOut& out) {
             writeIndent(out, 3);
             out << "\"skinnedmesh\": \""
                 << escapeJsonString(registry.skinnedMeshes.get(entity).skin)
@@ -879,7 +958,7 @@ void writeEntityObject(std::ostream& output, const Registry& registry, Entity en
     // the transition's progress, which is what makes a scrub land mid-cross-fade in
     // exactly the pose it did the first time.
     if (registry.animationStates.has(entity) && !registry.animationStates.get(entity).graph.empty()) {
-        fields.push_back([&](std::ostream& out) {
+        fields.push_back([&](JsonOut& out) {
             const auto& machine = registry.animationStates.get(entity);
             writeIndent(out, 3);
             out << "\"animationstate\": {\n";
@@ -906,7 +985,7 @@ void writeEntityObject(std::ostream& output, const Registry& registry, Entity en
     // reads; std::map keeps the key order stable so the file diffs cleanly.
     if (registry.animationParameters.has(entity) &&
         !registry.animationParameters.get(entity).values.empty()) {
-        fields.push_back([&](std::ostream& out) {
+        fields.push_back([&](JsonOut& out) {
             const auto& parameters = registry.animationParameters.get(entity).values;
             writeIndent(out, 3);
             out << "\"animationparams\": {\n";
@@ -933,7 +1012,7 @@ void writeEntityObject(std::ostream& output, const Registry& registry, Entity en
     // clip/skin fields use: an agent whose navmesh is not yet assigned is a real
     // authoring state (add the component, then pick the mesh), not an inert one.
     if (registry.navAgents.has(entity)) {
-        fields.push_back([&](std::ostream& out) {
+        fields.push_back([&](JsonOut& out) {
             const auto& agent = registry.navAgents.get(entity);
             writeIndent(out, 3);
             out << "\"navagent\": {\n";
@@ -994,7 +1073,7 @@ void writeEntityObject(std::ostream& output, const Registry& registry, Entity en
     // navmesh this geometry feeds — which is what lets a loaded scene rebuild its
     // own navmesh from the entities it just created (Rule 21a).
     if (registry.navMeshSources.has(entity) && !registry.navMeshSources.get(entity).navMesh.empty()) {
-        fields.push_back([&](std::ostream& out) {
+        fields.push_back([&](JsonOut& out) {
             writeIndent(out, 3);
             out << "\"navmeshsource\": \""
                 << escapeJsonString(registry.navMeshSources.get(entity).navMesh)
@@ -1006,7 +1085,7 @@ void writeEntityObject(std::ostream& output, const Registry& registry, Entity en
     // the entity's ordinary transform, and a second copy of it here would be a
     // second owner.
     if (registry.navObstacles.has(entity)) {
-        fields.push_back([&](std::ostream& out) {
+        fields.push_back([&](JsonOut& out) {
             writeIndent(out, 3);
             out << "\"navobstacle\": " << registry.navObstacles.get(entity).radius;
         });
@@ -1016,7 +1095,7 @@ void writeEntityObject(std::ostream& output, const Registry& registry, Entity en
     // pose is derived from the entity's transform every frame (Rule 21b), so it is
     // never written here.
     if (registry.cameras.has(entity)) {
-        fields.push_back([&](std::ostream& out) {
+        fields.push_back([&](JsonOut& out) {
             const auto& cam = registry.cameras.get(entity);
             writeIndent(out, 3);
             out << "\"camera\": {\n";
@@ -1035,7 +1114,7 @@ void writeEntityObject(std::ostream& output, const Registry& registry, Entity en
 
     // Optional: UI presentation state for one document element.
     if (registry.uiElementStates.has(entity)) {
-        fields.push_back([&](std::ostream& out) {
+        fields.push_back([&](JsonOut& out) {
             const auto& state = registry.uiElementStates.get(entity);
             writeIndent(out, 3);
             out << "\"uielementstate\": {\n";
@@ -1052,7 +1131,7 @@ void writeEntityObject(std::ostream& output, const Registry& registry, Entity en
 
     // Optional: text anchored to this entity in the world (a nameplate).
     if (registry.worldLabels.has(entity)) {
-        fields.push_back([&](std::ostream& out) {
+        fields.push_back([&](JsonOut& out) {
             const auto& label = registry.worldLabels.get(entity);
             writeIndent(out, 3);
             out << "\"worldlabel\": {\n";
@@ -1081,7 +1160,7 @@ void writeEntityObject(std::ostream& output, const Registry& registry, Entity en
     // Optional: a light on this entity (DevDocs/DESIGN_LIGHTING.md). Position and direction
     // are absent by design — both derive from the entity's transform every frame.
     if (registry.lights.has(entity)) {
-        fields.push_back([&](std::ostream& out) {
+        fields.push_back([&](JsonOut& out) {
             const auto& light = registry.lights.get(entity);
             writeIndent(out, 3);
             out << "\"light\": {\n";
@@ -1108,7 +1187,7 @@ void writeEntityObject(std::ostream& output, const Registry& registry, Entity en
     // writes the pairs and never interprets them — keys belong to the game. std::map
     // ordering makes the output a function of the state, not of hash layout.
     if (registry.gameData.has(entity) && !registry.gameData.get(entity).values.empty()) {
-        fields.push_back([&](std::ostream& out) {
+        fields.push_back([&](JsonOut& out) {
             const auto& values = registry.gameData.get(entity).values;
             writeIndent(out, 3);
             out << "\"gameData\": {\n";
@@ -1159,7 +1238,7 @@ void writeEntityObject(std::ostream& output, const Registry& registry, Entity en
 
 // Writes a list of entities as a JSON objects array body. Parent indices are
 // resolved within the list (entities whose parent is not in the list get -1).
-void writeEntitiesAsObjects(std::ostream& output, const Registry& registry, const std::vector<Entity>& orderedEntities) {
+void writeEntitiesAsObjects(JsonOut& output, const Registry& registry, const std::vector<Entity>& orderedEntities) {
     std::unordered_map<Entity, int> entityIndices;
     entityIndices.reserve(orderedEntities.size());
     for (size_t i = 0; i < orderedEntities.size(); i++) {
@@ -1203,7 +1282,7 @@ void collectSubtree(const Registry& registry, Entity entity, std::vector<Entity>
     }
 }
 
-void writeSceneJson(std::ostream& output, const Registry& registry, const std::vector<Light>& lights) {
+void writeSceneJson(JsonOut& output, const Registry& registry, const std::vector<Light>& lights) {
     const std::vector<Entity> orderedEntities = collectOrderedEntities(registry);
 
     output << "{\n";
@@ -2307,15 +2386,32 @@ bool loadSceneFromText(Registry& registry, std::vector<Light>& lights, const std
         return false;
     }
 }
+// A2: builds the scene directly into a std::string via JsonOut and hands it back --
+// no ostringstream, no intermediate .str() copy (that copy was intervention A1's whole
+// target; building straight into the destination subsumes it for free). `reserveHint`
+// lets a hot caller (saveToString, below) remember its previous output size across
+// repeated captures instead of paying a reallocation on every single one.
+std::string buildSceneJson(const Registry& registry, const std::vector<Light>& lights, std::size_t reserveHint) {
+    std::string result;
+    result.reserve(reserveHint);
+    JsonOut output(result);
+    writeSceneJson(output, registry, lights);
+    return result;
+}
+
 } // namespace
 
-// Pure forwarding. The writer, and every byte it emits, are unchanged; the Serializer
-// golden test is the proof. Exists so a measurement run can hand writeSceneJson a
-// different streambuf (DESIGN_SNAPSHOT_CAPTURE_COST.md 5.2) without the anonymous
-// namespace's internal linkage forcing a writer edit.
+// The writer, and every byte it emits, are unchanged; the Serializer golden test is the
+// proof. Builds into a local string via JsonOut (A2), then does one bulk write into the
+// caller's stream -- so this now measures string-building plus one bulk write, NOT
+// per-token stream cost the way it did in Phase 1 (DESIGN_SNAPSHOT_CAPTURE_COST.md §5.2).
+// `snapshot_null_sink` (src/Benchmarks.h) no longer isolates formatting cost the way its
+// name implies; it isolates writeSceneJson's cost into a JsonOut backed by a discarded
+// string, which after A2 is close to the whole `save` cost, not a sub-phase of it.
 void SceneSerializer::writeToStream(std::ostream& output, const Registry& registry,
                                     const std::vector<Light>& lights) {
-    writeSceneJson(output, registry, lights);
+    const std::string text = buildSceneJson(registry, lights, 4096);
+    output.write(text.data(), static_cast<std::streamsize>(text.size()));
 }
 
 bool SceneSerializer::save(const Registry& registry, const std::vector<Light>& lights, const std::string& path) {
@@ -2325,7 +2421,8 @@ bool SceneSerializer::save(const Registry& registry, const std::vector<Light>& l
             return false;
         }
 
-        writeSceneJson(output, registry, lights);
+        const std::string text = buildSceneJson(registry, lights, 4096);
+        output.write(text.data(), static_cast<std::streamsize>(text.size()));
         return output.good();
     } catch (...) {
         return false;
@@ -2334,9 +2431,13 @@ bool SceneSerializer::save(const Registry& registry, const std::vector<Light>& l
 
 std::string SceneSerializer::saveToString(const Registry& registry, const std::vector<Light>& lights) {
     try {
-        std::ostringstream output;
-        writeSceneJson(output, registry, lights);
-        return output.str();
+        // Remembers the previous capture's byte size so Play-mode time-travel, which
+        // calls this every fixed step, doesn't pay a reallocation on every single
+        // capture -- only when the scene actually grows past what was last reserved.
+        static std::size_t lastSize = 4096;
+        std::string result = buildSceneJson(registry, lights, lastSize);
+        lastSize = result.size();
+        return result;
     } catch (...) {
         return {};
     }
@@ -2424,14 +2525,19 @@ std::string SceneSerializer::savePrefabToString(const Registry& registry, Entity
         std::vector<Entity> subtree;
         collectSubtree(registry, root, subtree);
 
-        std::ostringstream output;
+        // A2: same JsonOut sink as writeSceneJson (buildSceneJson above) -- no
+        // ostringstream, no .str() copy. The output << lines are unchanged from before
+        // A2; only what `output` is bound to changed.
+        std::string result;
+        result.reserve(4096);
+        JsonOut output(result);
         output << "{\n";
         output << "  \"version\": 2,\n";
         output << "  \"objects\": [\n";
         writeEntitiesAsObjects(output, registry, subtree);
         output << "  ]\n";
         output << "}\n";
-        return output.str();
+        return result;
     } catch (...) {
         return {};
     }

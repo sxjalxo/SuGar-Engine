@@ -569,18 +569,51 @@ inline bool testSnapshotBudgetOverride() {
 inline bool testSnapshotCapturePolicy() {
     bool ok = true;
 
-    { // non-packaged: on until a capture blows the budget, then sticky-off for session
+    { // non-packaged: SUSTAINED overrun disables; then sticky-off for the session
         SnapshotCapturePolicy p;
         p.configure(4.0, /*packaged*/false);
         ok &= p.enabled() && p.disabledReason().empty();
         p.recordCaptureCost(1.5);   // under budget -> stays on
         ok &= p.enabled();
-        p.recordCaptureCost(10.0);  // over budget -> disabled with a reason
+
+        // One capture short of the cut-off is still not enough -- this is the whole
+        // point of candidate D: an isolated spike must not kill the session.
+        for (int i = 0; i < SnapshotCapturePolicy::kConsecutiveOverBudget - 1; ++i) {
+            p.recordCaptureCost(10.0);
+        }
+        ok &= p.enabled() && p.disabledReason().empty();
+        ok &= p.consecutiveOverBudget() == SnapshotCapturePolicy::kConsecutiveOverBudget - 1;
+
+        p.recordCaptureCost(10.0);  // the run completes -> disabled, with a reason
         ok &= !p.enabled() && !p.disabledReason().empty();
         p.recordCaptureCost(0.1);   // sticky: a cheap capture does not re-enable mid-session
         ok &= !p.enabled();
         p.reset();                  // new session re-arms
         ok &= p.enabled() && p.disabledReason().empty();
+        ok &= p.consecutiveOverBudget() == 0;
+    }
+
+    { // an affordable capture BREAKS the run, so spikes cannot accumulate across a session
+        SnapshotCapturePolicy p;
+        p.configure(4.0, /*packaged*/false);
+        // Far more over-budget captures than the cut-off, but never consecutive: this is
+        // the measured Release shape (a 0.08-0.12 % tail of isolated spikes), which used
+        // to disable time travel on the very first one.
+        for (int i = 0; i < SnapshotCapturePolicy::kConsecutiveOverBudget * 4; ++i) {
+            p.recordCaptureCost(10.0);  // over
+            p.recordCaptureCost(0.5);   // under -> resets the run
+        }
+        ok &= p.enabled() && p.disabledReason().empty();
+        ok &= p.consecutiveOverBudget() == 0;
+    }
+
+    { // the budget boundary is inclusive: exactly-at-budget is NOT over budget
+        SnapshotCapturePolicy p;
+        p.configure(4.0, /*packaged*/false);
+        for (int i = 0; i < SnapshotCapturePolicy::kConsecutiveOverBudget * 2; ++i) {
+            p.recordCaptureCost(4.0);
+        }
+        ok &= p.enabled();
     }
 
     { // packaged: never captures, and reset does not turn it on

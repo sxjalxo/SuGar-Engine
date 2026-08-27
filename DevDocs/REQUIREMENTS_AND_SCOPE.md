@@ -1001,16 +1001,29 @@ figures that had previously retired time travel (4.104 / 12.507 ms) are consiste
 **Debug** build, not Release. So the *representation* is not what makes the feature
 unavailable.
 
-What does is the policy's **one-strike latch**: `recordCaptureCost` disables capture
-permanently on a single over-budget capture, with no hysteresis and re-arming only on a new
-Play session, while Release still shows a 0.08-0.12 % tail above budget. Scope note for
-whoever changes this: the latch is a **policy** decision and belongs here, in
+What did was the policy's **one-strike latch**: `recordCaptureCost` disabled capture
+permanently on a single over-budget capture, with no hysteresis, while Release still shows a
+0.08-0.12 % tail above budget — so roughly one capture in a thousand killed the feature for a
+whole session. **Fixed 2026-08-27:** the cut-off now requires
+`SnapshotCapturePolicy::kConsecutiveOverBudget` (8) *consecutive* over-budget captures, and any
+affordable capture resets the run. Isolated spikes cannot accumulate; a scene that is genuinely
+too expensive still gives up within a fifth of a second. Mid-session re-arm is deliberately not
+implemented — once disabled the engine stops feeding costs in, so it would need a probe capture
+and nothing has asked for one.
+
+Scope note for whoever changes this: the cut-off is a **policy** decision and belongs here, in
 `SnapshotCapturePolicy`; it is not a reason to change `ISnapshotStorage`, the snapshot format,
 or the capture rate. Those are separate questions with separate evidence.
 
-Where the cost sits, if it is ever optimized: formatting is 89-92 % of a capture (per-token
-`std::ostream` machinery — defect #26's `to_chars` fix is intact and digit conversion is no
-longer the cost), materialization 7-9 %, storage ~0.1 %, traversal ~0.2 %.
+**Serialization cost, also fixed 2026-08-27 (intervention A2).** Formatting was 89-92 % of a
+capture — per-token `std::ostream` machinery, not digit conversion, since defect #26's
+`to_chars` fix was intact. `writeSceneJson` now appends into a `std::string` through a minimal
+`JsonOut` sink with explicit overloads and no template fallback, instead of going through
+`std::ostream`. Call sites are unchanged, output is byte-identical (the `Serializer` golden test
+is the proof), and building straight into the destination string removed the `ostringstream`
+buffer and the `.str()` copy as well. Measured at 500 bench entities: `snapshot_save`
+3.83 -> **0.78 ms** (~4.9x), ns/byte 11.6 -> **2.25**. In-game: crawler-small 0.554 -> **0.139 ms**,
+crawler-full 2.302 -> **0.533 ms**.
 
 ---
 
