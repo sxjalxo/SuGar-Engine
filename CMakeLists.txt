@@ -208,6 +208,7 @@ target_link_libraries(SuGarGame PRIVATE SuGarCore)
 add_executable(SuGarEngine
     src/main.cpp
     src/core/SnapshotStorage.h
+    src/core/SnapshotRateProbe.h
     src/GameModuleLoader.h
     src/GameModuleLoader.cpp
     src/game/GameModule.h

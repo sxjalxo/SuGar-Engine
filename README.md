@@ -144,7 +144,11 @@ every snapshot capture; `SUGAR_SNAP_BUDGET=<ms>` overrides `SnapshotCapturePolic
 budget so a measurement run captures every step instead of pausing after a sustained run of
 over-budget frames; `SUGAR_SNAP_CORPUS=<path>` additionally dumps the formatted snapshot bytes
 to disk on every capture — **never set together with a timing measurement**, since the dump
-runs inside the timed region and inflates `total`.
+runs inside the timed region and inflates `total`. A fourth knob, `SUGAR_SNAPRATE=1`, reports
+snapshot *semantics* rather than cost: how many consecutive captures are byte-identical, how
+many distinct states the ring actually holds, and where two consecutive captures differ. Across
+~10 700 measured captures the answer was **never any** — even in a fully idle turn-based scene,
+where a game counter and an idle animation clip both advance every fixed step.
 
 ### Controls
 

@@ -14,6 +14,7 @@
 #include "core/EngineState.h"
 #include "core/SnapshotStorage.h"
 #include "core/SnapshotCapturePolicy.h"
+#include "core/SnapshotRateProbe.h"
 #include "ecs/Registry.h"
 #include "ecs/SystemSchedule.h"
 #include "GameModuleLoader.h"
@@ -168,6 +169,12 @@ private:
     // blows the budget so a large game stays playable. See SnapshotCapturePolicy.
     SnapshotCapturePolicy snapshotPolicy;
     bool packagedBuild = false;
+
+    // Snapshot semantics instrument, SUGAR_SNAPRATE only. Counts byte-identical consecutive
+    // captures. Fed from outside the timed capture region -- see SnapshotRateProbe.h.
+    SnapshotRateProbe snapshotRate;
+    uint64_t lastRatedFrame = 0;
+    bool lastRatedFrameValid = false;
 
     void initWindow();
     void setWindowIcon();

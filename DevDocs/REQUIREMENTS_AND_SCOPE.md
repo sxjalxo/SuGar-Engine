@@ -1025,6 +1025,20 @@ buffer and the `.str()` copy as well. Measured at 500 bench entities: `snapshot_
 3.83 -> **0.78 ms** (~4.9x), ns/byte 11.6 -> **2.25**. In-game: crawler-small 0.554 -> **0.139 ms**,
 crawler-full 2.302 -> **0.533 ms**.
 
+**Capture *rate* is out of scope, and this is measured rather than assumed (2026-08-27).**
+Capture-on-change — suppressing a capture whose state matches the previous one — is **closed as
+falsified**, not deferred. Across ~10 700 Release captures in four runs (crawler at machine speed,
+crawler fully idle, Minecraft, combat arena) **no two consecutive captures were byte-identical**,
+and all 600 ring frames held distinct states in every run. A scene nobody is touching still moves
+two values every fixed step: a game-side counter in `GameData`, and the engine's own
+`AnimationComponent.time` under a looping idle clip. One looping idle clip is therefore enough to
+defeat capture-on-change, which makes this a property of the serialized state model rather than a
+fact about three games. `SnapshotRateProbe` (`SUGAR_SNAPRATE`, pinned by the `SnapshotRate`
+self-test) is retained as the regression instrument for that property — **not** as groundwork for
+a capture-rate feature. Time travel's residual cost is memory (23 MB crawler and arena, 98 MB
+Minecraft at 600 frames), which belongs to a delta/binary `ISnapshotStorage` backend and still has
+no workload asking for one.
+
 ---
 
 ## Hot Reload

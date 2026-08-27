@@ -409,7 +409,7 @@ Release builds compile the tracking out entirely, so this costs nothing to ship.
 
 ### Snapshot capture cost
 
-Three knobs instrument the time-travel snapshot path. All are **off by default**, dev-only,
+Four knobs instrument the time-travel snapshot path. All are **off by default**, dev-only,
 and documented in full in `DevDocs/DESIGN_SNAPSHOT_CAPTURE_COST.md`.
 
 | Knob | Effect |
@@ -417,6 +417,15 @@ and documented in full in `DevDocs/DESIGN_SNAPSHOT_CAPTURE_COST.md`.
 | `SUGAR_SNAPDBG=1` | per-capture phase breakdown to **stderr** — `total`, `null_sink`, `materialize`, `bytes`, `entities`, `ns_per_byte` |
 | `SUGAR_SNAP_BUDGET=<ms>` | overrides `SnapshotCapturePolicy`'s 4 ms budget, so a measurement run captures every step instead of pausing on a sustained over-budget run |
 | `SUGAR_SNAP_CORPUS=<path>` | dumps the serialized snapshot bytes to disk on every capture |
+| `SUGAR_SNAPRATE=1` | snapshot **semantics**: how many consecutive captures are byte-identical, the longest run of identical captures, how many distinct states the 600-frame ring holds, and where two consecutive captures first and last differ |
+
+`SUGAR_SNAPRATE` answers a different question from the other three — not what a capture costs
+but whether two captures say anything different. Measured across four Release runs (~10 700
+captures), **no two consecutive captures were ever byte-identical**, including a turn-based
+dungeon left completely idle: a game-side counter and the engine's own `AnimationComponent.time`
+under a looping idle clip both advance every fixed step. Capture-on-change was closed as
+falsified on that evidence, and the knob is kept to catch the day captures start repeating —
+which would mean something stopped being serialized, or stopped advancing.
 
 `SUGAR_SNAP_CORPUS` writes from inside the region `SUGAR_SNAPDBG` times, so a run with both
 set reports an inflated `total`. **Corpus capture and timing capture are separate runs** — the

@@ -842,6 +842,8 @@ void SuGarApp::play() {
     snapshots->clear();
     bookmarks.clear();
     scrubCursor = -1;
+    snapshotRate.reset();         // snapshot semantics instrument: per-Play-session counts
+    lastRatedFrameValid = false;
     snapshotPolicy.reset();       // re-arm for this session (a fresh scene may fit)
     captureSnapshotBudgeted();    // record the initial play state as frame 0 (if enabled)
     std::cout << "[Play] entered play mode\n";
@@ -895,6 +897,9 @@ void SuGarApp::stop() {
     } else {
         std::cerr << "failed to restore scene snapshot\n";
     }
+    if (std::getenv("SUGAR_SNAPRATE") != nullptr && snapshotRate.captures() > 0) {
+        std::cerr << snapshotRate.summary() << " final=1\n";
+    }
     engineState = EngineState::Edit;
     std::cout << "[Stop] restored edit scene\n";
 }
@@ -931,6 +936,26 @@ void SuGarApp::captureSnapshotBudgeted() {
                   << " entities=" << registry.transforms.getAll().size() // TransformComponent is on every entity
                   << " ns_per_byte=" << (bytes > 0 ? ms * 1e6 / static_cast<double>(bytes) : 0.0)
                   << "\n";
+    }
+
+    // Snapshot semantics instrument. Deliberately AFTER the timed region closes above: record()
+    // copies and compares a whole snapshot, and inside the timing it would inflate every
+    // figure DESIGN_SNAPSHOT_CAPTURE_COST.md reports. Reads the string back out of the ring
+    // rather than plumbing it out of captureSnapshot(), so the capture path itself is
+    // untouched. frameNumber guards the case where captureSnapshot() pushed nothing (an
+    // empty serialization) -- without it that would score as a false duplicate.
+    static const bool snapRate = std::getenv("SUGAR_SNAPRATE") != nullptr;
+    if (snapRate && snapshots->count() > 0) {
+        const int newest = snapshots->count() - 1;
+        const uint64_t frame = snapshots->frameNumber(newest);
+        if (!lastRatedFrameValid || frame != lastRatedFrame) {
+            lastRatedFrame = frame;
+            lastRatedFrameValid = true;
+            snapshotRate.record(snapshots->get(newest));
+            if (snapshotRate.captures() % 300 == 0) {
+                std::cerr << snapshotRate.summary() << "\n" << snapshotRate.firstDifference() << "\n";
+            }
+        }
     }
 
     snapshotPolicy.recordCaptureCost(ms);

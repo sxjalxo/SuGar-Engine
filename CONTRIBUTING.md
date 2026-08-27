@@ -191,6 +191,7 @@ Other harnesses, when you want just one:
 | `SUGAR_SNAPDBG=1` | per-capture time-travel snapshot phase breakdown to stderr |
 | `SUGAR_SNAP_BUDGET=<ms>` | overrides `SnapshotCapturePolicy`'s 4 ms capture budget, for measurement runs |
 | `SUGAR_SNAP_CORPUS=<path>` | dumps snapshot bytes to disk each capture — **never combine with a timing run** |
+| `SUGAR_SNAPRATE=1` | snapshot semantics: byte-identical consecutive captures, distinct states in the ring, and where two captures differ |
 
 Run benchmarks in **Release** or the numbers are fiction.
 

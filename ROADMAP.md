@@ -1696,6 +1696,53 @@ design document opened by saying needed a 3.13x speedup now sits **7.5x inside**
 Minecraft and the arena could not be byte-compared (streaming and wave nondeterminism against a
 wall-clock kill) and are recorded as unverified rather than passed. Gate **68/68** Debug + Release.
 
+**Phase 3 — candidate B (capture-on-change): closed, falsified** (2026-08-27). *Forced:* the
+turn-based probe entry above recorded, **on inference rather than observation**, that per-step
+capture in a turn-based game "would record 20–115+ identical snapshots per turn". That sentence
+was the entire case for a capture-*rate* feature, and nothing had ever counted a duplicate.
+*Change:* an instrument, not a feature — `src/core/SnapshotRateProbe.h` behind `SUGAR_SNAPRATE`,
+counting byte-identical consecutive captures, the length of each run of identical captures, the
+distinct states held by the 600-frame ring, and (`firstDifference()`) *where* two consecutive
+captures first and last stop matching. It is fed from **outside** the region
+`captureSnapshotBudgeted` times, so it cannot contaminate the Phase 1 cost numbers — the
+`SUGAR_SNAP_CORPUS` knob made exactly that mistake once.
+
+*Measured*, Release, ~10 700 captures over four runs with `SUGAR_SNAP_BUDGET` raised so the
+sustained-overrun cut-off could not truncate a run:
+
+| run | captures | byte-identical | longest identical run | distinct states in ring | ring @ 600 |
+| --- | --- | --- | --- | --- | --- |
+| Crawler small, autoplay | 2400 | **0** | 1 | 600 / 600 | 23.5 MB |
+| Crawler small, **idle** (no autoplay, no input, 55 s) | 3300 | **0** | 1 | 600 / 600 | 23.1 MB |
+| Minecraft | 2400 | **0** | 1 | 600 / 600 | 98.1 MB |
+| Combat arena | 2400 | **0** | 1 | 600 / 600 | 22.9 MB |
+
+**Zero duplicates anywhere**, including the run that reproduces the claim's own scenario — a
+turn-based dungeon sitting untouched while the player thinks. The steps-per-turn half of the
+original sentence is right; *identical* is false. `firstDifference()` says why: two values move
+every fixed step in a scene nobody is touching — a game-side counter in `GameData`, and the
+engine's own `AnimationComponent.time` under a looping idle clip (`CrawlIdle`, 0.966652 →
+0.983319, exactly one step). **One looping idle clip is enough to defeat capture-on-change**, so
+this is a property of the state model rather than a fact about three games.
+
+*Verdict: closed/falsified — not deferred for want of a workload.* Candidate B —
+capture-on-change — is closed. The probe is retained as a regression instrument for snapshot-state
+distinctness, **not** as justification for a future capture-rate feature: if captures ever start
+repeating, that is a semantic change (something stopped being serialized, or stopped advancing)
+and `firstDifference()` names the field that stopped moving. A one-line "B might work now" without
+it would not be able to say why. The ring is also confirmed to hold 600 genuinely distinct states,
+so the worry that a 10 s window really retains a handful of states is dead as well.
+
+*One number that is NOT evidence, recorded so it is not misread later:* consecutive crawler
+captures differ in **13 bytes of 40 947** (0.03 %) at `size_delta` 0. Minecraft and the arena
+report 80 % / 76 % differing — but at `size_delta` 47 and 1367, where the probe's positional
+compare misaligns after an insertion and scores every later byte as differing. Those two figures
+are artifacts, not delta sizes. Candidate **C** (a binary/delta backend) would need a structural
+diff to be measured at all, and still has nothing asking for it.
+
+Gate 68 → **69/69** Debug + Release (+`SnapshotRate`, break-tested red at 68/69 by disabling the
+probe's window eviction, then green).
+
 ---
 
 ## Phase detail — M3 (Phases 16–21)

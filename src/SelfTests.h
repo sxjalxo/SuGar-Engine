@@ -67,6 +67,7 @@
 #include "scene/ScriptSystem.h"
 #include "core/SnapshotBudget.h"
 #include "core/SnapshotCapturePolicy.h"
+#include "core/SnapshotRateProbe.h"
 #include "audio/AudioClip.h"
 #include "audio/AudioEngine.h"
 #include "rendering/Mesh.h"
@@ -543,6 +544,43 @@ inline bool testSnapshotSinkBytes() {
     std::ostream out(&sink);
     SceneSerializer::writeToStream(out, reg, lights);
     ok &= sink.written() == real.size();       // both paths saw the same bytes
+
+    return ok;
+}
+
+// --- Snapshot semantics instrument (SnapshotRateProbe). Pins the counting itself, so a
+// number reported from a game run is a measurement rather than a claim. The property it
+// guards -- that fixed-step captures produce distinct serialized states even in an idle
+// scene -- is measured in a game, not here; this pins the counter that measures it. Headless.
+inline bool testSnapshotRateProbe() {
+    bool ok = true;
+
+    { // duplicate counting and run closing
+        SnapshotRateProbe probe;
+        probe.record("A");
+        ok &= probe.captures() == 1 && probe.duplicates() == 0 && probe.distinctTotal() == 1;
+        probe.record("A");
+        probe.record("A");
+        probe.record("A");
+        ok &= probe.captures() == 4 && probe.duplicates() == 3 && probe.distinctTotal() == 1;
+        // A run in flight is not yet a closed run, so run_max stays 0 until it ends.
+        ok &= probe.runMax() == 0;
+        probe.record("B");
+        ok &= probe.distinctTotal() == 2 && probe.runMax() == 4;
+    }
+
+    { // window bookkeeping: the reported distinct-states-in-ring must evict, not accumulate
+        SnapshotRateProbe probe;
+        for (std::size_t i = 0; i < SnapshotRateProbe::kWindow; ++i) {
+            probe.record("same");
+        }
+        ok &= probe.distinctInWindow() == 1;   // a full ring holding ONE distinct state
+
+        for (std::size_t i = 0; i < SnapshotRateProbe::kWindow; ++i) {
+            probe.record("state" + std::to_string(i));
+        }
+        ok &= probe.distinctInWindow() == SnapshotRateProbe::kWindow; // fully turned over
+    }
 
     return ok;
 }
@@ -5747,6 +5785,7 @@ inline std::pair<int, int> run() {
         { "SnapshotPolicy",   testSnapshotCapturePolicy },
         { "SnapshotBudget",   testSnapshotBudgetOverride },
         { "SnapshotSinkBytes", testSnapshotSinkBytes },
+        { "SnapshotRate",     testSnapshotRateProbe },
         { "ContactPoint",     testContactPoint },
         { "DestroyEntityTree", testDestroyEntityTree },
         { "BuiltinCubeMesh",  testBuiltinCubeMesh },
