@@ -182,6 +182,11 @@ stubbed build, not asserted. It exists because three separate measurements were 
 it, and on its first run it attributed a 1 000-unit slowdown to the game's own O(N) scan rather
 than to any engine system.
 
+Two more, both dev-only: `SUGAR_RENDER_RES=<W>x<H>` renders the scene to an offscreen target at an
+explicit resolution independently of the window — which is what makes render cost at 4K measurable
+without a 4K display — and `SUGAR_NOAUDIO=1` skips opening the playback device entirely, so a
+measurement run does not play a game's music into whatever else the machine is doing.
+
 ### Controls
 
 Editor and play-mode bindings are in [FEATURES.md](FEATURES.md#controls). The two you need

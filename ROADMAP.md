@@ -1880,6 +1880,27 @@ call from outside it, and treat a clean 1.25 / 1.5 / 2.0 ratio between two windo
 the signature of this trap rather than as a discovery. *Ref:* `src/Renderer.cpp`
 `buildEditorUi`/`drawSystemsPanel`, `DevDocs/DEV_ENVIRONMENT.md` #3.
 
+**L4 opened — and its first finding recontextualises every performance number in this document.**
+*Found:* `SuGarApp.cpp:53-54` hardcoded an 800x600 window and passed it straight to
+`glfwCreateWindow`; nothing could ask the engine for a resolution. So **every FPS figure recorded
+above was measured at 0.48 megapixels** — the arena's 245 FPS with 162 skinned enemies, its 368 FPS
+packaged, the RTS probe's 144 FPS at rung 1000. 4K is 8.29 MP, **17.3x** the pixels. That is not a
+rendering defect; it is the precondition for every question L4 exists to ask, and it was invisible
+from the numbers themselves — 245 FPS reads as healthy until you know what it was rendering into.
+*Change:* `SUGAR_RENDER_RES=<W>x<H>` overrides the offscreen scene target, which the renderer
+already keeps separate from the swapchain, so 4K render cost is measurable on a 1536x864 panel.
+Plus `SUGAR_NOAUDIO=1`, because a sweep should not play a game's music into whatever else the
+machine is doing. *Verdict:* **the baseline is not yet measured.** The first sweep returned medians
+of 6.945-6.956 ms across two unrelated games and a 17.3x pixel range; `1/144 s = 6.9444 ms`, so it
+measured this display's refresh cap, not rendering. The contract's bar is recorded **UNANSWERED**
+rather than held — a capped median cannot demonstrate headroom, and calling it a pass would be the
+same error as reading a snapshot median taken with the latch disabled as evidence about the latch.
+The re-measurement must attribute the cap (the engine asks for `MAILBOX`; an older 368 FPS figure
+proves it *can* exceed refresh here, so something external is pacing it) and push the load until
+the median clears the cap. Logged as `DEV_ENVIRONMENT.md` #11, beside the DPI trap: **a measurement
+taken through an environment you have not characterised is a measurement of the environment**, and
+two sweeps have now died that way. *Ref:* `DevDocs/DESIGN_L4_RESOLUTION_BASELINE.md` §10.
+
 ---
 
 ## Phase detail — M3 (Phases 16–21)

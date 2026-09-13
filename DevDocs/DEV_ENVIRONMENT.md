@@ -295,6 +295,43 @@ This cost a failed run during the snapshot capture-cost investigation
 rebuilding the module Debug, running, then rebuilding it Release again before the next run.
 **Budget two module rebuilds for every Debug-vs-Release comparison on a real game, not one.**
 
+## 11. A frame time that equals the refresh interval is not a measurement
+
+**Observed 2026-09-13**, during L4's opening resolution sweep. Two games with entirely different
+cost profiles, four resolutions spanning a **17.3x** range of pixel counts, and every median frame
+time came back:
+
+```
+6.945  6.946  6.947  6.949  6.956   (ms)
+```
+
+`1 / 144 = 6.9444 ms`. Those are not render costs. They are this display's refresh interval, and
+the whole sweep measured a present cap.
+
+The engine *requests* `VK_PRESENT_MODE_MAILBOX_KHR` (`Renderer.cpp` `chooseSwapPresentMode`),
+which should be uncapped — but asking is not getting. A Vulkan layer between the engine and the
+display can pace presentation regardless; the run detected **OBS / Medal capture hooks** on this
+machine, which is the likeliest cause. The engine is ruled out by an older figure: the combat
+arena once measured **368 FPS packaged**, far above 144, so it has demonstrably presented faster
+than refresh on this hardware.
+
+**What to do about it:**
+
+1. **Check the number against `1/refresh` before believing it.** A median sitting within a
+   fraction of a percent of the refresh interval, and *not moving* when the load changes, is a cap
+   — the flatness across a 17x load change is the real tell, not the value itself.
+2. **Close capture/overlay software before a performance run**, and say in the report whether you
+   did. This is the same class of contamination as an antivirus scanning a build.
+3. **If the cap cannot be removed, measure where the instrument has range** — increase load until
+   the cost clears the cap, then fit only over the uncapped points and state which were excluded.
+4. **Do not fall back to worst-frame** because the median is unusable. The tail is a different
+   statistic answering a different question; a conclusion resting on it because the median was
+   broken is resting on the wrong one.
+
+Related: item 3's DPI trap, and the same underlying lesson — **a measurement taken through an
+environment you have not characterised is a measurement of the environment.** Two of this
+project's sweeps have now died this way.
+
 ## Env knobs, current list
 
 Runtime, engine:
@@ -312,6 +349,8 @@ Runtime, engine:
 | `SUGAR_SNAPRATE=1` | snapshot semantics to stderr every 300 captures: byte-identical consecutive captures, run-length histogram, distinct states in the 600-frame ring, and `[snapdiff]` — the first and last offsets where two consecutive captures differ, with surrounding text. Safe to combine with a timing run (it is fed after the timed region closes), but read `differing_bytes` **only** when `size_delta` is 0 — the compare is positional and an insertion misaligns everything after it |
 | `SUGAR_AUDIODBG=1` | audio-thread health to stderr, once a second from the gameplay thread plus once at shutdown: `callbacks`, `overruns` (mix duration >= its own deadline, derived at runtime from the frame count the callback is handed), `arrival_gaps`, and the lock-wait max/histogram as a fraction of the deadline. Counters are atomics written on the audio thread; the callback never prints, allocates or takes an extra lock. Measured baseline: 0 overruns, max lock wait 0.33 % of deadline (`DESIGN_AUDIO_THREAD_OWNERSHIP.md`) |
 | `SUGAR_PROFILE=1` | per-system fixed-step timing to stderr once a second: `Script=median/max` per named system, `total=` measured independently in `SuGarApp` around the whole fixed step (systems + `Input::endFixedStep` + snapshot capture), and `residual=` total minus the summed systems. `path=` says `plain` or the access-verified path — **Debug numbers include the `ComponentAccessTracker`'s cost and are not comparable to Release**. Collection is always on (~0.16 ms/step, measured against a stubbed build); the editor Systems panel shows the same figures live |
+| `SUGAR_RENDER_RES=<W>x<H>` | overrides the offscreen scene render target, independently of the window, so render cost can be measured at 4K on a smaller display. `createViewportResources()` logs the extent it actually allocated — trust that line, not the variable, since `requestedViewportExtent` is otherwise reassigned every frame from the ImGui panel size |
+| `SUGAR_NOAUDIO=1` | skips opening the playback device entirely: no mixer thread, no device, every `play()` a no-op. The same state a machine with no sound card produces. Use for any measurement run that would otherwise play a game's music into whatever else the machine is doing |
 
 Game-defined (they live in the game's behaviours, not the engine) — the combat arena:
 

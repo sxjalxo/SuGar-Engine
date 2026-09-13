@@ -420,6 +420,8 @@ and documented in full in `DevDocs/DESIGN_SNAPSHOT_CAPTURE_COST.md`.
 | `SUGAR_SNAPRATE=1` | snapshot **semantics**: how many consecutive captures are byte-identical, the longest run of identical captures, how many distinct states the 600-frame ring holds, and where two consecutive captures first and last differ |
 | `SUGAR_AUDIODBG=1` | audio-thread health: per-callback mix duration against its own deadline, inter-callback arrival gaps, and lock-wait distribution for the mutex the mixer shares with the gameplay thread |
 | `SUGAR_PROFILE=1` | per-system fixed-step timing to **stderr** once a second: median/max ms for each named system, the step total measured independently, and the residual. Collection is always on (~0.16 ms/step, measured); the editor Systems panel shows the same numbers live |
+| `SUGAR_RENDER_RES=<W>x<H>` | renders the scene to an offscreen target at an explicit resolution, independent of the window, so render cost can be measured at 4K without a 4K display |
+| `SUGAR_NOAUDIO=1` | skips opening the playback device: no mixer thread, no device, silent run |
 
 `SUGAR_SNAPRATE` answers a different question from the other three — not what a capture costs
 but whether two captures say anything different. Measured across four Release runs (~10 700
