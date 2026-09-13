@@ -1602,11 +1602,26 @@ void Renderer::buildEditorUi() {
     // a pile of floating windows. The default arrangement is built once, only when no
     // layout exists yet -- after that the user's own docking is remembered by imgui.ini.
     const ImGuiID dockspaceId = ImGui::GetID("SugarDockSpace");
-    if (ImGui::DockBuilderGetNode(dockspaceId) == nullptr) {
-        ImGuiViewport* viewport = ImGui::GetMainViewport();
+    // Sized from the swapchain extent rather than GetMainViewport()->WorkSize. The extent is
+    // the size this renderer measured from the surface and sized every framebuffer against, so
+    // it needs no round trip through ImGui's backend to be trusted; the viewport's size is a
+    // report, and this is the thing being reported. If the swapchain is not valid yet (extent
+    // 0x0 during init or while minimized) the build is skipped and simply retried next frame,
+    // which is invisible, rather than built once at a wrong size, which is not.
+    //
+    // HONESTY NOTE, because the comment this replaced asserted more than was shown: this was
+    // written after a verification pass reported the right-hand panel column landing off-screen
+    // and attributed it to WorkSize reading ~1.25x oversized on a 125 %-scaled display. A second
+    // pass instrumented both values and found them AGREEING in every sample. The original
+    // "real client rect" was almost certainly DPI-virtualised by the measuring script itself
+    // (1536x792 x 1.25 = 1920x990) -- DevDocs/DEV_ENVIRONMENT.md #3's documented trap, hit while
+    // measuring. So no WorkSize divergence is known to exist. This stands as the better source,
+    // not as a fix for a demonstrated defect.
+    if (ImGui::DockBuilderGetNode(dockspaceId) == nullptr && swapChainExtent.width > 0 && swapChainExtent.height > 0) {
+        const ImVec2 dockSpaceSize(static_cast<float>(swapChainExtent.width), static_cast<float>(swapChainExtent.height));
         ImGui::DockBuilderRemoveNode(dockspaceId);
         ImGui::DockBuilderAddNode(dockspaceId, ImGuiDockNodeFlags_DockSpace);
-        ImGui::DockBuilderSetNodeSize(dockspaceId, viewport->WorkSize);
+        ImGui::DockBuilderSetNodeSize(dockspaceId, dockSpaceSize);
 
         // Every panel is placed, so the default is deterministic (no window left to float):
         //  left column, top->bottom:  Hierarchy, Editor, Timeline, Inspector
@@ -2588,17 +2603,42 @@ void Renderer::drawSystemsPanel() {
         // panel does no measuring of its own, it only displays what run() already
         // collects unconditionally.
         ImGui::TextDisabled("path=%s", systemSchedule->lastRunUsedAccessTracking() ? "access-verified" : "plain");
-        for (std::size_t i = 0; i < systems.size(); ++i) {
-            const System& system = systems[i];
-            const SystemTiming timing = systemSchedule->systemTiming(i);
-            ImGui::Text("%zu. %s", i, system.name.c_str());
-            ImGui::SameLine();
-            ImGui::TextDisabled("R:%s  W:%s",
-                                describeComponentMask(system.reads).c_str(),
-                                describeComponentMask(system.writes).c_str());
-            ImGui::SameLine();
-            ImGui::TextColored(ImVec4(0.6f, 0.75f, 0.95f, 1.0f), "  med %.3fms  max %.3fms",
-                               timing.medianMs, timing.maxMs);
+        // Columns, not SameLine: access-mask strings run 80+ characters for systems that touch
+        // many components (Script, Navigation, Animation, CollisionDispatch, Audio), which used
+        // to push the med/max timing text straight out of the panel and truncate it -- the very
+        // numbers this panel exists to show. Timing gets its own fixed-width column ahead of the
+        // masks so it is always fully visible; the masks column is last and absorbs any
+        // truncation instead, with wrapping plus a hover tooltip so the full list is still one
+        // hover away.
+        if (ImGui::BeginTable("SystemsTimingTable", 3,
+                               ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerV | ImGuiTableFlags_Resizable)) {
+            ImGui::TableSetupColumn("System", ImGuiTableColumnFlags_WidthStretch, 0.34f);
+            ImGui::TableSetupColumn("Timing", ImGuiTableColumnFlags_WidthFixed, 160.0f);
+            ImGui::TableSetupColumn("Access (R/W)", ImGuiTableColumnFlags_WidthStretch, 0.5f);
+            ImGui::TableHeadersRow();
+            for (std::size_t i = 0; i < systems.size(); ++i) {
+                const System& system = systems[i];
+                const SystemTiming timing = systemSchedule->systemTiming(i);
+                ImGui::TableNextRow();
+
+                ImGui::TableSetColumnIndex(0);
+                ImGui::Text("%zu. %s", i, system.name.c_str());
+
+                ImGui::TableSetColumnIndex(1);
+                ImGui::TextColored(ImVec4(0.6f, 0.75f, 0.95f, 1.0f), "med %.3fms  max %.3fms",
+                                   timing.medianMs, timing.maxMs);
+
+                ImGui::TableSetColumnIndex(2);
+                const std::string maskText = "R:" + describeComponentMask(system.reads) +
+                                              "  W:" + describeComponentMask(system.writes);
+                ImGui::PushStyleColor(ImGuiCol_Text, ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled));
+                ImGui::TextWrapped("%s", maskText.c_str());
+                ImGui::PopStyleColor();
+                if (ImGui::IsItemHovered()) {
+                    ImGui::SetTooltip("%s", maskText.c_str());
+                }
+            }
+            ImGui::EndTable();
         }
     }
 

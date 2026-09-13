@@ -193,6 +193,7 @@ Other harnesses, when you want just one:
 | `SUGAR_SNAP_CORPUS=<path>` | dumps snapshot bytes to disk each capture — **never combine with a timing run** |
 | `SUGAR_SNAPRATE=1` | snapshot semantics: byte-identical consecutive captures, distinct states in the ring, and where two captures differ |
 | `SUGAR_AUDIODBG=1` | audio-thread health: per-callback mix duration vs its own deadline, inter-callback arrival gaps, and how long the callback waited for the mixer mutex |
+| `SUGAR_PROFILE=1` | per-system fixed-step timing: median/max ms per system, the independently measured step total, and the residual |
 
 Run benchmarks in **Release** or the numbers are fiction.
 

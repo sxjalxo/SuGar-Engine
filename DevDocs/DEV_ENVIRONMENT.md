@@ -81,6 +81,18 @@ Windows DPI awareness means
 may differ. (Measured here: PowerShell is DPI-unaware, the app is DPI-aware, factor
 **1.25×**.)
 
+**This trap is still live, and it caught a verification pass on 2026-09-13.** While checking a
+new editor panel, a measurement reported the app's ImGui viewport at ~1920x991 against a "real
+client rect" of ~1536x792 and concluded the engine was sizing its dockspace 25 % too large. It was
+not: 1536 x 1.25 = 1920 and 792 x 1.25 = 990. The *measuring script* was DPI-unaware and the app
+was correct. A second pass instrumented both values inside the engine and found them agreeing in
+every sample.
+
+The rule that follows: **never compare a number measured inside the app against a number measured
+by a PowerShell/Win32 call from outside it.** Print both from inside the engine, or scale
+explicitly. A 1.25 (or 1.5, or 2.0) ratio between two window measurements is the signature of this
+trap, not a discovery — check for it before believing the number.
+
 Instead of guessing pixels, **instrument the engine**. Useful probes:
 
 - `context->GetDimensions()`
@@ -299,6 +311,7 @@ Runtime, engine:
 | `SUGAR_SNAP_CORPUS=<path>` | dumps formatted snapshot bytes to disk on every capture, overwriting; **never combine with a timing run** — the dump is inside the timed region and inflates `total` (F14) |
 | `SUGAR_SNAPRATE=1` | snapshot semantics to stderr every 300 captures: byte-identical consecutive captures, run-length histogram, distinct states in the 600-frame ring, and `[snapdiff]` — the first and last offsets where two consecutive captures differ, with surrounding text. Safe to combine with a timing run (it is fed after the timed region closes), but read `differing_bytes` **only** when `size_delta` is 0 — the compare is positional and an insertion misaligns everything after it |
 | `SUGAR_AUDIODBG=1` | audio-thread health to stderr, once a second from the gameplay thread plus once at shutdown: `callbacks`, `overruns` (mix duration >= its own deadline, derived at runtime from the frame count the callback is handed), `arrival_gaps`, and the lock-wait max/histogram as a fraction of the deadline. Counters are atomics written on the audio thread; the callback never prints, allocates or takes an extra lock. Measured baseline: 0 overruns, max lock wait 0.33 % of deadline (`DESIGN_AUDIO_THREAD_OWNERSHIP.md`) |
+| `SUGAR_PROFILE=1` | per-system fixed-step timing to stderr once a second: `Script=median/max` per named system, `total=` measured independently in `SuGarApp` around the whole fixed step (systems + `Input::endFixedStep` + snapshot capture), and `residual=` total minus the summed systems. `path=` says `plain` or the access-verified path — **Debug numbers include the `ComponentAccessTracker`'s cost and are not comparable to Release**. Collection is always on (~0.16 ms/step, measured against a stubbed build); the editor Systems panel shows the same figures live |
 
 Game-defined (they live in the game's behaviours, not the engine) — the combat arena:
 

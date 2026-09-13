@@ -1856,6 +1856,30 @@ being judged.** Nothing is built for either (Rule 8); both are now written where
 looks. *Ref:* `DevDocs/DESIGN_SYSTEM_PROFILER.md`, `src/ecs/SystemSchedule.h`, `SUGAR_PROFILE`.
 Gate 71 → **72/72** Debug + Release.
 
+**Editor (verification pass) — the profiler's panel column was unreadable, and the bug reported
+beside it was not real.** *Found:* the profiler's stderr half was verified against real runs; its
+editor half — a time column in the Systems panel — shipped without anyone opening the editor. Doing
+so showed the column chained `SameLine` after the 80+ character `R:/W:` mask strings, so every
+system with a long mask (Script, Navigation, Animation, CollisionDispatch, Audio) had its timing
+pushed off the panel and truncated. Only Physics and RuntimeUI, which happen to have short masks,
+displayed. *Change:* a three-column table, masks last so they take the truncation instead of the
+numbers. Verified with before/after captures and by cross-checking a panel figure against the
+`[profile]` stderr line from the same run. *Verdict:* fixed.
+
+*The other half of that pass is the more useful result, and it is a non-defect.* The same
+verification reported the entire right-hand panel column landing off-screen and blamed the
+dockspace being built from `GetMainViewport()->WorkSize`, measured at ~1920x991 against a "real
+client rect" of ~1536x792. A second pass instrumented both values inside the engine and found them
+**agreeing in every sample**. 1536 x 1.25 = 1920: the original "real" figure was DPI-virtualised by
+the measuring script, which is exactly the trap `DEV_ENVIRONMENT.md` #3 documents — hit *while
+measuring*. The dockspace now sizes from the swapchain extent anyway, because the renderer owns
+that number and needs no round trip through a backend report to trust it, but the code comment says
+plainly that this is a better source and **not** a fix for a demonstrated defect. #3 was sharpened
+with the new rule: never compare a number measured inside the app against one measured by a Win32
+call from outside it, and treat a clean 1.25 / 1.5 / 2.0 ratio between two window measurements as
+the signature of this trap rather than as a discovery. *Ref:* `src/Renderer.cpp`
+`buildEditorUi`/`drawSystemsPanel`, `DevDocs/DEV_ENVIRONMENT.md` #3.
+
 ---
 
 ## Phase detail — M3 (Phases 16–21)

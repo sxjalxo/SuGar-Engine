@@ -62,7 +62,7 @@ a runtime-mesh upload that was 91 % Vulkan object churn (`vkAllocateMemory` call
 a draw list spending 17 ms a frame drawing 16 000 zero-scaled particles, half of every shadow
 map discarded for as long as the shadow pass had existed.
 
-Correctness gate: **71/71**, Debug and Release.
+Correctness gate: **72/72**, Debug and Release.
 
 ---
 
@@ -143,7 +143,7 @@ nonzero if any fail. Headless: no window, no GPU, so it drops straight into CI.
 
 ```powershell
 $env:SUGAR_VALIDATE = "1"; build\Release\SuGarEngine.exe; $env:SUGAR_VALIDATE = ""
-# ... [validate] === 71/71 checks passed, 0 failure(s) ===
+# ... [validate] === 72/72 checks passed, 0 failure(s) ===
 ```
 
 Individual harnesses (`SUGAR_SELFTEST`, `SUGAR_STRESS`, `SUGAR_UITEST`, `SUGAR_BENCH`,
@@ -171,6 +171,16 @@ written on the audio thread and printed from the gameplay thread — the callbac
 allocates or takes an extra lock, because an instrument that perturbs a real-time thread measures
 itself. Contended at ~120 000 lock acquisitions per second and in a 1 000-unit game: **zero
 callback overruns in 8 186 callbacks**, max lock wait 0.33 % of the deadline.
+
+`SUGAR_PROFILE=1` is the one instrument that is **always collecting** — only its reporting is
+gated (`DevDocs/DESIGN_SYSTEM_PROFILER.md`). It prints, once a second to stderr, the median and
+max wall time of every named system in the fixed step, the step total measured *independently*
+around the whole step, and the residual between them; the editor's Systems panel shows the same
+numbers live. A tool that needs an environment variable and a restart before it can say why
+something is slow is one nobody reaches for, and the cost is ~0.16 ms/step — measured against a
+stubbed build, not asserted. It exists because three separate measurements were blocked without
+it, and on its first run it attributed a 1 000-unit slowdown to the game's own O(N) scan rather
+than to any engine system.
 
 ### Controls
 

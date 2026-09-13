@@ -982,8 +982,17 @@ Owns:
 - Access validation
 - Scheduling
 - Future parallel execution
+- **Per-system timing** — wall time for each named system per fixed step, a rolling
+  120-sample window reporting **median and max** (never a mean, which folds a spike into the
+  steady state and hides both). The scheduler owns this because it owns the loop; the *step
+  total* is measured independently by `SuGarApp`, which owns the step, so the residual between
+  them is a real measured quantity rather than a subtraction identity. Collection is
+  unconditional and costs ~0.16 ms/step, measured against a stubbed build rather than asserted;
+  only reporting is gated (`SUGAR_PROFILE=1`). See `DevDocs/DESIGN_SYSTEM_PROFILER.md`.
 
-Never delegated to a job framework.
+Never delegated to a job framework, and not to a third-party profiler either: per-system
+attribution is six `steady_clock` reads, and a networked profiling GUI would be a dependency
+solving a larger problem than any game posed.
 
 ---
 
