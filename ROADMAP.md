@@ -1943,6 +1943,28 @@ timing — specifically **CPU** timing around the render path, not GPU timestamp
 measurably idle at every cell. One forcing event, recorded; the CPU profiler needed three before it
 was built and the same bar applies. *Ref:* `DevDocs/DESIGN_L4_RESOLUTION_BASELINE.md` §12.
 
+**Where the wall sits: ~14.4 us per draw item, crossing at ~1 440 items.** *Measured:* bisecting the
+arena torture between 4 088 and 16 088 entities at 4K puts the 16.67 ms crossing between
+**COUNT 1400 (16.484 ms, 1 411 items)** and **COUNT 1450 (17.688 ms, 1 461 items)**. Fitted over the
+uncapped range: `frame_ms = 0.01439 x items - 3.327`, R^2 **0.993**. **Linear, not quadratic** — a
+quadratic term moves R^2 by 0.004 with a 4.2e-6 coefficient — and that is the good outcome, because
+superlinear would have meant an algorithmic defect of the kind #41's broadphase was. `drawCalls`
+stays pinned at **140** while `items` scales 411 → 1 611, so batching works and the cost is
+everything *upstream* of it. *The strongest evidence needed no new instrument:* **GPU utilisation
+falls from 13-29 % to 6-16 % while frame time triples** — a GPU going idler as frames lengthen can
+only mean the bottleneck is upstream, confirming §12's CPU attribution and confirming that the
+instrument to promote is **CPU** timing around the render path, not GPU timestamps. Splitting the
+per-item cost: sim ~5.6 us/item, and the **residual ~10.6 us/item** — roughly two thirds of it in
+the region no instrument can see. *For a real game:* extrapolating the fit to the arena's actual
+162-enemy scene gives -0.92 ms, unphysical, so the fit is refused below its own range and the
+honest figure is a bound — **COUNT=400 (411 items, twice the real population) still sustains the
+cap**, so a real scene costs <= ~6.96 ms, at least **58 % headroom**. As a budget: **~1 390 draw
+items inside a 16.67 ms frame**, at any resolution up to 8K; the real arena uses ~167. *And
+resolution independence holds at the wall itself* — at the crossing COUNT, 800x600 costs 16.338 ms
+against 4K's 17.688 ms, 1.35 ms for 17.3x the pixels, so ~92 % of the cost is per-item even where
+the engine misses. *Verdict unchanged:* a torture pass is not a game, nothing is forced, and the
+rendering column still waits. *Ref:* `DevDocs/DESIGN_L4_RESOLUTION_BASELINE.md` §13.
+
 ---
 
 ## Phase detail — M3 (Phases 16–21)
