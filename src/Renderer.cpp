@@ -49,6 +49,9 @@
 #include <stdexcept>
 #include <iostream>
 #include <string>
+#include <sstream>
+#include <optional>
+#include <cstdlib>
 #include <GLFW/glfw3.h>
 
 namespace {
@@ -63,6 +66,63 @@ void checkImGuiVkResult(VkResult result) {
     }
 
     std::cerr << "[imgui] Vulkan backend error: " << result << "\n";
+}
+
+// Opt-in measurement (SUGAR_RENDER_RES=<W>x<H>): override the offscreen scene render
+// target's requested extent, for the L4 resolution sweep
+// (DevDocs/DESIGN_L4_RESOLUTION_BASELINE.md). Absent, behaviour is exactly as before this
+// existed.
+//
+// Read once into a function-local static -- same reasoning as SUGAR_FPSLOG/SUGAR_PROFILE
+// in SuGarApp.cpp: a getenv (and a string parse) per frame would perturb what is being
+// measured, and the value cannot change mid-run anyway.
+//
+// This must WIN every frame, not just once at startup: requestedViewportExtent is
+// reassigned every frame from the ImGui viewport panel's size (buildEditorUi, below),
+// in both editor and game view. An override applied only once would be silently
+// clobbered the very next frame and would look like it worked while actually measuring
+// the panel/window size -- the trap DESIGN_L4_RESOLUTION_BASELINE.md §3 calls out by name.
+// Every call site that assigns requestedViewportExtent must consult this.
+const std::optional<VkExtent2D>& renderResOverride() {
+    static const std::optional<VkExtent2D> override = [] () -> std::optional<VkExtent2D> {
+        const char* raw = std::getenv("SUGAR_RENDER_RES");
+        if (raw == nullptr) {
+            return std::nullopt;
+        }
+
+        unsigned int w = 0;
+        unsigned int h = 0;
+        char sep = 0;
+        std::istringstream iss(raw);
+        iss >> w >> sep >> h;
+        if (!iss || (sep != 'x' && sep != 'X') || w == 0 || h == 0) {
+            std::cerr << "[render-res] SUGAR_RENDER_RES='" << raw
+                      << "' is not <W>x<H> (e.g. 3840x2160); ignoring, behaviour unchanged.\n";
+            return std::nullopt;
+        }
+
+        std::cout << "[render-res] SUGAR_RENDER_RES override requested: " << w << "x" << h << "\n";
+        return VkExtent2D{ w, h };
+    }();
+    return override;
+}
+
+// L4 baseline follow-up (DevDocs/DESIGN_L4_RESOLUTION_BASELINE.md, sweep-report.md §5): the
+// resolution sweep found every median frame time pinned to ~6.94-6.96 ms (~144 Hz) regardless
+// of resolution or workload, which is a present-mode cap signature, not a render-cost reading.
+// chooseSwapPresentMode() already prefers MAILBOX (uncapped); this logs which mode actually got
+// selected so a capped median can be attributed instead of inferred. If MAILBOX was selected and
+// frames still land on the refresh interval, the cap is external (an overlay/capture hook such as
+// OBS's Vulkan layer, observed on the sweep machine via `vulkaninfo` showing VK_LAYER_OBS_HOOK),
+// not a choice this engine made.
+const char* presentModeToString(VkPresentModeKHR mode) {
+    switch (mode) {
+        case VK_PRESENT_MODE_IMMEDIATE_KHR: return "IMMEDIATE (uncapped)";
+        case VK_PRESENT_MODE_MAILBOX_KHR: return "MAILBOX (uncapped)";
+        case VK_PRESENT_MODE_FIFO_KHR: return "FIFO (capped to refresh rate)";
+        case VK_PRESENT_MODE_FIFO_RELAXED_KHR: return "FIFO_RELAXED (capped to refresh rate)";
+        default: return "UNKNOWN";
+    }
 }
 
 std::string getEntityLabel(const Registry& registry, Entity entity) {
@@ -210,6 +270,14 @@ void Renderer::init() {
     initImGui();
     viewportExtent = swapChainExtent;
     requestedViewportExtent = viewportExtent;
+    if (const std::optional<VkExtent2D>& override = renderResOverride(); override.has_value()) {
+        // Apply before the very first allocation so frame 1 already renders at the
+        // requested resolution, instead of allocating at the window size and then
+        // immediately tearing it down again once buildEditorUi's per-frame logic
+        // (below) notices the mismatch and marks resources dirty.
+        viewportExtent = *override;
+        requestedViewportExtent = *override;
+    }
     createViewportResources();
     createShadowResources();
 
@@ -575,6 +643,13 @@ void Renderer::createSwapChain() {
     VkPresentModeKHR presentMode = chooseSwapPresentMode(swapChainSupport.presentModes);
     VkExtent2D extent = chooseSwapExtent(swapChainSupport.capabilities);
 
+    // Attribution for the L4 resolution sweep (DESIGN_L4_RESOLUTION_BASELINE.md §5 follow-up):
+    // log the present mode actually selected, once per swapchain creation, so a capped median
+    // frame time can be attributed to this engine's own choice (or ruled out as external) rather
+    // than inferred from the frame-time numbers alone.
+    std::cout << "[present-mode] chooseSwapPresentMode selected: "
+              << presentModeToString(presentMode) << "\n";
+
     uint32_t imageCount = swapChainSupport.capabilities.minImageCount + 1;
     if (swapChainSupport.capabilities.maxImageCount > 0 && imageCount > swapChainSupport.capabilities.maxImageCount) {
         imageCount = swapChainSupport.capabilities.maxImageCount;
@@ -806,6 +881,15 @@ void Renderer::createUiLayerPass() {
 void Renderer::createViewportResources() {
     if (viewportExtent.width == 0 || viewportExtent.height == 0) {
         throw std::runtime_error("viewport resources require a non-zero extent.");
+    }
+
+    // Ground truth for SUGAR_RENDER_RES (DevDocs/DESIGN_L4_RESOLUTION_BASELINE.md §3): this
+    // is the extent the offscreen images are actually created at, not the env var read back.
+    // If an override is active and this ever disagrees with it, the override did not survive
+    // to allocation and any figure taken from this run is measuring the wrong thing.
+    if (renderResOverride().has_value()) {
+        std::cout << "[render-res] createViewportResources allocating " << viewportExtent.width
+                  << "x" << viewportExtent.height << "\n";
     }
 
     createImage(
@@ -1179,8 +1263,14 @@ void Renderer::createImage(uint32_t width, uint32_t height, VkFormat format, VkI
     imageInfo.samples = VK_SAMPLE_COUNT_1_BIT;
     imageInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
 
-    if (vkCreateImage(app->getDevice(), &imageInfo, nullptr, &image) != VK_SUCCESS) {
-        throw std::runtime_error("failed to create image!");
+    // L4 resolution sweep (DESIGN_L4_RESOLUTION_BASELINE.md): pushing the offscreen viewport
+    // target past 4K makes an allocation ceiling a real possibility for the first time. Report
+    // the requested size and the actual VkResult rather than a bare "failed" string, and never
+    // swallow this into a silent fallback -- a ceiling here is a finding, not a bug to work around.
+    if (VkResult imageResult = vkCreateImage(app->getDevice(), &imageInfo, nullptr, &image); imageResult != VK_SUCCESS) {
+        throw std::runtime_error(
+            "failed to create image at " + std::to_string(width) + "x" + std::to_string(height) +
+            " (VkResult=" + std::to_string(static_cast<int>(imageResult)) + ")");
     }
 
     VkMemoryRequirements memRequirements;
@@ -1191,8 +1281,11 @@ void Renderer::createImage(uint32_t width, uint32_t height, VkFormat format, VkI
     allocInfo.allocationSize = memRequirements.size;
     allocInfo.memoryTypeIndex = findMemoryType(memRequirements.memoryTypeBits, properties);
 
-    if (vkAllocateMemory(app->getDevice(), &allocInfo, nullptr, &imageMemory) != VK_SUCCESS) {
-        throw std::runtime_error("failed to allocate image memory!");
+    if (VkResult allocResult = vkAllocateMemory(app->getDevice(), &allocInfo, nullptr, &imageMemory); allocResult != VK_SUCCESS) {
+        throw std::runtime_error(
+            "failed to allocate image memory for " + std::to_string(width) + "x" + std::to_string(height) +
+            " (" + std::to_string(memRequirements.size) + " bytes requested, VkResult=" +
+            std::to_string(static_cast<int>(allocResult)) + ")");
     }
 
     vkBindImageMemory(app->getDevice(), image, imageMemory, 0);
@@ -1788,7 +1881,11 @@ void Renderer::buildEditorUi() {
             static_cast<uint32_t>(std::max(size.y, 1.0f))
         };
 
-        requestedViewportExtent = nextViewportExtent;
+        // SUGAR_RENDER_RES wins over the panel size every frame -- this assignment is
+        // exactly the reassignment that would otherwise clobber a one-time override
+        // (see renderResOverride() above).
+        const std::optional<VkExtent2D>& override = renderResOverride();
+        requestedViewportExtent = override.has_value() ? *override : nextViewportExtent;
         if (requestedViewportExtent.width != viewportExtent.width ||
             requestedViewportExtent.height != viewportExtent.height) {
             viewportResourcesDirty = true;

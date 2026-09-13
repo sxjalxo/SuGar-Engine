@@ -471,6 +471,22 @@ void SuGarApp::run() {
 }
 
 void SuGarApp::initAudio() {
+    // SUGAR_NOAUDIO=1 skips opening the playback device entirely. This is the same
+    // state a machine with no sound card already produces -- AudioEngine::init()
+    // returning false, every play() a no-op, the mixer thread never started -- so it
+    // exercises a path the engine already supports rather than adding a new one.
+    //
+    // It exists because a measurement run is often not the only thing using the
+    // speakers: a scaling sweep that plays a game's looping music and per-unit spatial
+    // audio into whatever else the machine is doing is antisocial, and muting the OS
+    // instead would silence that other thing too. Deliberately checked before init
+    // rather than by muting the mixer, so a "no audio" run costs no mixer thread and
+    // no device at all.
+    if (std::getenv("SUGAR_NOAUDIO") != nullptr) {
+        std::cout << "[Audio] SUGAR_NOAUDIO set; running silently\n";
+        return;
+    }
+
     // Best-effort: if no playback device is available the engine keeps running
     // silently. Audio is independent of Vulkan, so this can fail without
     // affecting rendering or gameplay.
