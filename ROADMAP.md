@@ -1743,6 +1743,23 @@ diff to be measured at all, and still has nothing asking for it.
 Gate 68 → **69/69** Debug + Release (+`SnapshotRate`, break-tested red at 68/69 by disabling the
 probe's window eviction, then green).
 
+**RTS handle probe (L3 game 4) — is the generational-ID decision safe in a hostile game?**
+*Forced:* nothing. Ten measurement tasks, zero engine-repo edits, per
+`DevDocs/DESIGN_RTS_HANDLE_PROBE.md` §7's zero-engine-edit constraint — every instrument lived
+in the game behind `SUGAR_RTS_*` env vars, and the gate read the same **69/69** before and
+after. This is the game `Registry::isAlive()` was left waiting for: a naive pass storing
+handles across frames threw hundreds of thousands of times per rung (millions at rung 1000)
+and never once aliased below generation wrap; a guarded pass caught every one of them at a
+single call site, 5 lines, with no measurable step cost of its own. *Change:* none — the one
+verdict this game promoted (generation-wrap aliasing is reachable inside an ordinary ~23-minute
+session, not only an extreme torture pass, because `EntityManager` pops `freeIndices.back()`
+and concentrates reuse on a few hot slots) opens a **design record** on the free-list reuse
+policy per §6, not an implementation, and none is built here. *Verdict:* defer — nothing here
+is broken; the arena's "~16x headroom" premise is thinner against a real RTS session than it
+looked, and that is the next M4/M5 design candidate. *Ref:*
+`E:\Sugar Engine - Games\Level 3\RtsHandleProbe\Report.md`, `DevDocs/DESIGN_RTS_HANDLE_PROBE.md`,
+`DevDocs/PLATFORM_AUDIT.md`'s `isAlive()` row.
+
 ---
 
 ## Phase detail — M3 (Phases 16–21)
