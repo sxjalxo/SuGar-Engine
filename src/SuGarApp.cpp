@@ -2037,6 +2037,32 @@ void SuGarApp::pickPhysicalDevice() {
             break;
     }
     std::cout << "\n";
+
+    // Attribution for the L4 resolution sweep (DESIGN_L4_RESOLUTION_BASELINE.md Step 1): the
+    // discrete-vs-integrated score above should pick the dGPU on a hybrid laptop, but that is
+    // exactly the assumption worth confirming before sizing any resolution rungs off it. Report
+    // the selected device's real VRAM from VkPhysicalDeviceMemoryProperties (the DEVICE_LOCAL
+    // heap) rather than WMI's AdapterRAM, which saturates at 4095 MB on some drivers.
+    VkPhysicalDeviceMemoryProperties memProperties;
+    vkGetPhysicalDeviceMemoryProperties(physicalDevice, &memProperties);
+    VkDeviceSize deviceLocalHeapBytes = 0;
+    for (uint32_t i = 0; i < memProperties.memoryHeapCount; ++i) {
+        if (memProperties.memoryHeaps[i].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT) {
+            deviceLocalHeapBytes = std::max(deviceLocalHeapBytes, memProperties.memoryHeaps[i].size);
+        }
+    }
+    const char* deviceTypeStr = "Other";
+    switch (properties.deviceType) {
+        case VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU:   deviceTypeStr = "discrete"; break;
+        case VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU: deviceTypeStr = "integrated"; break;
+        case VK_PHYSICAL_DEVICE_TYPE_VIRTUAL_GPU:    deviceTypeStr = "virtual"; break;
+        case VK_PHYSICAL_DEVICE_TYPE_CPU:            deviceTypeStr = "cpu"; break;
+        default: break;
+    }
+    double deviceLocalHeapMB = static_cast<double>(deviceLocalHeapBytes) / (1024.0 * 1024.0);
+    std::cout << "[Renderer] device selected (" << properties.deviceName
+              << ", " << deviceTypeStr
+              << ", " << deviceLocalHeapMB << " MB device-local VRAM)\n";
 }
 
 void SuGarApp::createLogicalDevice() {

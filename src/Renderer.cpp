@@ -115,13 +115,13 @@ const std::optional<VkExtent2D>& renderResOverride() {
 // frames still land on the refresh interval, the cap is external (an overlay/capture hook such as
 // OBS's Vulkan layer, observed on the sweep machine via `vulkaninfo` showing VK_LAYER_OBS_HOOK),
 // not a choice this engine made.
-const char* presentModeToString(VkPresentModeKHR mode) {
+std::string presentModeToString(VkPresentModeKHR mode) {
     switch (mode) {
         case VK_PRESENT_MODE_IMMEDIATE_KHR: return "IMMEDIATE (uncapped)";
         case VK_PRESENT_MODE_MAILBOX_KHR: return "MAILBOX (uncapped)";
         case VK_PRESENT_MODE_FIFO_KHR: return "FIFO (capped to refresh rate)";
         case VK_PRESENT_MODE_FIFO_RELAXED_KHR: return "FIFO_RELAXED (capped to refresh rate)";
-        default: return "UNKNOWN";
+        default: return "UNKNOWN (" + std::to_string(static_cast<int>(mode)) + ")";
     }
 }
 
@@ -643,13 +643,6 @@ void Renderer::createSwapChain() {
     VkPresentModeKHR presentMode = chooseSwapPresentMode(swapChainSupport.presentModes);
     VkExtent2D extent = chooseSwapExtent(swapChainSupport.capabilities);
 
-    // Attribution for the L4 resolution sweep (DESIGN_L4_RESOLUTION_BASELINE.md §5 follow-up):
-    // log the present mode actually selected, once per swapchain creation, so a capped median
-    // frame time can be attributed to this engine's own choice (or ruled out as external) rather
-    // than inferred from the frame-time numbers alone.
-    std::cout << "[present-mode] chooseSwapPresentMode selected: "
-              << presentModeToString(presentMode) << "\n";
-
     uint32_t imageCount = swapChainSupport.capabilities.minImageCount + 1;
     if (swapChainSupport.capabilities.maxImageCount > 0 && imageCount > swapChainSupport.capabilities.maxImageCount) {
         imageCount = swapChainSupport.capabilities.maxImageCount;
@@ -689,6 +682,15 @@ void Renderer::createSwapChain() {
     vkGetSwapchainImagesKHR(app->getDevice(), swapChain, &imageCount, nullptr);
     swapChainImages.resize(imageCount);
     vkGetSwapchainImagesKHR(app->getDevice(), swapChain, &imageCount, swapChainImages.data());
+
+    // Attribution for the L4 resolution sweep (DESIGN_L4_RESOLUTION_BASELINE.md §5/§10.4
+    // follow-up): log the present mode actually selected, once per swapchain creation, next to
+    // the other startup report lines, so a capped median frame time can be attributed to this
+    // engine's own choice (or ruled out as external) rather than inferred from the frame-time
+    // numbers alone. Extent and image count are cheap to report and otherwise assumed, not stated.
+    std::cout << "[Renderer] swapchain created (" << presentModeToString(presentMode)
+              << ", " << extent.width << "x" << extent.height
+              << ", " << imageCount << " images)\n";
 
     VkSemaphoreCreateInfo semaphoreInfo{};
     semaphoreInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;

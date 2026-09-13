@@ -315,6 +315,19 @@ machine, which is the likeliest cause. The engine is ruled out by an older figur
 arena once measured **368 FPS packaged**, far above 144, so it has demonstrably presented faster
 than refresh on this hardware.
 
+> **Corrected 2026-09-13, same day.** The entry originally continued "a capped median cannot
+> demonstrate headroom, so the question is unanswerable". **That was wrong.** A cap hides *how
+> fast* something is; it does not hide *whether it is fast enough*. If the frame rate is
+> **sustained** at the cap, every frame demonstrably finished inside the cap's interval — which is
+> a real upper bound on frame cost, and often lands on the right side of the threshold you were
+> asking about. The L4 sweep's 144 FPS sustained at 7680x4320 proved frame cost <= 6.95 ms against
+> a 16.67 ms bar, answering the question the cap appeared to block.
+>
+> The lesson that survives is narrower and still worth having: **a flat cost across a large load
+> change means the instrument has no range there**, so treat the number as a bound and go find a
+> second instrument. In that case it was `nvidia-smi` — GPU utilisation went 6 % -> 30 % and power
+> 12 W -> 41 W across the same sweep, proving the work was real when frame time could not.
+
 **What to do about it:**
 
 1. **Check the number against `1/refresh` before believing it.** A median sitting within a

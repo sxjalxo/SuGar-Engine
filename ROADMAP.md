@@ -1888,7 +1888,7 @@ packaged, the RTS probe's 144 FPS at rung 1000. 4K is 8.29 MP, **17.3x** the pix
 rendering defect; it is the precondition for every question L4 exists to ask, and it was invisible
 from the numbers themselves — 245 FPS reads as healthy until you know what it was rendering into.
 *Change:* `SUGAR_RENDER_RES=<W>x<H>` overrides the offscreen scene target, which the renderer
-already keeps separate from the swapchain, so 4K render cost is measurable on a 1536x864 panel.
+already keeps separate from the swapchain, so 4K render cost is measurable on a 1920x1080 panel.
 Plus `SUGAR_NOAUDIO=1`, because a sweep should not play a game's music into whatever else the
 machine is doing. *Verdict:* **the baseline is not yet measured.** The first sweep returned medians
 of 6.945-6.956 ms across two unrelated games and a 17.3x pixel range; `1/144 s = 6.9444 ms`, so it
@@ -1900,6 +1900,24 @@ proves it *can* exceed refresh here, so something external is pacing it) and pus
 the median clears the cap. Logged as `DEV_ENVIRONMENT.md` #11, beside the DPI trap: **a measurement
 taken through an environment you have not characterised is a measurement of the environment**, and
 two sweeps have now died that way. *Ref:* `DevDocs/DESIGN_L4_RESOLUTION_BASELINE.md` §10.
+
+**L4's rendering question is CLOSED, and the verdict reversed twice before it settled.** *Measured:*
+sampling the GPU rather than the frame clock broke the deadlock. At 7680x4320 the arena draws
+**29-33 % GPU utilisation, 40-51 W and 1188 MB** against **6-11 %, 12-13 W and 122 MB** at 800x600
+— so `SUGAR_RENDER_RES` genuinely renders 33 megapixels, and my "69x the pixels at the same frame
+time is physically impossible, therefore the knob is a no-op" was wrong: it is possible, because
+the GPU is only a third busy at 8K. *The bar:* frame rate is **sustained at 143.6-143.9 FPS at both
+800x600 and 7680x4320**, so every frame completes inside **~6.95 ms** — at 33 megapixels — against
+a 16.67 ms bar. **HELD, with proof.** That also corrects this log's previous entry: a capped median
+does not make headroom undemonstrable. A cap hides *how fast*, not *whether fast enough*; a
+**sustained** cap is itself an upper bound, and here it lands at under half the bar. *Verdict:*
+**L4 has no rendering forcing function.** Post-processing, DLSS/FSR, dynamic resolution and
+GPU-driven culling stay unbuilt, exactly as L4's own rule requires — a feature list is not a
+forcing function. The frozen prediction that "the arena misses 60 FPS at 4K" **FAILED**, decisively.
+*Caveat recorded rather than buried:* the packaged arena runs **85 entities and 22 draw calls**, not
+the 162-skinned-enemy configuration its 245 FPS headline came from, so the bar is held on a light
+scene; the RTS probe at rung 1000 covers the many-entity axis separately, and a scene heavy in both
+at once remains unmeasured. *Ref:* `DevDocs/DESIGN_L4_RESOLUTION_BASELINE.md` §11.
 
 ---
 
