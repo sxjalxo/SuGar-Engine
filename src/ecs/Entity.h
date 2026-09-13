@@ -19,7 +19,23 @@
 // The split (20/12) is measured, not guessed: the highest live entity count any
 // dogfood game reached is 2 846 against 1 048 575 available, and the arena's GPU
 // torture reused one slot ~250 times in 90 seconds — which rules out an 8-bit
-// generation and leaves 4 096 with ~16x headroom.
+// generation.
+//
+// ~~and leaves 4 096 with ~16x headroom~~ — CORRECTED 2026-09-13
+// (DevDocs/DESIGN_FREE_LIST_REUSE.md). "16x" compared the cap against a 90-SECOND
+// WINDOW, not against a session. The arena's own rate is 2.78 reuses/s, so a hot slot
+// wraps in 4 095 / 2.78 ≈ 24 minutes of play; the RTS probe measured the same rate
+// (2.97/s) and 860 reuses on one slot in a single run. Wrap is reachable inside an
+// ordinary session, and the free list being LIFO is what concentrates the churn.
+//
+// That is survivable, and measured to be: wrap only aliases a handle that is still
+// HELD when its slot wraps, and a stale handle's age is bounded by its HOLDER's
+// remaining life, not by the session's. Instrumented across ~45 000 steps, guarded and
+// unguarded, the oldest stale handle any game held was **4** reuses of its own slot —
+// three orders of magnitude below the 4 095 cap — because the holder dies long before
+// its dead reference can age. The 20/12 split stands on that number rather than on the
+// "16x" inference. A game with a LONG-LIVED holder of a SHORT-LIVED entity is the case
+// that would move it, and none has been built.
 //
 // Why 32 bits and not 64: GameDataComponent stores numbers as double, so a value
 // above 2^53 cannot round-trip through a saved scene. The largest packed handle here

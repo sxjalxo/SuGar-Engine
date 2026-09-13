@@ -1760,6 +1760,18 @@ looked, and that is the next M4/M5 design candidate. *Ref:*
 `E:\Sugar Engine - Games\Level 3\RtsHandleProbe\Report.md`, `DevDocs/DESIGN_RTS_HANDLE_PROBE.md`,
 `DevDocs/PLATFORM_AUDIT.md`'s `isAlive()` row.
 
+*Closed out the same week:* the design record that entry opened
+(`DevDocs/DESIGN_FREE_LIST_REUSE.md`) froze a decision rule before building its instrument, then
+measured **handle age in reuses-of-its-own-slot** across ~45 000 steps, guarded and unguarded. The
+oldest stale handle any game held was **4**, against a 512 threshold and a 4 095 wrap, plateaued
+for the last 27 600 steps. **Verdict C: the LIFO free list and the 20/12 split stand; the defect
+was the inference, not the code.** "~16x headroom" had compared the cap against a 90-second
+window rather than a session — `src/ecs/Entity.h`'s comment now carries the session-length figure
+and the measured age instead. The reason the number is small is the finding: a stale handle's age
+is bounded by its **holder's** remaining life, not the session's, and in every game built so far
+the holder dies first. A long-lived holder of a short-lived entity is the untested case, and
+nothing has one. Gate **69/69**, comment-only engine change.
+
 ---
 
 ## Phase detail — M3 (Phases 16–21)
