@@ -119,6 +119,53 @@ static bool audioDebugEnabled() {
     return enabled;
 }
 
+// Opt-in measurement (SUGAR_PROFILE=1): per-system fixed-step timing, once a
+// second, to stderr. DevDocs/DESIGN_SYSTEM_PROFILER.md -- SystemScheduler times
+// both its plain and access-verified system.run(dt) call sites unconditionally
+// (collection always on, per §4); this only gates the report. Same
+// once-per-second cadence and env-read-once-into-a-static shape as
+// SUGAR_FPSLOG/SUGAR_AUDIODBG above, for the same reason: a getenv per frame
+// would perturb what is being measured.
+static bool systemProfileEnabled() {
+    static const bool enabled = std::getenv("SUGAR_PROFILE") != nullptr;
+    return enabled;
+}
+
+// One line: per-system median/max ms, the fixed-step total (measured
+// independently, never summed -- §2), and the residual (total minus the sum
+// of per-system medians) -- a real measured quantity because both sides come
+// from independent clock reads, unlike the algebraic-identity check
+// DESIGN_SNAPSHOT_CAPTURE_COST.md §11.6 records. Also states which call site
+// ran (§6): in Debug with access enforcement on, per-system numbers include
+// the ComponentAccessTracker's own cost, and a line that doesn't say so
+// invites the same Debug-vs-Release confusion that let a wrong snapshot
+// figure survive for months in this project.
+//
+// `stepTotal` is passed in rather than read off `schedule`: the scheduler owns
+// per-system timing (it owns that loop), but the step total now covers the
+// WHOLE fixed step -- `updateSystems` + `Input::endFixedStep()` +
+// `captureSnapshotBudgeted()` -- which SuGarApp owns, not the scheduler
+// (DESIGN_SYSTEM_PROFILER.md Task 1 fix: the old total spanned only
+// `SystemScheduler::run`'s loop, so snapshot capture -- measured elsewhere at
+// a 3.89ms median, more than twice the whole systems loop -- was invisible to
+// this profiler and never appeared in the residual).
+static void printSystemProfile(const SystemScheduler& schedule, const SystemTiming& stepTotal) {
+    std::cerr << std::fixed << std::setprecision(4);
+    std::cerr << "[profile] path=" << (schedule.lastRunUsedAccessTracking() ? "access-verified" : "plain");
+
+    double medianSum = 0.0;
+    const auto& systems = schedule.systems();
+    for (std::size_t i = 0; i < systems.size(); ++i) {
+        const SystemTiming timing = schedule.systemTiming(i);
+        medianSum += timing.medianMs;
+        std::cerr << " " << systems[i].name << "=" << timing.medianMs << "/" << timing.maxMs;
+    }
+
+    const double residualMs = stepTotal.medianMs - medianSum;
+    std::cerr << " total=" << stepTotal.medianMs << "/" << stepTotal.maxMs
+              << " residual=" << residualMs << "\n";
+}
+
 // Same shape as StressTests.h's "[audiodbg] ..." line so the two runs are
 // directly diffable/greppable against each other.
 static void printAudioDebugStats(const AudioDebugStats& stats) {
@@ -1443,6 +1490,13 @@ void SuGarApp::mainLoop() {
     int framesThisSecond = 0;
     bool reloadDescriptors = false;
 
+    // DESIGN_SYSTEM_PROFILER.md Task 1: the fixed step's total wall time, owned
+    // here (SuGarApp owns the step) rather than by SystemScheduler (which only
+    // owns the systems loop inside it). Lives for the app's lifetime, same as
+    // fpsTimer/framesThisSecond above, so the rolling window survives across
+    // the once-a-second report below.
+    TimingWindow fixedStepTiming;
+
     // A booted game starts playing immediately: behaviours only run in Play, and someone
     // launching a game expects it running, not paused in the editor. The editor (no
     // SUGAR_GAME) still opens in Edit. (Auto-play, M4 friction #6.)
@@ -1535,6 +1589,14 @@ void SuGarApp::mainLoop() {
                 fixedAccumulator = MAX_ACCUMULATED_TIME;
             }
             while (fixedAccumulator >= FIXED_TIMESTEP) {
+                // DESIGN_SYSTEM_PROFILER.md Task 1: the step total is measured here,
+                // independently of SystemScheduler's own per-system timing, and spans
+                // the WHOLE fixed step -- not just the systems loop. SuGarApp owns the
+                // step, so it owns this measurement; the scheduler stays unaware that
+                // snapshot capture exists. Unconditional, like the scheduler's own
+                // collection (§4): six more clock reads a step is not the thing that
+                // will make a fixed step slow.
+                const auto fixedStepStart = std::chrono::steady_clock::now();
                 updateSystems(FIXED_TIMESTEP);
                 // Consume the simulation-domain input edges this step observed. Behaviours
                 // run here and nowhere else, so this is the only correct place to clear
@@ -1543,6 +1605,9 @@ void SuGarApp::mainLoop() {
                 // DevDocs/DESIGN_INPUT_EDGE_SEMANTICS.md.
                 Input::endFixedStep();
                 captureSnapshotBudgeted(); // record each fixed step for time travel (budget-gated)
+                const auto fixedStepEnd = std::chrono::steady_clock::now();
+                fixedStepTiming.record(
+                    std::chrono::duration<double, std::milli>(fixedStepEnd - fixedStepStart).count());
                 fixedAccumulator -= FIXED_TIMESTEP;
             }
         } else {
@@ -1590,6 +1655,11 @@ void SuGarApp::mainLoop() {
             // callback already wrote; nothing on the audio thread is touched.
             if (audioDebugEnabled()) {
                 printAudioDebugStats(audioEngine.debugStats());
+            }
+            // Opt-in measurement (SUGAR_PROFILE=1): see printSystemProfile above.
+            if (systemProfileEnabled()) {
+                printSystemProfile(systemSchedule,
+                                   { fixedStepTiming.median(), fixedStepTiming.max() });
             }
             fpsTimer = currentTime;
             framesThisSecond = 0;

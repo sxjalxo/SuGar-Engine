@@ -1822,6 +1822,40 @@ to exhaustion: animation, audio and collision (the arena), entity identity (the 
 packaged manifest reader, and the audio thread. Every row it marked unproven produced either a
 defect or a number; no row it marked green produced a defect.
 
+**Per-system profiler — the gap three games forced.** *Forced:* three separate measurements, not a
+feature request. L3 game 3 had to invent differential A/B measurement and wrote down that if it
+ever failed to answer something, *that* was the promotion evidence for a profiler; L3 game 4
+dropped watch area 8 ("budget share per system per rung") before its contract was even frozen and
+recorded the gap as an observation limitation; and a rung-1000 run produced a slowdown nobody could
+attribute. `SystemScheduler::run` carried no timers, and the engine's only per-subsystem
+instruments were counters. *Change:* per-system wall time around the two `system.run(dt)` call
+sites, a rolling 120-sample window reporting **median and max** (never mean — a mean folds a spike
+into the steady state), the fixed step's total measured **independently** in `SuGarApp` so the
+residual is a real quantity rather than a subtraction identity, `SUGAR_PROFILE=1` to stderr, and a
+time column in the editor's existing Systems panel. Collection is unconditional — a tool needing an
+env var and a restart before it can say why something is slow is one nobody reaches for — and the
+overhead was **measured, not asserted**: ~0.16 ms/step against a 0.05-0.10 ms noise band.
+*Verdict:* built, and it answered on first use. The prediction frozen before the tool existed —
+that the Script system would dominate because the game's own O(N) re-acquisition scan lives there —
+**held in its strong form**: `Script=4.10/4.99 ms` of a `total=5.64/6.76 ms` step at rung 1000,
+72.8 %, residual 0.7 %. **The engine is exonerated; the cost was the game's.**
+
+Two things it found that were not what it was built for. **It falsified the premise that helped
+justify it:** the "sim runs at ~half real time" figure was wall-clock-duration ÷ steps-reached,
+whose denominator starts at Play while its numerator starts at process launch — so it charged scene
+load and the spawn of 1 000 units to the step rate. The real step total is 5.6-6.9 ms against a
+16.67 ms budget, 32-41 % of it. The first two forcing events stand on their own; the third was a
+bad number, and the tool built to attribute it was what proved so. **And it surfaced a limit a
+measurement knob had hidden:** a plain rung-1000 run prints `time-travel paused: 8 consecutive
+snapshots over the 4 ms budget` within the first second — at 1 000 units a normal session loses
+time travel — which L3 game 4's area 9 could not report because its own runs raised
+`SUGAR_SNAP_BUDGET` so the latch could not truncate the sample. The median was measured correctly
+while the mechanism reacting to the tail was switched off. Same shape as the Debug-vs-Release
+artifact three games carried: **the knob that made the measurement possible changed the behaviour
+being judged.** Nothing is built for either (Rule 8); both are now written where the next reader
+looks. *Ref:* `DevDocs/DESIGN_SYSTEM_PROFILER.md`, `src/ecs/SystemSchedule.h`, `SUGAR_PROFILE`.
+Gate 71 → **72/72** Debug + Release.
+
 ---
 
 ## Phase detail — M3 (Phases 16–21)

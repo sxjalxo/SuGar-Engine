@@ -2583,13 +2583,22 @@ void Renderer::drawSystemsPanel() {
 
     const auto& systems = systemSchedule->systems();
     if (ImGui::CollapsingHeader("Order & access", ImGuiTreeNodeFlags_DefaultOpen)) {
+        // Per-system timing (DevDocs/DESIGN_SYSTEM_PROFILER.md): median/max ms over
+        // the scheduler's rolling window, read straight off SystemScheduler -- this
+        // panel does no measuring of its own, it only displays what run() already
+        // collects unconditionally.
+        ImGui::TextDisabled("path=%s", systemSchedule->lastRunUsedAccessTracking() ? "access-verified" : "plain");
         for (std::size_t i = 0; i < systems.size(); ++i) {
             const System& system = systems[i];
+            const SystemTiming timing = systemSchedule->systemTiming(i);
             ImGui::Text("%zu. %s", i, system.name.c_str());
             ImGui::SameLine();
             ImGui::TextDisabled("R:%s  W:%s",
                                 describeComponentMask(system.reads).c_str(),
                                 describeComponentMask(system.writes).c_str());
+            ImGui::SameLine();
+            ImGui::TextColored(ImVec4(0.6f, 0.75f, 0.95f, 1.0f), "  med %.3fms  max %.3fms",
+                               timing.medianMs, timing.maxMs);
         }
     }
 

@@ -1,5 +1,8 @@
 #pragma once
 
+#include <algorithm>
+#include <array>
+#include <chrono>
 #include <cstddef>
 #include <functional>
 #include <iostream>
@@ -69,6 +72,67 @@ struct AccessViolationError : std::logic_error {
     explicit AccessViolationError(const std::string& message) : std::logic_error(message) {}
 };
 
+// DESIGN_SYSTEM_PROFILER.md -- a rolling window of the last kCapacity wall-time
+// samples (milliseconds) for one named quantity: either a system or the step
+// total. Reports median and max, never mean (design §3): a mean folds a spike
+// into the steady state and hides both the spike and the steady state. A
+// developer asking "what is slow" means *now*, not a lifetime average, so the
+// window is bounded (~2s at 60Hz) rather than cumulative-since-boot.
+//
+// A plain ring buffer: once full, each new sample overwrites the oldest slot,
+// so old samples genuinely stop counting rather than being diluted forever.
+class TimingWindow {
+public:
+    static constexpr std::size_t kCapacity = 120; // ~2s at 60Hz
+
+    void record(double milliseconds) {
+        samples_[next_] = milliseconds;
+        next_ = (next_ + 1) % kCapacity;
+        if (count_ < kCapacity) {
+            ++count_;
+        }
+    }
+
+    double median() const {
+        if (count_ == 0) {
+            return 0.0;
+        }
+        std::array<double, kCapacity> sorted = samples_;
+        std::sort(sorted.begin(), sorted.begin() + static_cast<std::ptrdiff_t>(count_));
+        const std::size_t mid = count_ / 2;
+        if (count_ % 2 == 0) {
+            return (sorted[mid - 1] + sorted[mid]) / 2.0;
+        }
+        return sorted[mid];
+    }
+
+    double max() const {
+        if (count_ == 0) {
+            return 0.0;
+        }
+        double result = samples_[0];
+        for (std::size_t i = 1; i < count_; ++i) {
+            result = std::max(result, samples_[i]);
+        }
+        return result;
+    }
+
+    std::size_t count() const { return count_; }
+
+private:
+    std::array<double, kCapacity> samples_{};
+    std::size_t next_ = 0;  // slot the next record() overwrites
+    std::size_t count_ = 0; // samples filled so far, saturates at kCapacity
+};
+
+// Median + max read out of a TimingWindow -- the shape both the editor panel
+// and the SUGAR_PROFILE line consume, so neither has to touch TimingWindow's
+// internals (DESIGN_SYSTEM_PROFILER.md §2/§3).
+struct SystemTiming {
+    double medianMs = 0.0;
+    double maxMs = 0.0;
+};
+
 // Runs a fixed, ordered pipeline of systems each gameplay step. Registration
 // order is the deterministic schedule; the declared read/write sets are used to
 // verify and analyze, not to reorder (reordering independent-but-adjacent work
@@ -78,11 +142,13 @@ public:
     void add(System system) {
         systems_.push_back(std::move(system));
         reported_.emplace_back();
+        systemTimings_.emplace_back();
     }
 
     void clear() {
         systems_.clear();
         reported_.clear();
+        systemTimings_.clear();
     }
 
     bool empty() const { return systems_.empty(); }
@@ -107,8 +173,33 @@ public:
     void clearViolationLog() { violationLog_.clear(); }
 
     // Execute every system once, in deterministic registration order.
+    //
+    // DESIGN_SYSTEM_PROFILER.md §2/§4: both `system.run(dt)` call sites below are
+    // timed -- the plain path and the access-verified one -- and fed into that
+    // system's TimingWindow. Collection is unconditional (roughly six clock reads
+    // per step); only *reporting* it is gated.
+    //
+    // The scheduler owns ONLY per-system timing (it owns this loop). The fixed
+    // step's total -- and the residual against these per-system medians -- is
+    // deliberately NOT measured here: this method covers just the systems loop,
+    // not `Input::endFixedStep()` or snapshot capture, which happen around it in
+    // SuGarApp. An earlier version of this profiler measured a "step total"
+    // around this method and called it the step total; it wasn't -- it silently
+    // excluded the single largest known contributor (snapshot capture). The step
+    // total is now measured independently by the caller that owns the whole step
+    // (SuGarApp::mainLoop), so their difference (the residual) stays a real
+    // measured quantity rather than an identity that can't fail (§2, and the
+    // algebraic-identity trap DESIGN_SNAPSHOT_CAPTURE_COST.md §11.6 records).
+    //
+    // §6: in Debug with enforcement on, the verified path's timed region spans
+    // the ComponentAccessTracker scope, not just the bare call, so those numbers
+    // include the tracker's own recording cost. lastRunUsedAccessTracking_ records
+    // which path ran so reporting can say so.
     void run(float dt) {
+        using clock = std::chrono::steady_clock;
+
         const bool verify = enforcement_ != AccessEnforcement::Off && ComponentAccess::trackingEnabled();
+        lastRunUsedAccessTracking_ = verify;
 
         for (std::size_t i = 0; i < systems_.size(); ++i) {
             System& system = systems_[i];
@@ -117,15 +208,21 @@ public:
             }
 
             if (!verify) {
+                const auto t0 = clock::now();
                 system.run(dt);
+                const auto t1 = clock::now();
+                systemTimings_[i].record(std::chrono::duration<double, std::milli>(t1 - t0).count());
                 continue;
             }
 
+            const auto t0 = clock::now();
             ComponentAccessTracker tracker;
             {
                 ComponentAccess::Scope scope(&tracker);
                 system.run(dt);
             }
+            const auto t1 = clock::now();
+            systemTimings_[i].record(std::chrono::duration<double, std::milli>(t1 - t0).count());
 
             AccessViolation violation;
             violation.system = system.name;
@@ -146,6 +243,20 @@ public:
             }
         }
     }
+
+    // Read-only timing accessors -- same style as systems()/stages(): a plain
+    // view of state `run()` already maintains, no side effects.
+    //
+    // Per-system median/max over the rolling window, taken at `index` into
+    // systems(). DESIGN_SYSTEM_PROFILER.md §2.
+    SystemTiming systemTiming(std::size_t index) const {
+        return { systemTimings_[index].median(), systemTimings_[index].max() };
+    }
+
+    // True when the most recent run() executed the access-verified path (Debug,
+    // enforcement on), in which case systemTiming() includes the
+    // ComponentAccessTracker's own cost -- see §6 and the run() comment above.
+    bool lastRunUsedAccessTracking() const { return lastRunUsedAccessTracking_; }
 
     // Group systems into ordered stages of mutually-independent work: a greedy,
     // order-preserving pass where each system joins the current stage unless it
@@ -222,4 +333,10 @@ private:
     std::vector<AccessViolation> violationLog_;
     AccessEnforcement enforcement_ = AccessEnforcement::Off;
     std::function<void(const AccessViolation&)> violationHandler_;
+
+    // DESIGN_SYSTEM_PROFILER.md. Parallel to systems_ (kept in lockstep by
+    // add()/clear()). The step total lives one level up, in SuGarApp -- see the
+    // comment on run() above.
+    std::vector<TimingWindow> systemTimings_;
+    bool lastRunUsedAccessTracking_ = false;
 };

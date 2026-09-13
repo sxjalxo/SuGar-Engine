@@ -5308,6 +5308,117 @@ inline bool testSystemScheduler() {
     return ok;
 }
 
+// --- SystemScheduler timing (DevDocs/DESIGN_SYSTEM_PROFILER.md): per-system
+// median/max over the rolling window, window eviction, and which call site
+// produced the numbers. The step total itself is NOT scheduler state (Task 1
+// fix): it is measured by whoever owns the whole fixed step (SuGarApp owns
+// `updateSystems` + `Input::endFixedStep()` + snapshot capture), so this test
+// exercises that ownership split directly -- a caller-owned TimingWindow fed
+// from outside the scheduler, the way SuGarApp::mainLoop does it -- rather
+// than asserting on a stepTiming() the scheduler no longer exposes.
+inline bool testSystemProfiler() {
+    bool ok = true;
+
+    // Busy-wait against steady_clock rather than sleep_for: sleep_for's OS
+    // scheduling granularity (commonly 10-15ms on Windows) would make
+    // millisecond-scale durations indistinguishable, which is exactly the
+    // resolution this profiler exists to report.
+    auto spinFor = [](std::chrono::microseconds duration) {
+        const auto start = std::chrono::steady_clock::now();
+        while (std::chrono::steady_clock::now() - start < duration) {
+            // busy-wait for a known, precise duration
+        }
+    };
+
+    { // three systems given known, clearly different durations produce medians
+      // in the same order. A caller-owned TimingWindow (standing in for
+      // SuGarApp::mainLoop's fixedStepTiming) measures the WHOLE step --
+      // scheduler.run() plus an extra spin standing in for the work the
+      // scheduler can never see (Input::endFixedStep/snapshot capture) -- so
+      // the residual is no longer intra-loop jitter only: it must be large
+      // enough to show that extra off-loop cost, which is exactly what Task 1
+      // fixed (the old total spanned only the systems loop and could never
+      // reflect snapshot capture at all).
+        SystemScheduler scheduler;
+        scheduler.add(System{"Fast", 0, 0, [&](float) { spinFor(std::chrono::microseconds(150)); }});
+        scheduler.add(System{"Medium", 0, 0, [&](float) { spinFor(std::chrono::microseconds(700)); }});
+        scheduler.add(System{"Slow", 0, 0, [&](float) { spinFor(std::chrono::microseconds(2000)); }});
+
+        TimingWindow stepTotal; // caller-owned, like SuGarApp's fixedStepTiming
+        constexpr int kRuns = 6;
+        constexpr auto kOffLoopWork = std::chrono::microseconds(500); // stand-in for snapshot capture etc.
+        for (int i = 0; i < kRuns; ++i) {
+            const auto t0 = std::chrono::steady_clock::now();
+            scheduler.run(1.0f / 60.0f);
+            spinFor(kOffLoopWork); // work the scheduler never sees, e.g. captureSnapshotBudgeted()
+            const auto t1 = std::chrono::steady_clock::now();
+            stepTotal.record(std::chrono::duration<double, std::milli>(t1 - t0).count());
+        }
+
+        const SystemTiming fast = scheduler.systemTiming(0);
+        const SystemTiming medium = scheduler.systemTiming(1);
+        const SystemTiming slow = scheduler.systemTiming(2);
+        ok &= fast.medianMs < medium.medianMs;
+        ok &= medium.medianMs < slow.medianMs;
+        ok &= fast.maxMs < slow.maxMs;
+
+        const double sumMedians = fast.medianMs + medium.medianMs + slow.medianMs;
+        const double totalMedian = stepTotal.median();
+        // 0.5ms slack for clock/scheduler jitter around the loop's own overhead.
+        ok &= totalMedian >= sumMedians - 0.5;
+
+        const double residual = totalMedian - sumMedians;
+        // The injected off-loop work is ~0.5ms; the residual must show most of
+        // it (not just jitter), or the fix regressed to intra-loop-only again.
+        ok &= residual >= 0.3;
+    }
+
+    { // the rolling window evicts: once it fills, old samples stop counting
+      // instead of being diluted into a lifetime average (never mean -- §3)
+        SystemScheduler scheduler;
+        double durationUs = 4000.0; // read fresh each call, so changing it below
+                                     // changes what the *next* run() records
+        scheduler.add(System{"Variable", 0, 0, [&](float) {
+            spinFor(std::chrono::microseconds(static_cast<long long>(durationUs)));
+        }});
+
+        // Fill the entire window with a slow (~4ms) duration.
+        for (std::size_t i = 0; i < TimingWindow::kCapacity; ++i) {
+            scheduler.run(1.0f / 60.0f);
+        }
+        const double slowMedian = scheduler.systemTiming(0).medianMs;
+        ok &= slowMedian >= 3.5;
+
+        // Overwrite the entire window with a much faster (~0.06ms) duration.
+        durationUs = 60.0;
+        for (std::size_t i = 0; i < TimingWindow::kCapacity; ++i) {
+            scheduler.run(1.0f / 60.0f);
+        }
+        const double fastMedian = scheduler.systemTiming(0).medianMs;
+        // If any of the old ~4ms samples still counted, the median would still
+        // be dragged toward them; full eviction reads close to the new duration.
+        ok &= fastMedian < 1.0;
+        ok &= fastMedian < slowMedian;
+    }
+
+    { // the report states which call site ran: Off enforcement always uses the
+      // plain path; with enforcement on, the verified path runs iff the build
+      // can actually track access (compiled out entirely in Release)
+        SystemScheduler off;
+        off.add(System{"Any", 0, 0, [](float) {}});
+        off.run(1.0f / 60.0f);
+        ok &= !off.lastRunUsedAccessTracking();
+
+        SystemScheduler warned;
+        warned.setEnforcement(AccessEnforcement::Warn);
+        warned.add(System{"Any", 0, 0, [](float) {}});
+        warned.run(1.0f / 60.0f);
+        ok &= warned.lastRunUsedAccessTracking() == ComponentAccess::trackingEnabled();
+    }
+
+    return ok;
+}
+
 // --- ComponentAccess: the ECS reports access; the scheduler enforces the
 // declared read/write sets (Phase 13B guard rail) -----------------------------
 inline bool testComponentAccess() {
@@ -6016,6 +6127,7 @@ inline std::pair<int, int> run() {
         { "DestroyEntityTree", testDestroyEntityTree },
         { "BuiltinCubeMesh",  testBuiltinCubeMesh },
         { "SystemScheduler",  testSystemScheduler },
+        { "SystemProfiler",   testSystemProfiler },
         { "ComponentAccess",  testComponentAccess },
         { "SnapshotPatch",    testSnapshotPatch },
         { "RuntimeUI",        testRuntimeUI },
