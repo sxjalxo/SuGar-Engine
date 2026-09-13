@@ -22,6 +22,7 @@
 #include "navigation/NavMesh.h"
 #include "navigation/NavMeshBaker.h"
 #include "navigation/NavMeshRegistry.h"
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <memory>
@@ -343,9 +344,28 @@ void Renderer::shutdown() {
     }
 }
 
+// DESIGN_RENDER_CPU_TIMING.md -- render-side CPU timing around this function. Every
+// region below is measured with its own pair of steady_clock reads bracketing the real
+// code it names (never derived by subtracting from a total), so frameOther -- built by
+// summing the spans that are genuinely left over -- is a real measured quantity and not
+// an identity (the trap DESIGN_SNAPSHOT_CAPTURE_COST.md §11.6 records). `fenceWait` is
+// WAIT, not work (design §2): it is timed and reported, but never folded into any work
+// total by a caller. `resources` is NOT timed here -- refreshDrawListResources() times
+// itself, so its cost is captured whether it runs from the conditional call below or
+// from SuGarApp's own direct call on a hot-reload descriptor refresh.
 void Renderer::drawFrame() {
-    vkWaitForFences(app->getDevice(), 1, &inFlightFences[currentFrame], VK_TRUE, UINT64_MAX);
+    using clock = std::chrono::steady_clock;
+    const auto ms = [](clock::time_point a, clock::time_point b) {
+        return std::chrono::duration<double, std::milli>(b - a).count();
+    };
+    double frameOtherMs = 0.0;
 
+    const auto waitStart = clock::now();
+    vkWaitForFences(app->getDevice(), 1, &inFlightFences[currentFrame], VK_TRUE, UINT64_MAX);
+    const auto waitEnd = clock::now();
+    fenceWaitTiming_.record(ms(waitStart, waitEnd));
+
+    const auto other1Start = clock::now();
     // One frame has completed: age the retirement queue and destroy whatever has now
     // outlived every frame that could have been reading it
     // (DevDocs/DESIGN_GPU_RETIREMENT.md). This is the engine's only drain point.
@@ -373,11 +393,15 @@ void Renderer::drawFrame() {
             break;
         }
     }
+    const auto other1End = clock::now();
+    frameOtherMs += ms(other1Start, other1End);
+
     if (descriptorRefreshRequested || needsNewTextureDescriptors) {
-        refreshDrawListResources();
+        refreshDrawListResources(); // times itself into resourcesTiming_
         descriptorRefreshRequested = false;
     }
 
+    const auto other2Start = clock::now();
     uint32_t imageIndex;
     VkResult result = vkAcquireNextImageKHR(
         app->getDevice(),
@@ -390,6 +414,8 @@ void Renderer::drawFrame() {
 
     if (result == VK_ERROR_OUT_OF_DATE_KHR) {
         recreateSwapChain();
+        frameOtherMs += ms(other2Start, clock::now());
+        frameOtherTiming_.record(frameOtherMs);
         return;
     }
 
@@ -406,8 +432,15 @@ void Renderer::drawFrame() {
     VkCommandBuffer cmd = commandBuffers[currentFrame];
 
     vkResetCommandBuffer(cmd, 0);
-    recordCommandBuffer(cmd, imageIndex);
+    const auto other2End = clock::now();
+    frameOtherMs += ms(other2Start, other2End);
 
+    const auto recordStart = clock::now();
+    recordCommandBuffer(cmd, imageIndex);
+    const auto recordEnd = clock::now();
+    recordTiming_.record(ms(recordStart, recordEnd));
+
+    const auto submitStart = clock::now();
     VkSubmitInfo submitInfo{};
     submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
 
@@ -439,7 +472,10 @@ void Renderer::drawFrame() {
     presentInfo.pImageIndices = &imageIndex;
 
     result = vkQueuePresentKHR(app->getPresentQueue(), &presentInfo);
+    const auto submitEnd = clock::now();
+    submitTiming_.record(ms(submitStart, submitEnd));
 
+    const auto other3Start = clock::now();
     if (result == VK_ERROR_OUT_OF_DATE_KHR || result == VK_SUBOPTIMAL_KHR || framebufferResized) {
         framebufferResized = false;
         recreateSwapChain();
@@ -448,6 +484,20 @@ void Renderer::drawFrame() {
     }
 
     currentFrame = (currentFrame + 1) % MAX_FRAMES_IN_FLIGHT;
+    const auto other3End = clock::now();
+    frameOtherMs += ms(other3Start, other3End);
+
+    frameOtherTiming_.record(frameOtherMs);
+}
+
+Renderer::RenderCpuTiming Renderer::renderCpuTiming() const {
+    RenderCpuTiming timing;
+    timing.fenceWait = { fenceWaitTiming_.median(), fenceWaitTiming_.max() };
+    timing.record = { recordTiming_.median(), recordTiming_.max() };
+    timing.submit = { submitTiming_.median(), submitTiming_.max() };
+    timing.frameOther = { frameOtherTiming_.median(), frameOtherTiming_.max() };
+    timing.resources = { resourcesTiming_.median(), resourcesTiming_.max() };
+    return timing;
 }
 
 void Renderer::setDrawList(const DrawList* newDrawList) {
@@ -458,10 +508,16 @@ void Renderer::setDrawList(const DrawList* newDrawList) {
     }
 }
 
+// DESIGN_RENDER_CPU_TIMING.md -- self-timed rather than timed at each call site, so both
+// of its callers (the conditional refresh inside drawFrame(), and SuGarApp::mainLoop's
+// direct call on a hot-reload descriptor refresh, outside drawFrame() entirely) land in
+// the same `resourcesTiming_` window with one instrumentation point.
 void Renderer::refreshDrawListResources() {
     if (app->getDevice() == VK_NULL_HANDLE || descriptorSetLayout == VK_NULL_HANDLE) {
         return;
     }
+
+    const auto start = std::chrono::steady_clock::now();
 
     vkDeviceWaitIdle(app->getDevice());
 
@@ -473,6 +529,9 @@ void Renderer::refreshDrawListResources() {
     textureDescriptorSets.clear();
     createDescriptorPool();
     createDescriptorSets();
+
+    const auto end = std::chrono::steady_clock::now();
+    resourcesTiming_.record(std::chrono::duration<double, std::milli>(end - start).count());
 }
 
 void Renderer::moveCameraForward(float deltaTime) {

@@ -11,6 +11,7 @@
 #include <string>
 #include "assets/AssetHandle.h"
 #include "ecs/Entity.h"
+#include "ecs/SystemSchedule.h" // TimingWindow / SystemTiming -- DESIGN_RENDER_CPU_TIMING.md reuses the per-system profiler's convention
 #include "editor/EditorCommand.h"
 #include "rendering/Texture.h"
 #include "scene/Transform.h"
@@ -125,7 +126,23 @@ public:
     // could. Exposed because "items" and "draw calls" are different questions, and a
     // measurement run that reports only the first cannot see whether batching happened.
     int submittedDrawCalls() const;
-    
+
+    // DESIGN_RENDER_CPU_TIMING.md -- render-side CPU timing, owned here because Renderer
+    // owns drawFrame() and refreshDrawListResources(); SuGarApp owns drawList
+    // (rebuildDrawList()) and frameTotal (the whole post-fixed-step region), the same
+    // split System Scheduler/SuGarApp already use for per-system vs step-total timing.
+    // Same TimingWindow / median+max convention as DESIGN_SYSTEM_PROFILER.md -- rolling
+    // window, never mean. `fenceWait` is WAIT, not work (design §2): it is where frame
+    // pacing accumulates and must never be summed into a work total by a caller.
+    struct RenderCpuTiming {
+        SystemTiming fenceWait;   // vkWaitForFences only -- WAIT
+        SystemTiming record;      // recordCommandBuffer()
+        SystemTiming submit;      // vkQueueSubmit + vkQueuePresentKHR
+        SystemTiming frameOther;  // remainder of drawFrame (acquire, endFrame, bookkeeping)
+        SystemTiming resources;   // refreshDrawListResources(), wherever it is called from
+    };
+    RenderCpuTiming renderCpuTiming() const;
+
 private:
     void cleanupSwapChain();
     void createSwapChain();
@@ -341,4 +358,15 @@ private:
     int editorLogoHeight = 0;
 
     bool imguiInitialized = false;
+
+    // DESIGN_RENDER_CPU_TIMING.md -- backing rolling windows for renderCpuTiming() above.
+    // fenceWaitTiming_/recordTiming_/submitTiming_/frameOtherTiming_ are recorded inside
+    // drawFrame(); resourcesTiming_ is recorded inside refreshDrawListResources() itself so
+    // both its call sites (the conditional refresh inside drawFrame(), and SuGarApp's direct
+    // call on a hot-reload descriptor refresh) are captured by one instrumentation point.
+    TimingWindow fenceWaitTiming_;
+    TimingWindow recordTiming_;
+    TimingWindow submitTiming_;
+    TimingWindow frameOtherTiming_;
+    TimingWindow resourcesTiming_;
 };

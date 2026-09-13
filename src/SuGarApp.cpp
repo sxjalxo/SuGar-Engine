@@ -166,6 +166,35 @@ static void printSystemProfile(const SystemScheduler& schedule, const SystemTimi
               << " residual=" << residualMs << "\n";
 }
 
+// DESIGN_RENDER_CPU_TIMING.md -- render-side CPU timing, same knob (SUGAR_PROFILE=1),
+// same once-a-second cadence, printed as an adjacent stderr line so sim and render
+// timing appear together without correlating two logs (design §3). `drawList` and
+// `frameTotal` are owned here (SuGarApp calls rebuildDrawList() and owns the whole
+// post-fixed-step region); the other five regions are owned by Renderer, which owns
+// drawFrame() and refreshDrawListResources() -- see Renderer::renderCpuTiming().
+//
+// `fenceWait` is printed but deliberately EXCLUDED from `workSum`/`residual`: it is
+// WAIT, not work (design §2) -- where frame-pacing slack accumulates -- and folding it
+// into a work total would report the thread sleeping as render cost, exactly the
+// mistake the design doc says already cost this investigation two sweeps.
+static void printRenderCpuProfile(const SystemTiming& drawList, const Renderer::RenderCpuTiming& render,
+                                   const SystemTiming& frameTotal) {
+    std::cerr << std::fixed << std::setprecision(4);
+    std::cerr << "[profile-render]"
+              << " drawList=" << drawList.medianMs << "/" << drawList.maxMs
+              << " resources=" << render.resources.medianMs << "/" << render.resources.maxMs
+              << " fenceWait(WAIT)=" << render.fenceWait.medianMs << "/" << render.fenceWait.maxMs
+              << " record=" << render.record.medianMs << "/" << render.record.maxMs
+              << " submit=" << render.submit.medianMs << "/" << render.submit.maxMs
+              << " frameOther=" << render.frameOther.medianMs << "/" << render.frameOther.maxMs;
+
+    const double workSum = drawList.medianMs + render.resources.medianMs + render.record.medianMs +
+                            render.submit.medianMs + render.frameOther.medianMs;
+    const double residualMs = frameTotal.medianMs - workSum;
+    std::cerr << " frameTotal=" << frameTotal.medianMs << "/" << frameTotal.maxMs
+              << " residual=" << residualMs << "\n";
+}
+
 // Same shape as StressTests.h's "[audiodbg] ..." line so the two runs are
 // directly diffable/greppable against each other.
 static void printAudioDebugStats(const AudioDebugStats& stats) {
@@ -1513,6 +1542,15 @@ void SuGarApp::mainLoop() {
     // the once-a-second report below.
     TimingWindow fixedStepTiming;
 
+    // DESIGN_RENDER_CPU_TIMING.md -- rolling windows for the two regions SuGarApp owns:
+    // `drawList` (rebuildDrawList(), timed at its call site below) and `frameTotal` (the
+    // whole post-fixed-step region -- camera targets through drawFrame() -- measured
+    // independently of the named regions inside it, same reasoning as fixedStepTiming
+    // above and DESIGN_SYSTEM_PROFILER.md §2: an independently measured total makes the
+    // residual against the named regions a real quantity, not an identity).
+    TimingWindow drawListTiming;
+    TimingWindow renderFrameTiming;
+
     // A booted game starts playing immediately: behaviours only run in Play, and someone
     // launching a game expects it running, not paused in the editor. The editor (no
     // SUGAR_GAME) still opens in Edit. (Auto-play, M4 friction #6.)
@@ -1630,13 +1668,31 @@ void SuGarApp::mainLoop() {
             fixedAccumulator = 0.0f;
         }
 
+        // DESIGN_RENDER_CPU_TIMING.md -- frameTotal spans the whole post-fixed-step
+        // region: camera targets, draw-list rebuild (incl. CPU skinning, §3), the
+        // conditional descriptor refresh, and drawFrame() itself. Measured independently
+        // here rather than summed from the named regions below, so `frameTotal -
+        // sum(regions)` is a real residual (§3, and the algebraic-identity trap
+        // DESIGN_SNAPSHOT_CAPTURE_COST.md §11.6 records).
+        const auto renderRegionStart = std::chrono::steady_clock::now();
+
         updateCameraTargets();
+
+        const auto drawListStart = std::chrono::steady_clock::now();
         rebuildDrawList();
+        const auto drawListEnd = std::chrono::steady_clock::now();
+        drawListTiming.record(
+            std::chrono::duration<double, std::milli>(drawListEnd - drawListStart).count());
+
         if (reloadDescriptors) {
-            renderer->refreshDrawListResources();
+            renderer->refreshDrawListResources(); // times itself into Renderer's resourcesTiming_
             reloadDescriptors = false;
         }
         renderer->drawFrame();
+
+        const auto renderRegionEnd = std::chrono::steady_clock::now();
+        renderFrameTiming.record(
+            std::chrono::duration<double, std::milli>(renderRegionEnd - renderRegionStart).count());
 
         framesThisSecond++;
         const double fpsWindow = currentTime - fpsTimer;
@@ -1676,6 +1732,13 @@ void SuGarApp::mainLoop() {
             if (systemProfileEnabled()) {
                 printSystemProfile(systemSchedule,
                                    { fixedStepTiming.median(), fixedStepTiming.max() });
+                // DESIGN_RENDER_CPU_TIMING.md -- same knob, adjacent line, so a developer
+                // reading SUGAR_PROFILE output sees sim and render cost together.
+                if (renderer) {
+                    printRenderCpuProfile({ drawListTiming.median(), drawListTiming.max() },
+                                           renderer->renderCpuTiming(),
+                                           { renderFrameTiming.median(), renderFrameTiming.max() });
+                }
             }
             fpsTimer = currentTime;
             framesThisSecond = 0;

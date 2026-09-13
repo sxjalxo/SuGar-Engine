@@ -1965,6 +1965,32 @@ against 4K's 17.688 ms, 1.35 ms for 17.3x the pixels, so ~92 % of the cost is pe
 the engine misses. *Verdict unchanged:* a torture pass is not a game, nothing is forced, and the
 rendering column still waits. *Ref:* `DevDocs/DESIGN_L4_RESOLUTION_BASELINE.md` §13.
 
+**Render-side CPU timing built — and it named the cost.** *Forced by:* one measured event, not
+three — §13's ~10.6 us/item residual sitting in a region no instrument could see, the CPU profiler
+spanning only the fixed-step loop while `rebuildDrawList()`/`drawFrame()` run after it, and a GPU
+whose utilisation *falls* as frames lengthen. Recorded as a deliberate departure from the CPU
+profiler's three-event bar, on the grounds that the gap was measured rather than anticipated.
+*Change:* seven timed regions on the gameplay thread — `drawList`, `resources`, `fenceWait` (WAIT,
+never folded into work), `record`, `submit`, `frameOther`, and `frameTotal` measured
+**independently** so the residual can be non-zero — reported on the existing `SUGAR_PROFILE` line,
+median and max. Break-tested: a 5 ms injection into `recordCommandBuffer` moved `record`
+0.47 → 5.94 ms while every other region held. *Result:* **`drawList` is 93 % of the render frame**
+(8.954 ms of 9.639 ms at COUNT=1600), and `Skinning::computeJointMatrices()` runs **inline per
+skinned entity** inside `buildDrawListFromECS` (`src/scene/DrawList.cpp:67-71`). **`record` is
+flat** — 0.351 → 0.310 ms as items go 411 → 1 611 — so command recording is *not* the cost and
+naming it a suspect was wrong. *The prediction's sharp half FAILED:* `fenceWait` is ~0 in **both**
+the capped and CPU-bound cells, so pacing slack does not land in `vkWaitForFences`; the design's
+most emphasised precaution guarded a hazard that does not exist here. *A cap hypothesis of mine,
+killed in one edit:* `mainLoop` ends every iteration with an uncommented
+`sleep_for(1ms)`, and the arithmetic fit exactly (5.96 ms work + 1 ms = 6.96 ms = 143.7 FPS against
+a measured 143.6-143.9) — **removing it changed nothing, 143.4-144.1 FPS**, so the coincidence was a
+coincidence and §11's external-pacing attribution stands. *Honest headline:* ~4.6 ms/frame is
+**still unaccounted** — the new regions bracket `rebuildDrawList` and `drawFrame` but not the rest
+of `mainLoop` (input polling, file watcher, the sleep). The mystery moved from "two thirds of the
+frame is invisible" to "draw-list construction with inline CPU skinning dominates, and main-loop
+overhead is unmeasured". Nothing optimised: the arena's real 162-enemy scene keeps >= 58 % headroom.
+*Ref:* `DevDocs/DESIGN_RENDER_CPU_TIMING.md`. Gate **72/72** Debug + Release.
+
 ---
 
 ## Phase detail — M3 (Phases 16–21)
