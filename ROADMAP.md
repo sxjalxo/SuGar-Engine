@@ -1772,6 +1772,27 @@ is bounded by its **holder's** remaining life, not the session's, and in every g
 the holder dies first. A long-lived holder of a short-lived entity is the untested case, and
 nothing has one. Gate **69/69**, comment-only engine change.
 
+**Hostile manifests (adversarial pass, not a game) — the packaged runtime's last untested
+deserializer.** *Forced:* nothing by a game; `PLATFORM_AUDIT.md` had carried the row "nobody has
+fed the packaged runtime a corrupt manifest the way `MalformedInput` feeds the scene loader"
+since the audit's first revision, and it was the last unproven cell left. *Change:* eight hostile
+manifests added to the gate as `HostileManifest`, held to `MalformedInput`'s bar — refused
+cleanly, process still running to check it. **Four already passed**, including type confusion: a
+manifest naming a wrong-kind artifact has always been refused by `CookedAsset.cpp:163`, and a
+manifest key is never a path component (`AssetCooker::artifactPath` builds `<cache>/<16 hex>.sgc`),
+so the #37/#39 traversal class is unreachable here by construction. The four failures were absent
+bounds — key length, entry count, line length, empty and duplicate keys — now capped, with an
+incremental bounded read so a newline-free multi-megabyte file is refused after 274 bytes rather
+than after being materialised. **The finding a reader-only fuzz would have missed:** `load()`
+capped entry count and `write()` did not, so the engine could emit a package it would then refuse
+to open; both sides now share one constant, and over-cap `write()` fails at package time where a
+developer can act. Caps derived memory-bound-first (`MaxEntryCount = 65536`, ~19 MB worst case)
+rather than from the dogfood games' 14-entry manifests — sizing an engine limit to a demo's asset
+list is how a cap becomes a wall. Every guard break-tested individually, red at 69/70 then green.
+*Verdict:* fixed. *Ref:* `src/assets/AssetManifest.{h,cpp}`, `testHostileManifest` in
+`src/SelfTests.h`, `DevDocs/PLATFORM_AUDIT.md`'s hostile-manifest row. Gate 69 → **70/70** Debug
++ Release.
+
 ---
 
 ## Phase detail — M3 (Phases 16–21)

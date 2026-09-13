@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include <map>
 #include <string>
@@ -24,6 +25,43 @@ public:
     // points at artifacts this build cannot trust.
     static constexpr int FormatVersion = 1;
 
+    // Hostile-manifest caps (DevDocs/PLATFORM_AUDIT.md, "hostile manifests"). A shipped
+    // manifest sits on the player's own disk, so load() treats it the way the scene
+    // loader and glTF reader already treat their inputs: refuse cleanly, never crash,
+    // hang, or exhaust memory. write() enforces MaxEntryCount too, for the same reason
+    // in reverse: a cap only load() obeys isn't a cap on the format, it's a cap that
+    // silently produces packages the engine itself cannot open. Every real manifest this
+    // engine has ever packaged was measured on 2026-09-13 across all eight M4 dogfood
+    // games (Asteroids, Breakout, FlappyBird, Pong, TopDownShooter, CombatArena,
+    // Minecraft, RtsHandleProbe): longest key 34 chars (Asteroids'
+    // "assets/textures/large_enemy_02.png"), most entries 14 (CombatArena) -- these are
+    // sanity checks against the caps below, not how the caps were chosen (a real game's
+    // asset count should never be the thing bounding a memory-safety limit).
+
+    // Longest resource key load() accepts. Observed real-world maximum: 34 chars.
+    // 256 is ~7.5x that margin (about the reach of Windows' own MAX_PATH=260), which
+    // comfortably covers a few more nested asset folders than any shipped game uses,
+    // while still bounding a single key's memory footprint.
+    static constexpr size_t MaxKeyLength = 256;
+
+    // Most entries load() (and write(), see below) will accept in one manifest.
+    // Derived memory-bound-first, not from the observed test-game counts: the worst
+    // case is MaxEntryCount entries, each MaxKeyLength long, so a hostile manifest costs
+    // at most 65536 * (256-byte key + ~40 bytes of std::string/std::map overhead +
+    // 8-byte hash) = 19 922 944 bytes, ~19 MB -- bounded and unremarkable for a load the
+    // engine must finish before trusting the file. Only after fixing that bound does it
+    // matter that it lands ~4681x above the observed real-world maximum of 14 entries (CombatArena,
+    // the largest of the eight M4 dogfood games) and comfortably past a commercial-scale
+    // asset list -- a sanity check on the number, not the reason for it.
+    static constexpr size_t MaxEntryCount = 65536;
+
+    // Longest single line (header or entry) load() will read before refusing the file.
+    // Derived, not guessed: a well-formed entry line is at most one MaxKeyLength key,
+    // one tab, and 16 hex digits, so nothing legal is ever longer than this. Reading
+    // stops at this bound before a '\n' is required, which is what keeps a newline-free
+    // multi-megabyte file from being read into one unbounded std::string.
+    static constexpr size_t MaxLineLength = MaxKeyLength + 1 + 16;
+
     // Records key -> artifact hash. The key is normalized (AssetPath) before storing, so
     // any spelling of it resolves later. Overwrites a prior entry for the same key.
     void set(const std::string& resourceKey, uint64_t artifactKey);
@@ -39,6 +77,13 @@ public:
     // Deterministic bytes: a header line with the format version, then one
     // "<key>\t<16-hex>" line per entry in sorted key order (std::map iterates sorted),
     // '\n' endings, no timestamps. Two packages of the same inputs write identical files.
+    //
+    // Refuses (errorMessage set, nothing written) if entries.size() exceeds
+    // MaxEntryCount. The cap is deliberately the SAME constant load() enforces: a format
+    // whose writer and reader disagree on a limit isn't a limit, it's a trap that springs
+    // on whoever opens the file later -- possibly a player, on a machine where nobody can
+    // fix it. Failing here instead means a developer hits it at package time, where they
+    // can still act on it.
     bool write(const std::string& path, std::string& errorMessage) const;
 
     // Reads a manifest written by write(). Returns false (with errorMessage) if the file

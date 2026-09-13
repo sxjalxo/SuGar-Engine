@@ -5714,6 +5714,232 @@ inline bool testMalformedInput() {
     return ok;
 }
 
+// Hostile manifests: the last unproven cell in DevDocs/PLATFORM_AUDIT.md's deserializer
+// table. verify() runs on every build, but nobody had fed the packaged runtime a corrupt
+// assets.manifest the way testMalformedInput feeds the scene loader and glTF reader. Same
+// bar: every case here must be refused cleanly -- no crash, no hang, no memory exhaustion
+// -- and the process must still be running afterwards to check it. Manifest integrity
+// (checksums/signing) is explicitly out of scope: nothing forces it, and a shipped
+// manifest sits on the player's own disk.
+inline bool testHostileManifest() {
+    bool ok = true;
+    const std::filesystem::path dir = std::filesystem::temp_directory_path();
+
+    auto writeFile = [](const std::filesystem::path& path, const std::string& content) {
+        std::ofstream out(path, std::ios::binary | std::ios::trunc);
+        out << content;
+    };
+
+    // (a) A newline-free file of several MB. Before the line-length cap, the header's
+    // std::getline had no bound and would read the whole file into one std::string.
+    {
+        const std::filesystem::path path = dir / "sugar_hostile_test_a.manifest";
+        const std::string bomb(6 * 1024 * 1024, 'a'); // 6 MB, not one '\n' in it
+        writeFile(path, bomb);
+
+        AssetManifest manifest;
+        std::string errorMessage;
+        const bool loaded = manifest.load(path.string(), errorMessage);
+        ok &= !loaded; // rejected, and -- the point -- we are still running to check it
+        std::error_code ec;
+        std::filesystem::remove(path, ec);
+    }
+
+    // (b) A single line whose key is far over the key cap (4x MaxKeyLength). Before the
+    // cap, this key would round-trip through std::map with no bound at all.
+    {
+        const std::filesystem::path path = dir / "sugar_hostile_test_b.manifest";
+        const std::string hugeKey(AssetManifest::MaxKeyLength * 4, 'k');
+        writeFile(path, "sugar-manifest 1 cooker 1\n" + hugeKey + "\t0123456789abcdef\n");
+
+        AssetManifest manifest;
+        std::string errorMessage;
+        const bool loaded = manifest.load(path.string(), errorMessage);
+        ok &= !loaded;
+        std::error_code ec;
+        std::filesystem::remove(path, ec);
+    }
+
+    // (c) More entries than MaxEntryCount, each one otherwise well-formed.
+    {
+        const std::filesystem::path path = dir / "sugar_hostile_test_c.manifest";
+        std::string content = "sugar-manifest 1 cooker 1\n";
+        const size_t entryCount = AssetManifest::MaxEntryCount + 50;
+        for (size_t i = 0; i < entryCount; i++) {
+            char line[64];
+            std::snprintf(line, sizeof(line), "assets/models/item%06zu.obj\t%016zx\n", i, i);
+            content += line;
+        }
+        writeFile(path, content);
+
+        AssetManifest manifest;
+        std::string errorMessage;
+        const bool loaded = manifest.load(path.string(), errorMessage);
+        ok &= !loaded;
+        std::error_code ec;
+        std::filesystem::remove(path, ec);
+    }
+
+    // (d) Empty key: a line of "\t" + 16 hex chars. Decision: reject. An empty key is not
+    // a key any scene can reference -- set()/AssetPath::normalize() already refuse to
+    // store one, so a manifest containing one could never have come from write().
+    {
+        const std::filesystem::path path = dir / "sugar_hostile_test_d.manifest";
+        writeFile(path, "sugar-manifest 1 cooker 1\n\t0123456789abcdef\n");
+
+        AssetManifest manifest;
+        std::string errorMessage;
+        const bool loaded = manifest.load(path.string(), errorMessage);
+        ok &= !loaded;
+        std::error_code ec;
+        std::filesystem::remove(path, ec);
+    }
+
+    // (e) Duplicate key, different hashes. Decision: reject. Silent last-write-wins would
+    // mean a "verified" package's manifest no longer round-trips to its own on-disk bytes.
+    {
+        const std::filesystem::path path = dir / "sugar_hostile_test_e.manifest";
+        writeFile(path,
+                  "sugar-manifest 1 cooker 1\n"
+                  "assets/models/dup.obj\t0000000000000000\n"
+                  "assets/models/dup.obj\t1111111111111111\n");
+
+        AssetManifest manifest;
+        std::string errorMessage;
+        const bool loaded = manifest.load(path.string(), errorMessage);
+        ok &= !loaded;
+        std::error_code ec;
+        std::filesystem::remove(path, ec);
+    }
+
+    // (f) Wrong format version in the header. Pre-existing guard (formatVersion !=
+    // FormatVersion) -- this case exists to confirm it, not to add it.
+    {
+        const std::filesystem::path path = dir / "sugar_hostile_test_f.manifest";
+        writeFile(path, "sugar-manifest 99 cooker 1\nassets/models/tri.obj\t0123456789abcdef\n");
+
+        AssetManifest manifest;
+        std::string errorMessage;
+        const bool loaded = manifest.load(path.string(), errorMessage);
+        ok &= !loaded;
+        std::error_code ec;
+        std::filesystem::remove(path, ec);
+    }
+
+    // (g) A well-formed manifest naming an artifact hash with no .sgc file on disk. This
+    // is NOT a rejection case: the manifest itself must load fine and lookup() must
+    // return the recorded hash regardless of whether that artifact exists -- the CALLER
+    // (AssetCooker) owns checking presence, per lookup()'s own contract ("0 if the
+    // manifest does not list it" -- listing it is all this class promises).
+    {
+        const std::filesystem::path path = dir / "sugar_hostile_test_g.manifest";
+        writeFile(path, "sugar-manifest 1 cooker 1\nassets/models/ghost.obj\tdeadbeefdeadbeef\n");
+
+        AssetManifest manifest;
+        std::string errorMessage;
+        const bool loaded = manifest.load(path.string(), errorMessage);
+        ok &= loaded; // loads fine -- no disk check happens here
+        ok &= manifest.lookup("assets/models/ghost.obj") == 0xdeadbeefdeadbeefULL;
+        std::error_code ec;
+        std::filesystem::remove(path, ec);
+    }
+
+    // (h) A well-formed manifest whose key points at a wrong-kind artifact: cook a
+    // container with kind = Texture, then read it with CookedAsset::readMesh. This is a
+    // pre-existing guard (CookedAsset.cpp: "cooked asset has the wrong kind") -- case (h)
+    // exists to prove it, not to add it.
+    {
+        auto putU32 = [](std::vector<uint8_t>& b, uint32_t v) {
+            for (int i = 0; i < 4; i++) b.push_back(static_cast<uint8_t>((v >> (i * 8)) & 0xFF));
+        };
+        auto putU64 = [](std::vector<uint8_t>& b, uint64_t v) {
+            for (int i = 0; i < 8; i++) b.push_back(static_cast<uint8_t>((v >> (i * 8)) & 0xFF));
+        };
+
+        std::vector<uint8_t> payload;
+        putU32(payload, 0u); // width
+        putU32(payload, 0u); // height
+        putU32(payload, 0u); // filter
+
+        std::vector<uint8_t> bytes = { 'S', 'G', 'C', 'A' };
+        putU32(bytes, CookedAsset::FormatVersion);
+        putU32(bytes, AssetHash::CookerVersion);
+        putU32(bytes, static_cast<uint32_t>(CookedAsset::CookedKind::Texture)); // wrong kind
+        putU64(bytes, static_cast<uint64_t>(payload.size()));
+        bytes.insert(bytes.end(), payload.begin(), payload.end());
+
+        const std::filesystem::path path = dir / "sugar_hostile_test_h.sgc";
+        {
+            std::ofstream out(path, std::ios::binary | std::ios::trunc);
+            out.write(reinterpret_cast<const char*>(bytes.data()),
+                      static_cast<std::streamsize>(bytes.size()));
+        }
+
+        Mesh mesh;
+        std::string errorMessage;
+        const bool read = CookedAsset::readMesh(path.string(), mesh, errorMessage);
+        ok &= !read; // rejected: "cooked asset has the wrong kind", process intact
+        std::error_code ec;
+        std::filesystem::remove(path, ec);
+    }
+
+    // (i) write() disagreeing with load() on the entry cap would let the engine produce
+    // a package it then refuses to open -- a trap that springs on whoever opens the file
+    // next, possibly a player with no way to fix it. A manifest one entry over the cap
+    // must be refused by write() itself, with the count and the cap named in
+    // errorMessage, so a developer hits this at package time instead.
+    {
+        AssetManifest manifest;
+        for (size_t i = 0; i < AssetManifest::MaxEntryCount + 1; i++) {
+            manifest.set("assets/i" + std::to_string(i), i);
+        }
+
+        const std::filesystem::path path = dir / "sugar_hostile_test_i.manifest";
+        std::string errorMessage;
+        const bool wrote = manifest.write(path.string(), errorMessage);
+        ok &= !wrote;
+        ok &= errorMessage.find(std::to_string(AssetManifest::MaxEntryCount + 1)) != std::string::npos;
+        ok &= errorMessage.find(std::to_string(AssetManifest::MaxEntryCount)) != std::string::npos;
+        ok &= !std::filesystem::exists(path); // refused before anything was written, not truncated
+        std::error_code ec;
+        std::filesystem::remove(path, ec);
+    }
+
+    // (j) Exactly MaxEntryCount entries is the boundary the cap must not be off-by-one
+    // on: write() must succeed, load() must accept the result, and the entry count must
+    // survive the round trip -- proof the writer and reader agree at the one count where
+    // disagreement would be easiest to miss.
+    {
+        const auto start = std::chrono::high_resolution_clock::now();
+
+        AssetManifest manifest;
+        for (size_t i = 0; i < AssetManifest::MaxEntryCount; i++) {
+            manifest.set("assets/i" + std::to_string(i), i);
+        }
+        ok &= manifest.size() == AssetManifest::MaxEntryCount;
+
+        const std::filesystem::path path = dir / "sugar_hostile_test_j.manifest";
+        std::string errorMessage;
+        const bool wrote = manifest.write(path.string(), errorMessage);
+        ok &= wrote;
+
+        AssetManifest reloaded;
+        const bool loaded = reloaded.load(path.string(), errorMessage);
+        ok &= loaded;
+        ok &= reloaded.size() == AssetManifest::MaxEntryCount;
+
+        const auto end = std::chrono::high_resolution_clock::now();
+        const double milliseconds = std::chrono::duration<double, std::milli>(end - start).count();
+        std::cout << "  [HostileManifest] " << AssetManifest::MaxEntryCount
+                  << "-entry round trip took " << milliseconds << " ms\n";
+
+        std::error_code ec;
+        std::filesystem::remove(path, ec);
+    }
+
+    return ok;
+}
+
 // AssetGateway: the Core-safe asset-acquire seam (M4 L3). Pure indirection — no Vulkan
 // — so a stub backend proves the contract game code depends on: acquire routes by key
 // and increfs, release routes, available() reflects install state, and a cleared
@@ -5826,6 +6052,7 @@ inline std::pair<int, int> run() {
         { "BehaviorRegistry", testBehaviorRegistry },
         { "RegistryGraph",    testRegistryGraph },
         { "MalformedInput",   testMalformedInput },
+        { "HostileManifest",  testHostileManifest },
         { "SaveData",         testSaveData },
         { "AssetGateway",     testAssetGateway },
         { "MouseInput",       testMouseInput },
