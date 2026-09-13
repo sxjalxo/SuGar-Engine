@@ -324,7 +324,17 @@ see `DevDocs/DESIGN_ASSET_PIPELINE.md`.
   only in the `force` flag. The editor must never import by another route.
 - `AssetManifest` — `resourceKey -> artifact hash`, written at package time, read by a
   shipped runtime so it resolves keys with no source tree (DevDocs/DESIGN_PACKAGING.md).
-  Core, headless, no format dependencies.
+  Core, headless, no format dependencies. **Both sides of the format are bounded, and by the
+  same constants** (2026-09-13 hostile-manifest pass): the reader caps key length, entry count
+  and line length, and reads each line incrementally so a newline-free multi-megabyte file is
+  refused after 274 bytes rather than materialised; `write()` enforces the *same* entry cap, so
+  the engine can never emit a package it would then refuse to open — a limit on one side of a
+  format is not a limit, it is a trap that springs on whoever opens the file. Caps are derived
+  from the worst-case memory a hostile manifest may cost (~19 MB at 65 536 entries), not from
+  the dogfood games' 14-entry manifests; sizing an engine limit to a demo's asset list is how a
+  cap becomes a wall for a real game. A manifest key is never a path component —
+  `AssetCooker::artifactPath` builds `<cache>/<16 hex>.sgc` from the hash — so the "asset key
+  treated as a filesystem path" class (#37/#39) is unreachable here by construction.
 - `Packager` — the standalone export: reachability walk over scenes + dependency edges,
   cook, copy, write the manifest, copy the exe + DLLs, and verify the result resolves
   source-free. Engine layer, headless (`SUGAR_PACKAGE=1`). `ResourceManager` never learns
@@ -593,6 +603,61 @@ Not allowed:
 
 # Audio
 
+## SuGar Mixer
+
+### Responsibility
+
+Voice management and mixing. The engine owns both; miniaudio only opens the device.
+
+### Scope
+
+Owns:
+
+- **Voices** — one playing instance of a clip, addressed by an opaque id. Finished voices are
+  reclaimed on every `play()`, and a hard cap of 64 steals the **oldest non-looping** voice
+  first, so a pile of one-shots cannot cut background music. The mix loop's cost is therefore
+  bounded by live voices, never by voices ever played. Measured against 13 827 one-shot
+  requests in one L3 game run with no steal or out-of-bounds error.
+- **Mixing** — summing and resampling into the device buffer, hand-rolled. The reader trusts
+  the clip's real buffer length, not its claimed `frameCount`: `play()` refuses a clip whose
+  samples are shorter than `frameCount * channels`, because that read would happen *on the
+  audio thread* where a fault has nowhere to go.
+
+### The threading decision, settled 2026-09-13
+
+**The mixer runs on the device callback's own thread, and that thread is allowed to block on a
+short mutex shared with the gameplay thread.** This was the last open architectural question in
+`DevDocs/PLATFORM_AUDIT.md` and is now closed with numbers — see
+`DevDocs/DESIGN_AUDIO_THREAD_OWNERSHIP.md`.
+
+It is priority inversion by construction: `AudioSystem::update` takes that mutex twice per
+source per fixed step, ~120 000 acquisitions per second at 1 000 sources, while the callback
+needs it once per period to meet a hard deadline. Contended deliberately — a headless
+`SUGAR_STRESS` case and a real 1 000-unit game — it produced **zero callback overruns in 8 186
+callbacks**, with a maximum lock wait of 0.0327 ms against a 10 ms deadline (0.33 %).
+
+Two consequences worth carrying forward:
+
+- Lock wait in the **real game** was ~6x the synthetic harness's, because a real gameplay thread
+  has rendering and physics competing for the core. Any future concurrency measurement here needs
+  a real-game run; a headless harness alone understates it by most of an order of magnitude.
+- The verdict is scheduler- and hardware-dependent. It holds on this machine, at this device
+  period. The instrument (`SUGAR_AUDIODBG`) and the stress case are retained so the same question
+  can be *answered* elsewhere rather than re-argued.
+
+**Deliberately not built** (Rule 8 — neither is forced): a lock-free single-producer/
+single-consumer command queue, which `AudioEngine.h` has always named as the eventual answer;
+and merging `isActive()` + `setVoiceParams()` into one call, which would halve the acquisitions.
+Each is recorded with the number that would justify it — a callback overrun. A third option is
+explicitly rejected rather than deferred: `try_lock` in the callback with silence on failure
+trades a rare deadline miss for a guaranteed audible dropout.
+
+Not owned (deliberately): spatialization beyond per-voice gain, DSP effects, and a real limiter.
+The current hard clamp is acknowledged in the code as a later refinement and nothing depends on
+it.
+
+---
+
 ## miniaudio
 
 ### Responsibility
@@ -817,6 +882,17 @@ Owns:
   The generation is part of *identity* and never of *addressing*: nothing indexes an array by
   an `Entity`, and the split is measured against real game workloads rather than chosen — see
   `DevDocs/DESIGN_GENERATIONAL_IDS.md`. No file format stores an entity id.
+  **The 12-bit generation's headroom is now measured, not inferred** (2026-09-13,
+  `DevDocs/DESIGN_FREE_LIST_REUSE.md`): the free list is LIFO, so churn concentrates on a few
+  hot slots, and an RTS at 250 units reuses one slot ~0.049 times per step — putting generation
+  wrap about **23 minutes** into an ordinary session, not the "~16x headroom" the original
+  record claimed by comparing the cap against a 90-second window. That is survivable and was
+  measured to be: wrap only aliases a handle still *held* when its slot wraps, and a stale
+  handle's age is bounded by its **holder's** remaining life rather than the session's. Across
+  ~45 000 steps, guarded and unguarded, the oldest stale handle any game held was **4** reuses
+  of its own slot — three orders of magnitude inside the cap, because the holder dies first.
+  The split stands on that number. A long-lived holder of a short-lived entity is the case that
+  would reopen it, and nothing built so far has one.
 - Components
 - Hierarchy
 - Systems

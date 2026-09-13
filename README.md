@@ -38,10 +38,23 @@ behaviours built against `SuGarCore`, booted with `SUGAR_GAME=<dir>`.
 * **Level 2** (twin-stick shooter, 2D platformer, survivors-like, content pass) — complete.
   Four renderer *seams* forced: material tint, mouse input, per-material blend modes, an
   RmlUi effects compositor. The platformer forced nothing at all.
-* **Level 3** (voxel/Minecraft-like, combat arena, turn-based dungeon crawler) — under way.
-  It asks whether each core mechanic a game is built from can be built on the engine as it
-  stands. Seams forced so far include camera-as-a-component, an asset-acquire seam,
-  runtime meshes, lights as components, and game-defined per-entity data.
+* **Level 3** (voxel/Minecraft-like, combat arena, turn-based dungeon crawler, RTS handle
+  probe) — under way. It asks whether each core mechanic a game is built from can be built on
+  the engine as it stands. Seams forced so far include camera-as-a-component, an asset-acquire
+  seam, runtime meshes, lights as components, and game-defined per-entity data.
+
+The last two L3 games were **pre-registered experiments**: the contract — watch areas,
+instruments, numeric promotion thresholds — frozen before the first line of game code, so
+"no engine change was needed" becomes falsifiable instead of a description of how hard anyone
+looked. That discipline is why the engine's own claims now carry numbers: a comment asserting
+"~16x headroom" for entity-handle reuse turned out to have compared a cap against a 90-second
+window rather than a play session, and measuring it is what found the units error rather than
+the arithmetic.
+
+Every cell in [DevDocs/PLATFORM_AUDIT.md](DevDocs/PLATFORM_AUDIT.md) is now answered. That
+audit marks a subsystem *unproven* rather than green until a real workload has driven it
+hostilely, and run to exhaustion it held: **every row it marked unproven produced either a
+defect or a number, and no row it marked green produced a defect.**
 
 The recurring result is worth stating plainly: **most engine defects are found by playing a
 game, not by reviewing code** — a navmesh welder keyed on a formatted string (104 → 10 ms),
@@ -49,7 +62,7 @@ a runtime-mesh upload that was 91 % Vulkan object churn (`vkAllocateMemory` call
 a draw list spending 17 ms a frame drawing 16 000 zero-scaled particles, half of every shadow
 map discarded for as long as the shadow pass had existed.
 
-Correctness gate: **68/68**, Debug and Release.
+Correctness gate: **71/71**, Debug and Release.
 
 ---
 
@@ -130,7 +143,7 @@ nonzero if any fail. Headless: no window, no GPU, so it drops straight into CI.
 
 ```powershell
 $env:SUGAR_VALIDATE = "1"; build\Release\SuGarEngine.exe; $env:SUGAR_VALIDATE = ""
-# ... [validate] === 68/68 checks passed, 0 failure(s) ===
+# ... [validate] === 71/71 checks passed, 0 failure(s) ===
 ```
 
 Individual harnesses (`SUGAR_SELFTEST`, `SUGAR_STRESS`, `SUGAR_UITEST`, `SUGAR_BENCH`,
@@ -149,6 +162,15 @@ snapshot *semantics* rather than cost: how many consecutive captures are byte-id
 many distinct states the ring actually holds, and where two consecutive captures differ. Across
 ~10 700 measured captures the answer was **never any** — even in a fully idle turn-based scene,
 where a game counter and an idle animation clip both advance every fixed step.
+
+`SUGAR_AUDIODBG=1` instruments the audio thread (`DevDocs/DESIGN_AUDIO_THREAD_OWNERSHIP.md`),
+also dev-only and off by default: each device callback's mix duration against its own deadline
+(derived at runtime from the frame count it is handed), inter-callback arrival gaps, and how long
+the callback waited for the mixer mutex the gameplay thread also takes. The counters are atomics
+written on the audio thread and printed from the gameplay thread — the callback never prints,
+allocates or takes an extra lock, because an instrument that perturbs a real-time thread measures
+itself. Contended at ~120 000 lock acquisitions per second and in a 1 000-unit game: **zero
+callback overruns in 8 186 callbacks**, max lock wait 0.33 % of the deadline.
 
 ### Controls
 

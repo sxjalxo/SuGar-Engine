@@ -298,6 +298,7 @@ Runtime, engine:
 | `SUGAR_SNAP_BUDGET=<ms>` | overrides `SnapshotCapturePolicy`'s 4.0 ms budget; use a large value on a measurement run so the sustained-overrun cut-off never engages and every capture is timed |
 | `SUGAR_SNAP_CORPUS=<path>` | dumps formatted snapshot bytes to disk on every capture, overwriting; **never combine with a timing run** — the dump is inside the timed region and inflates `total` (F14) |
 | `SUGAR_SNAPRATE=1` | snapshot semantics to stderr every 300 captures: byte-identical consecutive captures, run-length histogram, distinct states in the 600-frame ring, and `[snapdiff]` — the first and last offsets where two consecutive captures differ, with surrounding text. Safe to combine with a timing run (it is fed after the timed region closes), but read `differing_bytes` **only** when `size_delta` is 0 — the compare is positional and an insertion misaligns everything after it |
+| `SUGAR_AUDIODBG=1` | audio-thread health to stderr, once a second from the gameplay thread plus once at shutdown: `callbacks`, `overruns` (mix duration >= its own deadline, derived at runtime from the frame count the callback is handed), `arrival_gaps`, and the lock-wait max/histogram as a fraction of the deadline. Counters are atomics written on the audio thread; the callback never prints, allocates or takes an extra lock. Measured baseline: 0 overruns, max lock wait 0.33 % of deadline (`DESIGN_AUDIO_THREAD_OWNERSHIP.md`) |
 
 Game-defined (they live in the game's behaviours, not the engine) — the combat arena:
 

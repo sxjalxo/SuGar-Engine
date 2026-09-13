@@ -329,7 +329,7 @@ and exits nonzero if any fail, so it drops straight into CI:
 
 ```powershell
 $env:SUGAR_VALIDATE = "1"; build\Release\SuGarEngine.exe; $env:SUGAR_VALIDATE = ""
-# ... [validate] === 68/68 checks passed, 0 failure(s) ===
+# ... [validate] === 71/71 checks passed, 0 failure(s) ===
 ```
 
 Benchmarks are intentionally excluded — they're measurements, not pass/fail gates
@@ -418,6 +418,7 @@ and documented in full in `DevDocs/DESIGN_SNAPSHOT_CAPTURE_COST.md`.
 | `SUGAR_SNAP_BUDGET=<ms>` | overrides `SnapshotCapturePolicy`'s 4 ms budget, so a measurement run captures every step instead of pausing on a sustained over-budget run |
 | `SUGAR_SNAP_CORPUS=<path>` | dumps the serialized snapshot bytes to disk on every capture |
 | `SUGAR_SNAPRATE=1` | snapshot **semantics**: how many consecutive captures are byte-identical, the longest run of identical captures, how many distinct states the 600-frame ring holds, and where two consecutive captures first and last differ |
+| `SUGAR_AUDIODBG=1` | audio-thread health: per-callback mix duration against its own deadline, inter-callback arrival gaps, and lock-wait distribution for the mutex the mixer shares with the gameplay thread |
 
 `SUGAR_SNAPRATE` answers a different question from the other three — not what a capture costs
 but whether two captures say anything different. Measured across four Release runs (~10 700
