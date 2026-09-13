@@ -1793,6 +1793,35 @@ list is how a cap becomes a wall. Every guard break-tested individually, red at 
 `src/SelfTests.h`, `DevDocs/PLATFORM_AUDIT.md`'s hostile-manifest row. Gate 69 → **70/70** Debug
 + Release.
 
+**Audio thread ownership (adversarial pass, not a game) — the audit's LAST unproven cell.**
+*Forced:* nothing by a game, and that was the row's whole complaint: "the open architectural
+question (real-time mixer thread vs game thread) was never contended". Reading the code corrected
+the framing first — the mixer has always had its own thread. What was open is **whether the audio
+thread may block**, and it does: `Impl::mix()` takes the same `std::mutex` the gameplay thread
+takes in `play()`, `setVoiceParams()`, `isActive()`, `stop()` and `stopAll()`, and `play()`
+allocates while holding it. Priority inversion by construction. *Change:* instruments only, behind
+`SUGAR_AUDIODBG` — per-callback mix duration against a deadline derived at runtime from the
+frameCount the callback is handed, inter-callback arrival gaps, and lock-wait distribution, all in
+atomics written on the audio thread and read from the gameplay thread (the callback prints
+nothing, allocates nothing, takes no extra lock). Plus a `SUGAR_STRESS` case reproducing
+`AudioSystem::update`'s two-acquisitions-per-source-per-step shape at 1 000 sources, ~120 000
+acquisitions/s. *Verdict:* **SUFFICIENT** against a rule frozen before the instrument existed —
+**zero callback overruns in 8 186 callbacks**, max lock wait 0.0327 ms against a 10 ms deadline,
+0.33 %. The lock-free command queue `AudioEngine.h` has always named as the eventual answer stays
+**unbuilt**, with the number that would justify it. Two things worth keeping: lock wait in the real
+game is **~6x** the synthetic harness's, so the headless figure alone would have understated it by
+most of an order of magnitude — which is why the contract demanded a real-game run; and the review
+caught the test harness reporting a no-device **SKIP as PASS**, so a CI box without a sound card
+would have read "verified" for a case that measured nothing. *Ref:*
+`DevDocs/DESIGN_AUDIO_THREAD_OWNERSHIP.md`, `src/audio/AudioEngine.{h,cpp}`, `AudioLockContention`
+in `src/StressTests.h`. Gate 70 → **71/71** Debug + Release.
+
+**With that, every cell in `DevDocs/PLATFORM_AUDIT.md` is answered.** The audit's method — mark a
+subsystem *unproven* rather than green until a real workload has driven it hostilely — has now run
+to exhaustion: animation, audio and collision (the arena), entity identity (the RTS probe), the
+packaged manifest reader, and the audio thread. Every row it marked unproven produced either a
+defect or a number; no row it marked green produced a defect.
+
 ---
 
 ## Phase detail — M3 (Phases 16–21)

@@ -106,6 +106,48 @@ static std::string resolveAssetPath(const std::string& relativePath) {
     return EnginePaths::resolve(relativePath);
 }
 
+// Opt-in measurement (SUGAR_AUDIODBG=1): dump the AudioEngine mixer-thread
+// instruments (DevDocs/DESIGN_AUDIO_THREAD_OWNERSHIP.md Section 4) so a real
+// GUI/game run can confirm or refute the numbers the headless SUGAR_STRESS
+// case already produces. The env var is read once (a getenv per frame would
+// itself perturb what is being measured -- same reasoning as SUGAR_FPSLOG),
+// and every field of AudioDebugStats is a plain value already snapshotted
+// off atomics by AudioEngine::debugStats() on the gameplay thread; this
+// function only formats and prints -- it never touches the audio thread.
+static bool audioDebugEnabled() {
+    static const bool enabled = std::getenv("SUGAR_AUDIODBG") != nullptr;
+    return enabled;
+}
+
+// Same shape as StressTests.h's "[audiodbg] ..." line so the two runs are
+// directly diffable/greppable against each other.
+static void printAudioDebugStats(const AudioDebugStats& stats) {
+    std::cerr << std::fixed << std::setprecision(4);
+    std::cerr << "[audiodbg] callbacks=" << stats.callbacksObserved
+              << " overruns=" << stats.overruns
+              << " deadline_ms=" << stats.lastDeadlineMs
+              << " mix_max_ms=" << stats.maxMixDurationMs
+              << " mix_median_ms=" << stats.medianMixDurationMs
+              << " arrival_gaps=" << stats.arrivalGaps
+              << " lockwait_max_ms=" << stats.maxLockWaitMs
+              << " lockwait_max_frac_deadline=" << stats.maxLockWaitFractionOfDeadline
+              << " lockwait_hist=[";
+    for (int i = 0; i < AudioDebugStats::HistogramBuckets; i++) {
+        std::cerr << stats.lockWaitHistogram[i];
+        if (i + 1 < AudioDebugStats::HistogramBuckets) {
+            std::cerr << ",";
+        }
+    }
+    std::cerr << "] mix_hist=[";
+    for (int i = 0; i < AudioDebugStats::HistogramBuckets; i++) {
+        std::cerr << stats.mixDurationHistogram[i];
+        if (i + 1 < AudioDebugStats::HistogramBuckets) {
+            std::cerr << ",";
+        }
+    }
+    std::cerr << "]\n";
+}
+
 // The window icon (title bar, taskbar while running, Alt-Tab) is GLFW's, not the .exe
 // resource's, so it is set from the same cube artwork at startup. Missing artwork is not
 // an error: the window simply keeps the platform default.
@@ -1540,6 +1582,15 @@ void SuGarApp::mainLoop() {
                           << " clips=" << ResourceManager::liveAudioClipCount()
                           << " retired=" << ResourceManager::retiredCount() << "\n";
             }
+            // Opt-in measurement (SUGAR_AUDIODBG=1): same once-per-second cadence as
+            // SUGAR_FPSLOG above, so a real game run can be compared line-for-line
+            // against the headless SUGAR_STRESS confirmation
+            // (DESIGN_AUDIO_THREAD_OWNERSHIP.md Section 6). Printed here on the
+            // gameplay thread only -- debugStats() just reads atomics the audio
+            // callback already wrote; nothing on the audio thread is touched.
+            if (audioDebugEnabled()) {
+                printAudioDebugStats(audioEngine.debugStats());
+            }
             fpsTimer = currentTime;
             framesThisSecond = 0;
         }
@@ -1703,6 +1754,13 @@ void SuGarApp::cleanup() {
         return;
     }
 
+    // Final [audiodbg] line so a run stopped externally (Stop-Process/taskkill,
+    // which skips this whole function) is covered by the periodic dump above,
+    // and a clean exit still gets one last, definitive snapshot before the
+    // device -- and the counters riding on it -- goes away.
+    if (audioDebugEnabled()) {
+        printAudioDebugStats(audioEngine.debugStats());
+    }
     audioEngine.shutdown();
     renderer.reset();
 

@@ -8,11 +8,13 @@
 
 #include <chrono>
 #include <cstdint>
+#include <cstdlib>
 #include <iomanip>
 #include <iostream>
 #include <limits>
 #include <set>
 #include <string>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -23,6 +25,8 @@
 #include "animation/AnimationGraphRegistry.h"
 #include "animation/AnimationStateSystem.h"
 #include "animation/AnimationSystem.h"
+#include "audio/AudioClip.h"
+#include "audio/AudioEngine.h"
 #include "core/SnapshotStorage.h"
 #include "ecs/Registry.h"
 #include "navigation/NavComponents.h"
@@ -606,6 +610,168 @@ inline bool animationStress() {
     return ok;
 }
 
+// --- Audio lock contention: DevDocs/DESIGN_AUDIO_THREAD_OWNERSHIP.md ------------
+// The device callback (its own real-time thread) takes AudioEngine's mutex for the
+// whole mix; the gameplay thread takes the same mutex in isActive()/setVoiceParams()
+// -- and AudioSystem::update calls both, per source, per fixed step. That is a
+// textbook priority-inversion shape, never contended by any game so far. This
+// reproduces the exact access pattern -- isActive() then setVoiceParams(), two
+// separate acquisitions per source -- for 1 000 simulated sources at 60 Hz, with
+// one-shot play() bursts layered on, while a real device callback is actually
+// mixing, and reports the three SUGAR_AUDIODBG instruments the design doc's
+// Section 5 decision rule consumes. This case reports numbers; it does not render
+// a verdict (that stays a human decision against the frozen rule).
+//
+// On a machine with no playback device, AudioEngine::init() returns false, the
+// callback never runs, and every counter would read zero -- a green that measured
+// nothing. That is detected below and reported SKIP, not PASS, the same way
+// SelfTests.h treats an absent fixture.
+//
+// Unlike SelfTests.h's ResourceManager case -- which never has a device in this
+// headless harness and so is simply left out of the table at compile time -- a
+// playback device may or may not exist on the machine running this binary, so the
+// SKIP can only be known after the case actually tries. run() below clears this
+// flag before each case and reads it right after, so a SKIP renders as SKIPPED
+// and is excluded from the passed/total measurement instead of counting as PASS.
+// Exactly one case runs at a time in this harness, so plain (non-atomic) state
+// is enough.
+inline bool g_stressCaseSkipped = false;
+
+inline bool audioLockContention() {
+    // The instrument is opt-in and off by default; turn it on for the duration of
+    // this measurement only, and restore whatever was there before.
+#if defined(_WIN32)
+    const char* previous = std::getenv("SUGAR_AUDIODBG");
+    const std::string previousValue = previous != nullptr ? previous : "";
+    const bool hadPrevious = previous != nullptr;
+    _putenv_s("SUGAR_AUDIODBG", "1");
+#else
+    const char* previous = std::getenv("SUGAR_AUDIODBG");
+    const std::string previousValue = previous != nullptr ? previous : "";
+    const bool hadPrevious = previous != nullptr;
+    setenv("SUGAR_AUDIODBG", "1", 1);
+#endif
+
+    const auto restoreEnv = [&]() {
+#if defined(_WIN32)
+        if (hadPrevious) {
+            _putenv_s("SUGAR_AUDIODBG", previousValue.c_str());
+        } else {
+            _putenv("SUGAR_AUDIODBG=");
+        }
+#else
+        if (hadPrevious) {
+            setenv("SUGAR_AUDIODBG", previousValue.c_str(), 1);
+        } else {
+            unsetenv("SUGAR_AUDIODBG");
+        }
+#endif
+    };
+
+    AudioEngine engine;
+    if (!engine.init()) {
+        std::cerr << "[stress] AudioLockContention SKIPPED: no playback device on this "
+                     "machine -- the device callback never ran, so nothing was measured. "
+                     "This answers nothing about DESIGN_AUDIO_THREAD_OWNERSHIP.md Section 5.\n";
+        restoreEnv();
+        g_stressCaseSkipped = true; // tells run() to print SKIPPED, not PASS -- see above.
+        return true; // SKIP, not a verdict -- see the SKIP precedent in SelfTests.h.
+    }
+
+    // A real, multi-second clip so the mixer actually resamples real audio rather
+    // than an empty buffer.
+    auto clip = std::make_shared<AudioClip>();
+    clip->frameCount = AudioMixSampleRate * 2;
+    clip->samples.assign(static_cast<size_t>(clip->frameCount) * AudioMixChannels, 0.1f);
+
+    // Real background load, up toward the 64-voice cap, so isActive()/setVoiceParams()
+    // on the low ids do real findVoice() work, not just acquire-and-return.
+    constexpr int RealVoices = 64;
+    constexpr int SimulatedSources = 1000;
+    std::vector<uint32_t> voices(SimulatedSources, 0);
+    for (int i = 0; i < RealVoices; i++) {
+        voices[static_cast<size_t>(i)] = engine.play(clip, 0.5f, 1.0f, /*loop*/ true);
+    }
+    // ids [RealVoices, SimulatedSources) stay 0 -- an AudioSourceComponent whose voice
+    // never started. AudioSystem::update still calls isActive() on those every step,
+    // so the acquisition count matches even though findVoice() returns immediately.
+
+    constexpr int Steps = 300; // 5 simulated seconds at 60 Hz
+    const auto stepPeriod = std::chrono::microseconds(16667);
+
+    for (int step = 0; step < Steps; step++) {
+        const auto stepStart = std::chrono::steady_clock::now();
+
+        // AudioSystem::update's exact per-source shape: isActive() then, only if
+        // active, setVoiceParams() -- two separate lock acquisitions for one
+        // logical operation, repeated for every one of the 1 000 sources.
+        for (int i = 0; i < SimulatedSources; i++) {
+            const uint32_t voice = voices[static_cast<size_t>(i)];
+            if (engine.isActive(voice)) {
+                const float gain = 0.4f + 0.01f * static_cast<float>(step % 10);
+                engine.setVoiceParams(voice, gain, 1.0f);
+            }
+        }
+
+        // One-shot bursts layered on, the way hit/footstep sfx fire in a real game --
+        // exercises play()'s erase/remove_if + possible push_back allocation while
+        // the device callback is mixing concurrently.
+        if (step % 10 == 0) {
+            for (int burst = 0; burst < 8; burst++) {
+                engine.play(clip, 0.3f, 1.0f, /*loop*/ false);
+            }
+        }
+
+        const auto elapsed = std::chrono::steady_clock::now() - stepStart;
+        if (elapsed < stepPeriod) {
+            std::this_thread::sleep_for(stepPeriod - elapsed);
+        }
+    }
+
+    const AudioDebugStats stats = engine.debugStats();
+    engine.shutdown();
+    restoreEnv();
+
+    // The single greppable line: every number DESIGN_AUDIO_THREAD_OWNERSHIP.md's
+    // Section 5 decision rule needs, in one place.
+    std::cout << std::fixed << std::setprecision(4);
+    std::cout << "[audiodbg] callbacks=" << stats.callbacksObserved
+              << " overruns=" << stats.overruns
+              << " deadline_ms=" << stats.lastDeadlineMs
+              << " mix_max_ms=" << stats.maxMixDurationMs
+              << " mix_median_ms=" << stats.medianMixDurationMs
+              << " arrival_gaps=" << stats.arrivalGaps
+              << " lockwait_max_ms=" << stats.maxLockWaitMs
+              << " lockwait_max_frac_deadline=" << stats.maxLockWaitFractionOfDeadline
+              << " lockwait_hist=[";
+    for (int i = 0; i < AudioDebugStats::HistogramBuckets; i++) {
+        std::cout << stats.lockWaitHistogram[i];
+        if (i + 1 < AudioDebugStats::HistogramBuckets) {
+            std::cout << ",";
+        }
+    }
+    std::cout << "] mix_hist=[";
+    for (int i = 0; i < AudioDebugStats::HistogramBuckets; i++) {
+        std::cout << stats.mixDurationHistogram[i];
+        if (i + 1 < AudioDebugStats::HistogramBuckets) {
+            std::cout << ",";
+        }
+    }
+    std::cout << "]\n";
+
+    if (stats.overruns > 0) {
+        // Section 5's PROMOTES condition. Report plainly; do not design a fix here.
+        std::cout << "[stress]   AudioLockContention: " << stats.overruns
+                  << " callback overrun(s) observed -- PROMOTES per "
+                     "DESIGN_AUDIO_THREAD_OWNERSHIP.md Section 5.\n";
+    }
+
+    // The gate here is only "did this actually measure something real" -- the
+    // overrun count itself is reported as evidence above, never turned into a
+    // pass/fail verdict by this function.
+    return stats.callbacksObserved > 0;
+}
+
 // Returns {passed, total}. Prints the per-test table as a side effect.
 inline std::pair<int, int> run() {
     using TestFn = bool (*)();
@@ -620,11 +786,14 @@ inline std::pair<int, int> run() {
         { "IdChurn(50x)",       idChurn },
         { "RingChurn(100k)",    ringChurn },
         { "AnimationScale(400)", animationStress },
+        { "AudioLockContention", audioLockContention },
     };
 
     int passed = 0;
+    int skipped = 0;
     const int total = static_cast<int>(sizeof(cases) / sizeof(cases[0]));
     for (const Case& test : cases) {
+        g_stressCaseSkipped = false; // see AudioLockContention: a case sets this, not PASS/FAIL.
         const auto start = std::chrono::high_resolution_clock::now();
         const bool ok = test.fn();
         const double ms = std::chrono::duration<double, std::milli>(
@@ -633,12 +802,26 @@ inline std::pair<int, int> run() {
         while (label.size() < 20) {
             label += '.';
         }
+        if (g_stressCaseSkipped) {
+            // A SKIP measured nothing -- it must be visibly distinct from PASS in this
+            // harness's own output, and it must not count toward the pass/total tally
+            // that "ALL PASS" is judged against (DESIGN_AUDIO_THREAD_OWNERSHIP.md Section 6).
+            std::cout << "[stress] " << label << " SKIPPED"
+                      << " (" << std::fixed << std::setprecision(1) << ms << " ms)\n";
+            skipped++;
+            continue;
+        }
         std::cout << "[stress] " << label << ' ' << (ok ? "PASS" : "FAIL")
                   << " (" << std::fixed << std::setprecision(1) << ms << " ms)\n";
         passed += ok ? 1 : 0;
     }
-    std::cout << "[stress] " << (passed == total ? "ALL PASS" : "FAILURES PRESENT") << "\n";
-    return { passed, total };
+    const int measured = total - skipped;
+    std::cout << "[stress] " << (passed == measured ? "ALL PASS" : "FAILURES PRESENT");
+    if (skipped > 0) {
+        std::cout << " (" << skipped << " SKIPPED)";
+    }
+    std::cout << "\n";
+    return { passed, measured };
 }
 
 } // namespace StressTests

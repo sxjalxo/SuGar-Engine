@@ -4,7 +4,10 @@
 #include "miniaudio.h"
 
 #include <algorithm>
+#include <atomic>
+#include <chrono>
 #include <cmath>
+#include <cstdlib>
 #include <cstring>
 #include <iostream>
 #include <mutex>
@@ -17,6 +20,36 @@ namespace {
 constexpr ma_format DeviceFormat = ma_format_f32;
 constexpr ma_uint32 DeviceChannels = AudioMixChannels;
 constexpr ma_uint32 DeviceSampleRate = AudioMixSampleRate;
+
+// --- SUGAR_AUDIODBG instrument support (DESIGN_AUDIO_THREAD_OWNERSHIP.md Section 4) ---
+// Both histograms (mix duration, lock wait) share one bucket scheme, expressed as a
+// fraction of that callback's own deadline (frameCount/sampleRate) rather than an
+// absolute time, because frameCount is miniaudio's default and can vary callback to
+// callback -- fixed absolute buckets would silently drift meaningless if it ever did.
+constexpr int kHistogramBuckets = AudioDebugStats::HistogramBuckets;
+constexpr double kBucketUpperEdge[kHistogramBuckets - 1] = {
+    0.10, 0.25, 0.50, 0.75, 1.00, 1.50, 2.00, 3.00, 5.00
+};
+// Representative fraction per bucket (its midpoint), used only to turn the
+// histogram into an approximate median -- never exact, and never the verdict.
+constexpr double kBucketRepresentative[kHistogramBuckets] = {
+    0.05, 0.175, 0.375, 0.625, 0.875, 1.25, 1.75, 2.5, 4.0, 5.0
+};
+
+int bucketForFraction(double fraction) {
+    for (int i = 0; i < kHistogramBuckets - 1; ++i) {
+        if (fraction < kBucketUpperEdge[i]) {
+            return i;
+        }
+    }
+    return kHistogramBuckets - 1;
+}
+
+using DebugClock = std::chrono::steady_clock;
+
+double nsToMs(uint64_t ns) {
+    return static_cast<double>(ns) / 1'000'000.0;
+}
 
 // One playing instance. `cursor` is a fractional frame index so per-voice pitch
 // can resample with linear interpolation.
@@ -41,12 +74,99 @@ struct AudioEngine::Impl {
     bool paused = false;
     uint32_t nextVoiceId = 1;
 
+    // SUGAR_AUDIODBG instrument (DESIGN_AUDIO_THREAD_OWNERSHIP.md Section 4). Read
+    // once here, off the audio thread, at construction; mix() branches on this bool
+    // and does nothing else -- no chrono call, no atomic touch -- when it's false.
+    const bool debugEnabled = std::getenv("SUGAR_AUDIODBG") != nullptr;
+
+    // Below: the ONLY writer is the audio thread inside mix(); the ONLY reader is
+    // AudioEngine::debugStats() on the gameplay thread. Relaxed ordering is
+    // deliberate -- these are independent diagnostic counters, not a
+    // synchronization point, and none of them participate in the mutex's
+    // happens-before relationship.
+    std::atomic<uint64_t> callbacksObserved{0};
+    std::atomic<uint64_t> overruns{0};
+    std::atomic<uint64_t> arrivalGaps{0};
+    std::atomic<uint64_t> lastDeadlineNs{0};
+    std::atomic<int64_t> lastEntryNs{0};   // 0 == sentinel, no previous callback yet
+    std::atomic<uint64_t> maxMixDurationNs{0};
+    std::atomic<uint64_t> maxLockWaitNs{0};
+    std::atomic<uint64_t> maxLockWaitDeadlineNs{0}; // the deadline paired with maxLockWaitNs
+    std::atomic<uint64_t> mixDurationHistogram[kHistogramBuckets]{};
+    std::atomic<uint64_t> lockWaitHistogram[kHistogramBuckets]{};
+
+    // Called at the very top of mix(), before the lock: records this callback's
+    // arrival and, everything after the first callback, the gap since the last one.
+    void recordArrival(DebugClock::time_point entry, uint64_t deadlineNs) {
+        const auto nowNs = std::chrono::duration_cast<std::chrono::nanoseconds>(
+            entry.time_since_epoch()).count();
+        const int64_t prevNs = lastEntryNs.exchange(nowNs, std::memory_order_relaxed);
+        callbacksObserved.fetch_add(1, std::memory_order_relaxed);
+        lastDeadlineNs.store(deadlineNs, std::memory_order_relaxed);
+        if (prevNs != 0) { // 0 == no previous callback (this is the first one; nothing to gap)
+            const uint64_t gapNs = static_cast<uint64_t>(nowNs - prevNs);
+            // "Materially longer" than the period: 50% past the expected deadline.
+            if (deadlineNs > 0 && gapNs > deadlineNs + deadlineNs / 2) {
+                arrivalGaps.fetch_add(1, std::memory_order_relaxed);
+            }
+        }
+    }
+
+    // Called immediately after the lock_guard acquires the mutex: this is the
+    // lock-wait diagnostic (evidence, never the verdict -- Section 5).
+    void recordLockAcquired(DebugClock::time_point entry, uint64_t deadlineNs) {
+        const auto waitNs = static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+            DebugClock::now() - entry).count());
+        if (waitNs > maxLockWaitNs.load(std::memory_order_relaxed)) {
+            maxLockWaitNs.store(waitNs, std::memory_order_relaxed);
+            maxLockWaitDeadlineNs.store(deadlineNs, std::memory_order_relaxed);
+        }
+        if (deadlineNs > 0) {
+            const int bucket = bucketForFraction(static_cast<double>(waitNs) / static_cast<double>(deadlineNs));
+            lockWaitHistogram[bucket].fetch_add(1, std::memory_order_relaxed);
+        }
+    }
+
+    // Called once mix() is done with the buffer (whether it mixed or returned early
+    // because paused): this is the overrun check (Section 5's PROMOTES condition).
+    void recordMixDone(DebugClock::time_point entry, uint64_t deadlineNs) {
+        const auto durationNs = static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+            DebugClock::now() - entry).count());
+        if (durationNs > maxMixDurationNs.load(std::memory_order_relaxed)) {
+            maxMixDurationNs.store(durationNs, std::memory_order_relaxed);
+        }
+        if (deadlineNs > 0) {
+            const int bucket = bucketForFraction(static_cast<double>(durationNs) / static_cast<double>(deadlineNs));
+            mixDurationHistogram[bucket].fetch_add(1, std::memory_order_relaxed);
+            if (durationNs >= deadlineNs) {
+                overruns.fetch_add(1, std::memory_order_relaxed);
+            }
+        }
+    }
+
     // Mixes all active voices into `output`. Runs on the audio thread.
     void mix(float* output, ma_uint32 frameCount) {
         std::memset(output, 0, static_cast<size_t>(frameCount) * DeviceChannels * sizeof(float));
 
+        DebugClock::time_point entry{};
+        uint64_t deadlineNs = 0;
+        if (debugEnabled) {
+            entry = DebugClock::now();
+            deadlineNs = static_cast<uint64_t>(
+                (static_cast<double>(frameCount) / static_cast<double>(DeviceSampleRate)) * 1.0e9);
+            recordArrival(entry, deadlineNs);
+        }
+
         std::lock_guard<std::mutex> lock(mutex);
+
+        if (debugEnabled) {
+            recordLockAcquired(entry, deadlineNs);
+        }
+
         if (paused) {
+            if (debugEnabled) {
+                recordMixDone(entry, deadlineNs);
+            }
             return;
         }
 
@@ -88,6 +208,10 @@ struct AudioEngine::Impl {
         const ma_uint32 sampleCount = frameCount * DeviceChannels;
         for (ma_uint32 i = 0; i < sampleCount; i++) {
             output[i] = std::clamp(output[i], -1.0f, 1.0f);
+        }
+
+        if (debugEnabled) {
+            recordMixDone(entry, deadlineNs);
         }
     }
 
@@ -240,4 +364,49 @@ void AudioEngine::stopAll() {
         voice.active = false;
     }
     impl->voices.clear();
+}
+
+AudioDebugStats AudioEngine::debugStats() const {
+    AudioDebugStats stats;
+    stats.callbacksObserved = impl->callbacksObserved.load(std::memory_order_relaxed);
+    stats.overruns = impl->overruns.load(std::memory_order_relaxed);
+    stats.arrivalGaps = impl->arrivalGaps.load(std::memory_order_relaxed);
+
+    const uint64_t deadlineNs = impl->lastDeadlineNs.load(std::memory_order_relaxed);
+    stats.lastDeadlineMs = nsToMs(deadlineNs);
+
+    stats.maxMixDurationMs = nsToMs(impl->maxMixDurationNs.load(std::memory_order_relaxed));
+
+    uint64_t mixCounts[kHistogramBuckets];
+    uint64_t mixTotal = 0;
+    for (int i = 0; i < kHistogramBuckets; ++i) {
+        mixCounts[i] = impl->mixDurationHistogram[i].load(std::memory_order_relaxed);
+        stats.mixDurationHistogram[i] = mixCounts[i];
+        mixTotal += mixCounts[i];
+    }
+    if (mixTotal > 0 && deadlineNs > 0) {
+        // Approximate median: the bucket whose cumulative count first passes the
+        // halfway point, reported via its representative fraction of the (most
+        // recent) deadline. Never exact, and per Section 5 never the verdict.
+        uint64_t cumulative = 0;
+        const uint64_t half = mixTotal / 2;
+        for (int i = 0; i < kHistogramBuckets; ++i) {
+            cumulative += mixCounts[i];
+            if (cumulative > half) {
+                stats.medianMixDurationMs = kBucketRepresentative[i] * stats.lastDeadlineMs;
+                break;
+            }
+        }
+    }
+
+    const uint64_t maxLockNs = impl->maxLockWaitNs.load(std::memory_order_relaxed);
+    const uint64_t maxLockDeadlineNs = impl->maxLockWaitDeadlineNs.load(std::memory_order_relaxed);
+    stats.maxLockWaitMs = nsToMs(maxLockNs);
+    stats.maxLockWaitFractionOfDeadline =
+        maxLockDeadlineNs > 0 ? static_cast<double>(maxLockNs) / static_cast<double>(maxLockDeadlineNs) : 0.0;
+    for (int i = 0; i < kHistogramBuckets; ++i) {
+        stats.lockWaitHistogram[i] = impl->lockWaitHistogram[i].load(std::memory_order_relaxed);
+    }
+
+    return stats;
 }
