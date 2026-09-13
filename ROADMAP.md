@@ -1919,6 +1919,30 @@ the 162-skinned-enemy configuration its 245 FPS headline came from, so the bar i
 scene; the RTS probe at rung 1000 covers the many-entity axis separately, and a scene heavy in both
 at once remains unmeasured. *Ref:* `DevDocs/DESIGN_L4_RESOLUTION_BASELINE.md` §11.
 
+**The heavy scene, and the first non-capped frame time this project has recorded.** *Measured:*
+pushing entity count until the sustained rate fell below the ~144 Hz pacing floor finally produced
+frame times instead of bounds. **§6's bar is MISSED on a heavy scene** — arena `anim` torture at
+COUNT=1600 (16 088 entities, 140 draw calls) costs **19.627 ms at 3840x2160** against a 16.67 ms
+bar. That supersedes the "HELD" recorded a few hours earlier, which was measured on
+`entities=85 drawCalls=22` and said so. *And the reason is not the one predicted:* 800x600 → 8K is
+a **69x** pixel increase costing **1.4 ms** (18.22 → 19.63 → 19.50), with GPU utilisation under
+40 % even at 8K. **Cost scales with draw items, not pixels.** The frozen prediction said the arena
+would miss at 4K *because its cost is per-pixel* — the miss happened and the stated reason was
+wrong, which is worse than a clean failure and is recorded as such. *Where the time is:* frame
+19.6 ms, `SUGAR_PROFILE` sim total 5.8 ms, GPU idle — **~13.8 ms attributable by nothing the engine
+has.** That is structural: the profiler's step total spans the fixed-step loop, while
+`rebuildDrawList()` and `drawFrame()` run after it in `mainLoop`, so render-side CPU work — draw-list
+build, per-frame CPU joint-matrix skinning, command recording over ~1 611 draw items — is outside
+every instrument by construction. The RTS probe is the control that proves the shape is not
+universal: 2 000 units at 4K costs 13.943 ms against a sim total of 14.20 ms, sim-bound and fully
+attributed to the game's own O(N) scan. *Verdict:* **L4's rendering column still has no forcing
+function** — COUNT=1600 is a torture pass, not a game (the arena's real configuration is 162
+enemies), and resolution being nearly free is an argument *against* upscaling, not for it. What the
+heavy scene forced is a **measurement** gap, satisfying §5's stated condition for render-side
+timing — specifically **CPU** timing around the render path, not GPU timestamps, since the GPU is
+measurably idle at every cell. One forcing event, recorded; the CPU profiler needed three before it
+was built and the same bar applies. *Ref:* `DevDocs/DESIGN_L4_RESOLUTION_BASELINE.md` §12.
+
 ---
 
 ## Phase detail — M3 (Phases 16–21)
