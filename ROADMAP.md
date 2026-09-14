@@ -2124,6 +2124,34 @@ RtsHandleProbe packaged builds both boot, load their manifests, enter Play and h
 with no errors — stated as a smoke test, not a regression comparison, since no pre-change counts were
 captured for either. Gate **72/72** Debug + Release. *Ref:* `DevDocs/DESIGN_RENDER_CPU_TIMING.md` §15.
 
+**Pose application gets the same hoist, found by ablation instead of instrumentation.** *Forced by:*
+with `drawList` cut, `Animation` at 3.82 ms/step became the largest simulation cost, and
+`animation/Pose.cpp:95` resolved every pose entry by name with no memo — the mechanism just hoisted
+out of skinning. *Method, and §15 is why:* bracketing `AnimationSystem::update` would have needed
+~12 800 clock reads a step at 1 606 animated entities — **about a third of the region would have been
+the instrument** — so this used **throwaway ablation builds** instead, each reverted after measuring,
+adding nothing permanent to the engine. *Ablation A* (`applyPose` returns immediately): `Animation`
+3.82 → **1.39 ms**, so applying a pose is **2.42 ms, 63 %** of the system — §16.2's prediction of
+"under 1.5 ms, more than 60 %" held on both numbers. *The fix:* one subtree walk per call, and Rule
+22 applied — `findDescendantsByName` now lives in `Registry.h`, templated over a `nameAt(i)`
+accessor so a caller whose names sit inside another struct needs no vector of copies, and **it keeps
+no counters of its own**: §15's lesson applied at design time rather than discovered afterwards.
+*Result:* `Animation` **3.82 → 2.94 ms/step**, sim total 5.78 → **5.13**, frame **14.7 → 13.6 ms**
+(67.9 → **73.3 FPS**). *And the prediction still MISSED* — 2.94 against a predicted 1.5-2.2, i.e. it
+recovered 36 % of what ablation A removed, not most of it. **The one-walk transform is not free: it
+trades allocations for string compares** (9 allocs / 52 compares → 2 allocs / **80** compares, since
+compares grow as names × nodes), which is why skinning won 2x and pose application wins 1.2x from the
+identical transformation. Same lesson as the 8 %-slower rewrite, arriving from the opposite
+direction: there it was uncounted allocations, here uncounted compares. *A follow-up measured and
+REJECTED:* hoisting both remaining per-call allocations to `static thread_local` recovered only
+**~0.2 ms** — hidden mutable scratch in a Core header is a bad trade for that, and the measurement is
+recorded so it need not be repeated. The remaining ~1.35 ms of `applyPose` is left **unattributed**
+rather than guessed at. *Proof the shared refactor is behaviour-identical:* `[profile-drawlist]`
+still reports `subtreeSearches=1606 nodeVisits=16060 matrixHops=16060` and `skinning` 3.35 ms,
+unchanged at both cells. Gate **72/72** Debug + Release, `Serializer` golden PASS. **Session arc: the
+arena's CPU-bound 4K cell went 20.0 → 13.6 ms/frame — from 3.0 ms over a 16.67 ms bar to 3.1 ms
+under, with no renderer change at any point.** *Ref:* `DevDocs/DESIGN_RENDER_CPU_TIMING.md` §16-§17.
+
 ---
 
 ## Phase detail — M3 (Phases 16–21)

@@ -479,6 +479,35 @@ elsewhere.
 Related: items 12, 13 and 14 — the same family, where the instrument or its interpretation is wrong
 while the code under test is fine.
 
+## 16. When the instrument would cost a third of the region, ablate instead
+
+**Observed 2026-09-14.** Attributing `AnimationSystem::update`'s 3.82 ms/step needed per-entity
+brackets: four accumulating regions x two clock reads x 1 606 animated entities = ~12 800 reads a
+step, **~1.2 ms** — roughly a third of the thing being measured.
+
+The alternative costs nothing: **throwaway ablation builds**. Remove exactly one thing, measure,
+revert. `applyPose` made to return immediately took `Animation` from 3.82 to 1.39 ms, attributing
+**2.42 ms (63 %)** to pose application with an instrument overhead of exactly zero.
+
+**When to reach for it:**
+
+- The region is entered thousands of times per frame, so per-entry clock pairs are unaffordable.
+- You want a bound on one call's share, not a full decomposition.
+- The code under test can be disabled without cascading (here, skipping `applyPose` leaves the sim
+  visually wrong but timing-valid for one run).
+
+**Its limits, which must be stated in the result:** an ablation removes everything that call does,
+so it *bounds* a region rather than isolating a mechanism inside it. Splitting further needs a
+second variant — here, one implementing the candidate fix, which then measures the fix and the
+attribution in the same run.
+
+**And ablate to reject, not only to confirm.** Hoisting two per-call allocations to
+`static thread_local` was probed the same way, recovered ~0.2 ms, and was **reverted** — hidden
+mutable scratch in a Core header is not worth 0.2 ms. A rejected optimisation with a number attached
+is a result worth writing down; it stops the next person re-deriving it.
+
+Related: item 14 — the same investigation, where counts predicted a win that wall time refused.
+
 ## Env knobs, current list
 
 Runtime, engine:

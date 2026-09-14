@@ -89,10 +89,22 @@ void blendPoses(const Pose& a, const Pose& b, float weight, Pose& out) {
 void applyPose(Registry& registry, Entity root, const Pose& pose) {
     const Registry& readOnly = registry;
 
-    for (const PoseEntry& entry : pose.entries) {
-        const Entity target = entry.target.empty()
-            ? root
-            : findDescendantByName(readOnly, root, entry.target);
+    // DESIGN_RENDER_CPU_TIMING.md §16 -- ONE subtree walk for the whole pose, not one
+    // findDescendantByName call (and one heap allocation) per entry. Measured at the
+    // arena's 1 606 animated characters: applying a pose was 2.42 ms of the Animation
+    // system's 3.82 ms per fixed step, and the resolution was all of it.
+    //
+    // An empty target still means `root` -- resolved below rather than searched for, the
+    // same as before. The walk may or may not match an empty name against some entity;
+    // the override makes that irrelevant, so semantics are unchanged for every input.
+    std::vector<Entity> resolved;
+    findDescendantsByName(
+        readOnly, root, pose.entries.size(),
+        [&](std::size_t i) -> const std::string& { return pose.entries[i].target; }, resolved);
+
+    for (std::size_t i = 0; i < pose.entries.size(); i++) {
+        const PoseEntry& entry = pose.entries[i];
+        const Entity target = entry.target.empty() ? root : resolved[i];
         if (target == INVALID_ENTITY || !readOnly.transforms.has(target)) {
             continue;
         }

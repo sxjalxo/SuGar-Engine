@@ -1011,6 +1011,12 @@ Owns:
   every module its own copy, which made this instrument read zero on its first run
   (`DevDocs/DEV_ENVIRONMENT.md` #13).
 
+Name resolution against a subtree is **one shared helper**, `Registry::findDescendantsByName` —
+resolving N names in a single depth-first walk, with `findDescendantByName`'s visit order and
+first-match-wins semantics preserved exactly. Both hot loops that used to search once per name use
+it (joint resolution, pose application), and it holds no counters, so a caller that wants the
+visit count adds the return value to its own and everyone else pays nothing.
+
 An always-on instrument in a hot shared path must be measured **at every call site, not only in the
 region under study**, and re-justified whenever the code it observes is rewritten — the joint-work
 counters cost ~0.4 ms per fixed step across audio, navigation and animation once skinning stopped

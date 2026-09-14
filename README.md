@@ -221,6 +221,13 @@ and animation ~0.4 ms a fixed step to feed a number nobody read. Removed — the
 back bit-identical. **An always-on instrument in a hot shared path has to keep earning it.** The
 heavy cell finished the sequence at **14.7 ms a frame, from 20.0 where it started.**
 
+The same shape turned up once more, in pose application, and this time the instrument would have
+cost a third of the region it measured — so it was found by **ablation** instead: make `applyPose`
+return immediately, measure, revert. That attributed **63 %** of the animation system to resolving
+pose targets by name, for zero instrument overhead. One shared `findDescendantsByName` now serves
+both hot loops. `Animation` **3.82 → 2.94 ms a step**, and the heavy cell ends at **13.6 ms a frame
+— 3.1 ms under a 16.67 ms budget it began 3.0 ms over.** Still no renderer change.
+
 Two more, both dev-only: `SUGAR_RENDER_RES=<W>x<H>` renders the scene to an offscreen target at an
 explicit resolution independently of the window — which is what makes render cost at 4K measurable
 without a 4K display — and `SUGAR_NOAUDIO=1` skips opening the playback device entirely, so a

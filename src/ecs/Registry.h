@@ -371,6 +371,65 @@ inline glm::vec3 getWorldPosition(Entity entity, const Registry& registry) {
     return glm::vec3(getWorldMatrix(entity, registry)[3]);
 }
 
+// Resolve MANY names against one subtree in a SINGLE depth-first walk, instead of one
+// findDescendantByName call (and one heap allocation) per name.
+//
+// Rule 22, fixing the category rather than the case: two hot loops in this engine
+// resolved N names against the same subtree N times — joint resolution in
+// animation/Skinning.cpp and pose application in animation/Pose.cpp. Measured, each was
+// the dominant cost of its region (DevDocs/DESIGN_RENDER_CPU_TIMING.md §12, §16).
+//
+// Semantics are findDescendantByName's, name for name:
+//   * visit order is identical — children pushed reversed so they pop in declared order;
+//   * FIRST MATCH WINS, because a slot is filled only while still empty. That is load
+//     bearing: picking a different match for an ambiguous name poses a character from the
+//     wrong bone with nothing visibly broken. SelfTests.h covers it and it was break-tested
+//     by reversing this very order;
+//   * a name appearing twice in the input fills both slots from the same first match,
+//     which is what two separate searches did;
+//   * a name that matches nothing leaves INVALID_ENTITY.
+//
+// `nameAt(i)` returns the i-th name as a `const std::string&`, so callers whose names live
+// inside some other struct need not materialise a vector of copies to call this.
+//
+// Returns the number of nodes visited. It deliberately keeps NO counters of its own:
+// §15 of the design record records what unconditional instrumentation in a hot shared
+// helper costs every caller that never asked for it, so a caller that wants the figure
+// adds the return value to its own counter and everyone else pays nothing.
+template <typename NameAt>
+inline std::size_t findDescendantsByName(const Registry& registry, Entity root,
+                                         std::size_t count, NameAt nameAt,
+                                         std::vector<Entity>& out) {
+    out.assign(count, INVALID_ENTITY);
+    if (root == INVALID_ENTITY || count == 0) {
+        return 0;
+    }
+
+    std::size_t visited = 0;
+    std::size_t unresolved = count;
+    std::vector<Entity> pending{ root };
+    while (!pending.empty() && unresolved > 0) {
+        const Entity entity = pending.back();
+        pending.pop_back();
+        visited++;
+
+        if (registry.names.has(entity)) {
+            const std::string& name = registry.names.get(entity).name;
+            for (std::size_t i = 0; i < count; i++) {
+                if (out[i] == INVALID_ENTITY && nameAt(i) == name) {
+                    out[i] = entity;
+                    unresolved--;
+                }
+            }
+        }
+        if (registry.hierarchy.has(entity)) {
+            const auto& children = registry.hierarchy.get(entity).children;
+            pending.insert(pending.end(), children.rbegin(), children.rend());
+        }
+    }
+    return visited;
+}
+
 // The topmost ancestor of `entity` (itself, if it has no parent). Cycle-free by
 // construction: setParent rejects cycles.
 inline Entity getRootAncestor(Entity entity, const Registry& registry) {

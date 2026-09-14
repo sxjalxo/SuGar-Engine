@@ -24,53 +24,18 @@ namespace {
 // saved. At ~10 subtree nodes and ~4 chain levels a linear scan wins outright, and the
 // counters that said otherwise were counting the cheap thing.
 
-// Resolve every joint name in ONE subtree walk, replacing one findDescendantByName call
-// (and one heap allocation) PER JOINT.
-//
-// Visit order is character-for-character findDescendantByName's -- children pushed
-// reversed so they pop in declared order -- and a slot is filled only if still empty, so
-// FIRST MATCH WINS exactly as before. That is not incidental: picking the other match for
-// an ambiguous name would pose characters from the wrong bone with nothing visibly
-// broken. SelfTests.h's ambiguous-name case guards it, and was break-tested by reversing
-// this very order (61/62).
-//
-// A skin naming the same joint twice fills both slots from the same first match, which is
-// what two findDescendantByName calls did. Hence no `break` on a hit.
-//
-// Counters are incremented here with the same meaning as in findDescendantByName -- one
-// search per walk, one visit per node popped -- so §12's before/after numbers measure the
-// same physical work. A rewrite that silently stopped counting would report a total win
-// and have measured nothing.
+// §16: the one-walk resolve moved to Registry.h's findDescendantsByName so pose
+// application could share it (Rule 22 — the category, not the case). This wrapper keeps
+// the counting here, where the numbers are actually reported, rather than in the shared
+// helper where every caller would pay for them (§15).
 void resolveJoints(const Registry& registry, Entity root, const std::vector<std::string>& names,
                    std::vector<Entity>& resolved) {
-    resolved.assign(names.size(), INVALID_ENTITY);
-    if (root == INVALID_ENTITY || names.empty()) {
-        return;
+    if (root != INVALID_ENTITY && !names.empty()) {
+        registryWorkCounters().subtreeSearches++;
     }
-
-    registryWorkCounters().subtreeSearches++;
-
-    std::size_t unresolved = names.size();
-    std::vector<Entity> pending{ root };
-    while (!pending.empty() && unresolved > 0) {
-        const Entity entity = pending.back();
-        pending.pop_back();
-        registryWorkCounters().nodeVisits++;
-
-        if (registry.names.has(entity)) {
-            const std::string& name = registry.names.get(entity).name;
-            for (std::size_t i = 0; i < names.size(); i++) {
-                if (resolved[i] == INVALID_ENTITY && names[i] == name) {
-                    resolved[i] = entity;
-                    unresolved--;
-                }
-            }
-        }
-        if (registry.hierarchy.has(entity)) {
-            const auto& children = registry.hierarchy.get(entity).children;
-            pending.insert(pending.end(), children.rbegin(), children.rend());
-        }
-    }
+    registryWorkCounters().nodeVisits += findDescendantsByName(
+        registry, root, names.size(), [&](std::size_t i) -> const std::string& { return names[i]; },
+        resolved);
 }
 
 // getWorldMatrix, memoised THROUGH THE RECURSION for the duration of one call.
