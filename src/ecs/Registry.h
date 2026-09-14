@@ -323,6 +323,35 @@ inline GameDataComponent& ensureGameData(Registry& registry, Entity entity) {
     return registry.gameData.get(entity);
 }
 
+// DESIGN_RENDER_CPU_TIMING.md §11 -- work counters for the two helpers pose resolution
+// leans on. Counts, not timings: §10.3 measured a clock read at ~100 ns and splitting
+// `skinning` by time would need ~77 000 of them a frame, which would cost more than it
+// measures. An increment is ~1 ns, exact rather than statistical, and answers "why" where
+// a millisecond only answers "how bad".
+//
+// Read as DELTAS around a call (see scene/DrawList.cpp), never as absolutes.
+//
+// Incremented ONLY by animation/Skinning.cpp's call-local joint walk and world-matrix
+// memo -- deliberately NOT by getWorldMatrix or findDescendantByName below. They were,
+// briefly, and it cost ~0.4 ms per fixed step across every other caller (the Animation
+// system's own per-track name lookups above all) while contributing nothing to the
+// numbers actually reported: after §13's fix, skinning no longer calls either helper.
+// An always-on instrument in the engine's hottest inline helpers has to earn it, and
+// this one had stopped earning it the moment the code it was measuring moved (§15).
+//
+// Not atomic, deliberately: both helpers are gameplay-thread-only, and an atomic here
+// would make the instrument the thing being measured.
+struct RegistryWorkCounters {
+    unsigned long long subtreeSearches = 0; // findDescendantByName calls (= one heap alloc each)
+    unsigned long long nodeVisits = 0;      // nodes popped inside those searches
+    unsigned long long matrixHops = 0;      // ancestor levels walked by getWorldMatrix
+};
+
+// DECLARED here, DEFINED once in ecs/RegistryWork.cpp -- deliberately not inline. An
+// inline accessor with a function-local static gives every module its own copy, which
+// made every counter read zero on the first run (§12).
+RegistryWorkCounters& registryWorkCounters();
+
 inline glm::mat4 getWorldMatrix(Entity entity, const Registry& registry) {
     const auto& transform = registry.transforms.get(entity).transform;
 

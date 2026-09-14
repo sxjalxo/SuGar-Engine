@@ -989,6 +989,41 @@ Owns:
   them is a real measured quantity rather than a subtraction identity. Collection is
   unconditional and costs ~0.16 ms/step, measured against a stubbed build rather than asserted;
   only reporting is gated (`SUGAR_PROFILE=1`). See `DevDocs/DESIGN_SYSTEM_PROFILER.md`.
+- **Frame accounting** — the same knob also reports the render path (`drawList`, `resources`,
+  `fenceWait` held separate as *wait*, `record`, `submit`, `frameOther`) and the rest of the main
+  loop (`input`, `fileWatch`, `moduleCheck`, `fixedStep`, `sleep`), each against an independently
+  measured total, plus **`steps/frame`**. That last one is a requirement, not a nicety: the fixed
+  step runs a variable number of times per frame — **zero on the median frame at 143 FPS** — so a
+  per-step figure and a per-frame figure are different units and must not be summed. See
+  `DevDocs/DESIGN_RENDER_CPU_TIMING.md` and `DevDocs/DEV_ENVIRONMENT.md` #12.
+- **Draw-list attribution** — `buildDrawListFromECS` reports what one call spent, split into
+  `gather` / `items` / `skinning` / `sort` / `lights` against an independently measured total,
+  as **raw per-frame values on the `DrawList` itself**. The rolling windows and the statistics
+  stay in `SuGarApp`: `scene/` reports what a call cost and never learns what a `TimingWindow`
+  is. Measured result: **skinning is ~73 % of draw-list construction**, at a flat **0.50 µs per
+  resolved joint**, so the cost scales with joints rather than draw items.
+
+- **Work counts, where timing would cost more than it measures** — `subtreeSearches`,
+  `nodeVisits` and `matrixHops`, taken as deltas around pose resolution. A counter increment is
+  ~1 ns against a clock read's ~100 ns, counts are exact rather than statistical, and they state a
+  *mechanism* that survives a change of hardware. Any such counter is defined **once, in a Core
+  `.cpp`** and only declared in the header: an inline accessor with a function-local static gives
+  every module its own copy, which made this instrument read zero on its first run
+  (`DevDocs/DEV_ENVIRONMENT.md` #13).
+
+An always-on instrument in a hot shared path must be measured **at every call site, not only in the
+region under study**, and re-justified whenever the code it observes is rewritten — the joint-work
+counters cost ~0.4 ms per fixed step across audio, navigation and animation once skinning stopped
+using the helpers they lived in, and removing them changed the reported numbers not at all
+(`DevDocs/DEV_ENVIRONMENT.md` #15).
+
+Counts locate a cost; **wall time adjudicates it**. The first joint-resolution rewrite won every
+count it predicted and ran 8 % slower, because the hash maps it introduced were never counted
+(`DevDocs/DEV_ENVIRONMENT.md` #14). Both instruments run; the clock decides.
+
+Instrument costs are measured, never asserted — the draw-list `skinning` bracket was found to cost
+**3-5 %** of the region it measures (not the ~1 % predicted) by building a stubbed variant and
+diffing, and is kept unconditional only because that figure is ~0.03 ms at a real entity count.
 
 Never delegated to a job framework, and not to a third-party profiler either: per-system
 attribution is six `steady_clock` reads, and a networked profiling GUI would be a dependency

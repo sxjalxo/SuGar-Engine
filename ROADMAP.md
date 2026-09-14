@@ -1984,12 +1984,145 @@ most emphasised precaution guarded a hazard that does not exist here. *A cap hyp
 killed in one edit:* `mainLoop` ends every iteration with an uncommented
 `sleep_for(1ms)`, and the arithmetic fit exactly (5.96 ms work + 1 ms = 6.96 ms = 143.7 FPS against
 a measured 143.6-143.9) — **removing it changed nothing, 143.4-144.1 FPS**, so the coincidence was a
-coincidence and §11's external-pacing attribution stands. *Honest headline:* ~4.6 ms/frame is
-**still unaccounted** — the new regions bracket `rebuildDrawList` and `drawFrame` but not the rest
+coincidence and §11's external-pacing attribution stands. *Honest headline at the time:* ~4.6 ms/frame
+**still unaccounted** — superseded by the entry below, which found ~2.4 ms of it to be an
+artefact of this very subtraction — the new regions bracket `rebuildDrawList` and `drawFrame` but not the rest
 of `mainLoop` (input polling, file watcher, the sleep). The mystery moved from "two thirds of the
 frame is invisible" to "draw-list construction with inline CPU skinning dominates, and main-loop
 overhead is unmeasured". Nothing optimised: the arena's real 162-enemy scene keeps >= 58 % headroom.
 *Ref:* `DevDocs/DESIGN_RENDER_CPU_TIMING.md`. Gate **72/72** Debug + Release.
+
+**Frame-time accounting CLOSED — and two thirds of the "missing" time was my own arithmetic.**
+*Forced by:* the ~4.6 ms left unaccounted immediately above. *Change:* eight more timed regions
+around the rest of `SuGarApp::mainLoop` — `input`, `fileWatch`, `moduleCheck`, `cameraTargets`,
+`fixedStep` **measured per frame**, `loopSleep`, `loopOther`, and `loopTotal` measured
+**independently** around the whole loop body — plus **`steps/frame`**, on a third `[profile-loop]`
+line under the same `SUGAR_PROFILE=1` knob. Prediction frozen in the design record before any code.
+Break-tested: a 5 ms injection inside the `fileWatch` bracket moved it **0.0001 → 5.66-5.81 ms**
+while `input`, `moduleCheck`, `cameraTargets` and `sleep` all held and the residual stayed within
+±0.19 ms. *The prediction FAILED, by three orders of magnitude:* `fileWatch` is **0.0001-0.0002 ms**
+and `moduleCheck` **0.041-0.047 ms** — together **0.2 %** of the CPU-bound frame. There is no
+per-frame `stat` storm, and `input` (0.011-0.016 ms) is not it either. *Where the 4.6 ms actually
+was:* **~2.0 ms** was a **mean minus a median** (the frame figure came from `1/[fps]`, a mean;
+everything subtracted from it was a median, and `loopTotal`'s max is 50-59 ms against a 17.96 ms
+median), **~1.5 ms** was the `sleep_for(1ms)` — never in the arithmetic at all, and it costs **1.53
+ms**, not 1 ms, because Windows rounds sleep granularity up — **~0.4 ms** was per-step-vs-per-frame
+sim, and only **~0.8 ms** was real. *The single most valuable number on the new line is
+`steps/frame`:* its median is **0.00** at 143 FPS, so **most frames run no simulation at all**, and
+every published figure that added a `SUGAR_PROFILE` sim total to a render total was mixing units.
+The fallback branch answered well too: at the capped cell `loopTotal` median 6.995 ms against a
+6.964 ms mean frame interval — agreement to **0.03 ms**, so **nothing blocks outside the loop body**.
+*Result:* the accounting **closes to within 0.8-1.2 ms in both cells**; `drawList` remains the one
+dominant cost and nothing was optimised. New `DEV_ENVIRONMENT.md` #12 — *before subtracting two
+timings, check they are the same statistic and the same unit* — because this is the third time in
+this investigation that the defect was a confident subtraction rather than the code.
+*Ref:* `DevDocs/DESIGN_RENDER_CPU_TIMING.md` §7-§8. Gate **72/72** Debug + Release.
+
+**Inside `drawList`: skinning is ~73 % of it, and the cost scales with JOINTS not draw items.**
+*Forced by:* §6.2 had measured `drawList` at 93 % of the render frame and then stopped —
+"`drawList` dominates, and `computeJointMatrices` is called within it" is two facts placed next to
+each other, not an attribution, and naming `record` a suspect on that same adjacency had already
+measured false once. *Change:* five sub-regions inside `buildDrawListFromECS` — `gather`, `items`,
+`skinning`, `sort`, `lights` — against a `buildTotal` measured **independently**, plus
+`skinnedItems`/`joints` as counts (never a ratio the line computes for you). Raw per-frame numbers
+ride back on the `DrawList`; the rolling windows, statistics and reporting stay in `SuGarApp`, so
+`scene/` never learns what a `TimingWindow` is. Break-tested with **two different magnitudes in one
+build** so mis-attribution would be visible: 5 ms into `gather` and 3 ms into `skinning` moved
+**0.271 → 5.826** and **1.729 → 5.565** respectively while `items`, `sort` and `lights` all held.
+*Result:* **`skinning` is 73 % of `buildTotal`** (6.427 of 8.896 ms at 1 611 items; 75 % at 411), so
+pose resolution alone is **~68 % of the entire render frame**. Cost per resolved joint is **0.53 µs
+at COUNT=400 and 0.50 µs at COUNT=1600 — flat across a 4x load change**, so the apparent
+"~14.4 us per draw item" of §13 was an artefact of this scene carrying a constant 8 joints per item:
+**joints are the driver, items never were.** `gather` is 15 % and `items` 10 %; **`sort` is 0.008 ms —
+0.1 %**, which rules out caching or incrementalising the render-queue sort on a single line.
+*Prediction scored:* the main call HELD (written after reading `computeJointMatrices`, disclosed as
+such), the numeric sub-claim MISSED — I said `gather` would be under 1 ms and it is 1.288. *And the
+instrument's own cost, promised as a measurement rather than an assertion, was measured against a
+stubbed build and my estimate was wrong by 3-5x:* **0.27-0.54 ms, 3-5 %**, not the "~1 %" predicted —
+so the reported `skinning` is inflated by its own brackets and true skinning is ~6.0-6.2 ms. Kept
+unconditional regardless, because at the arena's **real** 162-enemy scale the same instrument costs
+~0.03 ms, below the 0.16 ms/step per-system collection already accepted as always-on. *Nothing
+optimised:* the real scene is still inside budget and these cells are a torture pass at 10x it.
+*Ref:* `DevDocs/DESIGN_RENDER_CPU_TIMING.md` §9-§10. Gate **72/72** Debug + Release.
+
+**Inside `skinning`: count the work instead of timing it — mechanism named, and the instrument read
+zero first.** *Forced by:* §10.2 asked for a bracket splitting joint lookup from joint math, and that
+bracket could not be built the obvious way — §10.3 had measured a clock read at ~100 ns, so ~77 000
+of them a frame would have cost more than they measured. *Change:* three work **counters** on
+`Registry.h`'s hot helpers — `subtreeSearches`, `nodeVisits`, `matrixHops` — snapshotted as deltas
+around each `computeJointMatrices` call so the Animation system's own name lookups are excluded.
+*Result, all three predictions held:* **`subtreeSearches` equals `joints` exactly** (12 848), so
+every joint is resolved by name with **no memo of any kind** — not across frames, not across entities
+sharing a skin, not between consecutive joints of the same skeleton — and each call heap-allocates a
+`pending` vector, making **12 848 allocate/free pairs per frame**. **`nodeVisits`/search is 6.50**,
+so the cost is per-search overhead rather than traversal depth. **`matrixHops` is 4.25 per joint**
+(54 598), a 3.78-level parent chain recomposed per joint with nothing cached. **There is no single
+culprit**: ~0.47 µs per joint buys one allocation, 6.5 hash-lookups-with-string-compare and 4.25 TRS
+composes — and §10.2's guess that "the matrix multiply is not plausibly the half-microsecond" is
+**not supported**. Every counter scales **3.955-3.957** against a 3.955 change in joints across two
+cells, so these are properties of the algorithm, not the scene. *The instrument read ZERO on its
+first run*, because `registryWorkCounters()` was an inline accessor with a function-local static and
+`Skinning.cpp` is compiled into **SuGarCore** while `DrawList.cpp` is compiled into the **exe** — two
+modules, two copies, delta permanently zero. The design record had written that hazard down as a
+*game-DLL* concern one section earlier and failed to apply it to the boundary that mattered; fixed
+with a single non-inline definition in `src/ecs/RegistryWork.cpp`. **The zero-then-nonzero transition
+is a stronger break-test than an injected delay** — it demonstrated the exact failure it was at risk
+of, then the fix. New `DEV_ENVIRONMENT.md` #13. *§11.1's premise confirmed with a number:* counting
+~150 000 events costs **~0.035 ms (0.5 %)** against **0.27-0.54 ms (3-5 %)** for 3 212 clock reads —
+**47x more events for ~10x less time**. *Nothing optimised,* but a fix can now be argued in units of
+work eliminated rather than milliseconds on one laptop.
+*Ref:* `DevDocs/DESIGN_RENDER_CPU_TIMING.md` §11-§12. Gate **72/72** Debug + Release.
+
+**Skinning fixed: the heavy-scene miss is closed, and no renderer was touched.** *Authorized by:* a
+measured mechanism (§12), not a hypothesis — §13 froze the design and its numbers before any code.
+*Change:* two hoists **inside one `computeJointMatrices` call**, deliberately call-local so there is
+no cache lifetime to get wrong: (a) one subtree walk resolving every joint name, replacing one
+`findDescendantByName` call and one heap allocation **per joint**; (b) `getWorldMatrix` memoised
+**through the recursion**, so joints of one skeleton stop re-walking a shared parent chain.
+*Result:* `skinning` **6.46 → 3.41 ms**, `buildTotal` **8.65 → 5.68 ms**, and the arena's CPU-bound
+cell **20.0 → 15.4 ms/frame — through the 16.67 ms bar `DESIGN_L4_RESOLUTION_BASELINE.md` §13 had
+recorded as MISSED at 19.627 ms.** Counters: `subtreeSearches` 12 848 → **1 606** (exactly as
+predicted), `nodeVisits` 83 512 → **16 060**, `matrixHops` 54 598 → **16 060**; both cells land at
+exactly 10 visits and 10 hops per skinned entity, the algorithmic floor. COUNT=400 confirms:
+skinning 1.73 → **0.78 ms**. *The first version was 8 % SLOWER:* it won **every** count it predicted
+and still cost more, because two heap-allocating hash maps per entity beat the 67 000 node visits
+they saved — replaced with flat vectors and linear scans. **And its memo could not fire** —
+`matrixHops` came back bit-identical at 54 598, since memoising only the top-level call has zero hits
+by construction (each joint is asked once; the sharing is *inside* the recursion). Second
+"cannot fire" of the day, this time in the fix rather than the instrument, and the counters are what
+named it in one line where timing alone said only "slower". **This corrects §11-§12's own framing:
+counts say *why*, not *how much* — a count is a cost estimate only if you know the unit price.**
+*Correctness:* the one thing this rewrite could silently break — ambiguous joint names, where
+`findDescendantByName` promises first-match-wins — was the one thing none of the eight existing
+skinning assertions covered. Added a ninth with a decoy `Tip` 48 units away asserting the *value*,
+and **break-tested it red at 61/62** by reversing the DFS child order before trusting it. Gate
+**72/72** Debug + Release, `Serializer` golden PASS. *Worth stating:* **six instruments were built
+before one line was optimised**, and every intermediate suspect named on adjacency — `record`,
+`fenceWait`, the sleep, the file watcher — measured false. *Ref:*
+`DevDocs/DESIGN_RENDER_CPU_TIMING.md` §13-§14.
+
+**The instrument outlived the code it measured, and charged everyone for it.** *Forced by:* §12 put
+unconditional counters in `Registry.h`'s `getWorldMatrix` and `findDescendantByName` — two of the
+engine's hottest inline helpers — and measured the cost **only inside skinning**. Every other caller
+(`AudioSystem`, `NavigationSystem`, `NavMeshBaker`, `Renderer`, and the Animation system's per-track
+name lookups in `Pose.cpp`) was unmeasured. *Measured now:* the fixed-step total went **5.49-5.81 ms
+before any counters → 6.06-6.17 with them**, `Animation` 3.54-3.74 → 3.85-4.04 — **~0.4 ms per step**
+charged to systems that were never being profiled. *And by then it bought nothing:* §13's fix moved
+skinning onto call-local helpers that do their own counting, so the `Registry.h` increments fed **a
+total nobody read**. Removed; `[profile-drawlist]` still reports `subtreeSearches=1606
+nodeVisits=16060 matrixHops=16060` **bit-identical**, i.e. the same numbers for free. *The rule this
+earns:* **an always-on instrument in a hot shared path has to keep earning it — when the code it
+observes is rewritten, re-ask whether it is still observing anything. A counter that is merely
+correct is not the same as one that is load-bearing.** *Net:* `skinning` 3.41 → **3.32 ms**,
+`buildTotal` 5.68 → **5.54**, frame rate 65.6 → **67.9 FPS**, so the arena's CPU-bound 4K cell ends
+this session at **14.7 ms/frame against a 16.67 ms bar — from 20.0 ms where it started.** *Noticed,
+deliberately not built:* `Animation` is now the largest simulation cost at 3.8 ms/step, and
+`animation/Pose.cpp:95` resolves every track target with `findDescendantByName` and no memo — **the
+same mechanism §13 just hoisted out of skinning**. No game has asked for it; recorded so the next
+forcing event finds the note instead of repeating the search. *Dogfood smoke test:* Minecraft and
+RtsHandleProbe packaged builds both boot, load their manifests, enter Play and hold the 143.7 FPS cap
+with no errors — stated as a smoke test, not a regression comparison, since no pre-change counts were
+captured for either. Gate **72/72** Debug + Release. *Ref:* `DevDocs/DESIGN_RENDER_CPU_TIMING.md` §15.
 
 ---
 

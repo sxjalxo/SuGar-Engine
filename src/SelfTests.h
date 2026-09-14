@@ -1715,6 +1715,41 @@ inline bool testSkinning() {
         ok &= !Skinning::computeJointMatrices(reg, bar, malformed, none);
     }
 
+    { // DESIGN_RENDER_CPU_TIMING.md 13.1 -- AMBIGUOUS NAMES: first match in declared
+      // DFS order wins, and stays stable. Nothing covered this before, and the joint
+      // resolution rewrite (one subtree index instead of one search per joint) is
+      // precisely the change that could silently pick the OTHER "Tip" -- which would
+      // pose every affected character from the wrong bone, with no test failing and
+      // no visual that obviously reads as wrong.
+        const Entity decoyParent = reg.createEntity();
+        reg.names.add(decoyParent, { "Decoy" });
+        reg.transforms.add(decoyParent, {});
+        reg.hierarchy.add(decoyParent, {});
+        reg.setParent(decoyParent, character); // declared AFTER Root, so visited after it
+
+        const Entity duplicateTip = reg.createEntity();
+        reg.names.add(duplicateTip, { "Tip" }); // same name as the real joint
+        Transform decoyTransform;
+        decoyTransform.position = glm::vec3(0.0f, 50.0f, 0.0f); // nowhere near the real one
+        reg.transforms.add(duplicateTip, { decoyTransform });
+        reg.hierarchy.add(duplicateTip, {});
+        reg.setParent(duplicateTip, decoyParent);
+
+        std::vector<glm::mat4> matrices;
+        ok &= Skinning::computeJointMatrices(reg, bar, skin, matrices);
+        ok &= matrices.size() == 2;
+        if (!ok) {
+            return false;
+        }
+        // The real Tip sits at bind pose (y = 2), so its joint matrix is identity.
+        // The decoy at y = 50 would give 48. Picking the decoy is the failure this
+        // guards, so assert the value, not merely that something resolved.
+        ok &= nearly(matrices[1][3][1], 0.0f);
+
+        reg.destroyEntity(duplicateTip);
+        reg.destroyEntity(decoyParent);
+    }
+
     { // animation drives skinning end to end: AnimationSystem poses the joint
       // entity, and the joint matrix follows — with no coupling between them beyond
       // the transform. Skinning = f(mesh, skeleton pose).

@@ -138,6 +138,7 @@ add_library(SuGarCore SHARED
     src/animation/SkinRegistry.h
     src/animation/SkinRegistry.cpp
     src/animation/Skinning.h
+    src/ecs/RegistryWork.cpp
     src/animation/Skinning.cpp
     src/navigation/NavComponents.h
     src/navigation/NavMesh.h

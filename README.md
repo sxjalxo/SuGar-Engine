@@ -182,6 +182,45 @@ stubbed build, not asserted. It exists because three separate measurements were 
 it, and on its first run it attributed a 1 000-unit slowdown to the game's own O(N) scan rather
 than to any engine system.
 
+The same knob now prints two more lines, so a frame can be accounted for end to end: a render line
+(`drawList`, `resources`, `fenceWait` kept separate as *wait* and never folded into work, `record`,
+`submit`, `frameOther`) and a loop line (`input`, `fileWatch`, `moduleCheck`, `fixedStep`, `sleep`),
+each against a **total measured independently** so the residual is a real number rather than a
+subtraction identity. The loop line also prints **`steps/frame`** — which turned out to be the most
+useful number on it: at 143 FPS against a 16.67 ms fixed step the median is **zero**, so most frames
+run no simulation at all, and any statement of the form "the frame costs render plus sim" is mixing
+per-step with per-frame figures. With those lines the arena's frame time accounts to within
+**0.8-1.2 ms** at both 411 and 1 611 draw items, and the ~4.6 ms that previously looked like hidden
+engine overhead turned out to be mostly a mean subtracted from a median plus a 1 ms sleep that
+really costs 1.5 ms.
+
+A fourth line goes one level deeper, into the region the other three agree is the dominant one.
+Draw-list construction splits into `gather` / `items` / `skinning` / `sort` / `lights`, and on a
+1 611-item torture scene **skinning is 73 % of it** — which makes pose resolution ~68 % of the whole
+render frame. The per-joint cost is flat at **0.50 µs across a 4x change in load**, so the cost
+scales with *resolved joints*, not with draw items as an earlier sweep had it. The same line
+retired an optimisation before anyone built it: sorting 1 611 render items costs **0.008 ms**.
+
+Inside skinning the line switches from timing to **counting**, because a clock read costs ~100 ns
+and the question needed ~77 000 of them a frame. Per joint, per frame, the engine does **one heap
+allocation, 6.5 hash lookups with string compares, and 4.25 matrix-chain levels** — none of it
+memoised, not even between consecutive joints of the same skeleton. Counting ~150 000 events costs
+0.5 %, where 3 212 clock reads cost 3-5 %: counts say *why* rather than *how bad*, and they survive
+a change of machine.
+
+Then the payoff. Both repeated costs were hoisted out of the per-joint loop — one subtree walk
+resolving every joint name, and a world-matrix memo consulted at every level of the parent chain —
+both scoped to a single call, so there is no cache invalidation to get wrong. **Skinning 6.46 → 3.41
+ms, and the heavy scene went 20.0 → 15.4 ms a frame, through the 16.67 ms bar it had been missing.**
+No renderer change: the cost was never fill rate or draw calls. Six instruments were built before one
+line was optimised, and every suspect named by adjacency along the way measured false.
+
+One last correction to the instrument itself: those work counters lived in two of the engine's
+hottest inline helpers, and once skinning stopped calling them they were charging audio, navigation
+and animation ~0.4 ms a fixed step to feed a number nobody read. Removed — the reported figures came
+back bit-identical. **An always-on instrument in a hot shared path has to keep earning it.** The
+heavy cell finished the sequence at **14.7 ms a frame, from 20.0 where it started.**
+
 Two more, both dev-only: `SUGAR_RENDER_RES=<W>x<H>` renders the scene to an offscreen target at an
 explicit resolution independently of the window — which is what makes render cost at 4K measurable
 without a 4K display — and `SUGAR_NOAUDIO=1` skips opening the playback device entirely, so a

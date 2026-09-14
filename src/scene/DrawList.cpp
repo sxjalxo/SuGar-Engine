@@ -6,14 +6,37 @@
 #include "ecs/Registry.h"
 #include "rendering/UniformBufferObject.h"
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <limits>
 #include <tuple>
 #include <vector>
 #include <glm/geometric.hpp>
 
+// DESIGN_RENDER_CPU_TIMING.md §9 -- one clock read, named so the call sites below read as
+// measurement rather than noise. Everything is unconditional, like SystemScheduler's own
+// collection: a knob that has to be set before the engine can say why it is slow is a knob
+// nobody reaches for. The one region whose cost is NOT obviously negligible is `skinning`,
+// which needs a clock pair per skinned entity -- §9.3 measures that against a stubbed build
+// rather than assuming it.
+namespace {
+inline std::chrono::steady_clock::time_point now() { return std::chrono::steady_clock::now(); }
+
+inline double msSince(std::chrono::steady_clock::time_point start) {
+    return std::chrono::duration<double, std::milli>(now() - start).count();
+}
+} // namespace
+
 void buildDrawListFromECS(const Registry& registry, const std::vector<Light>& lights,
                           const glm::vec3& cameraPosition, DrawList& out) {
+    const auto buildStart = now();
+    out.timing = DrawListBuildTiming{};
+
+    // Inside `items`, deliberately: clear() destroys every RenderItem, which frees one
+    // heap block per skinned item's jointMatrices that the loop below then reallocates.
+    // §9.2 names that churn as the fallback suspect, so it must not sit outside the
+    // brackets where nothing would ever see it.
+    const auto gatherStart = now();
     out.items.clear();
     out.items.reserve(registry.transforms.getAll().size());
 
@@ -26,7 +49,9 @@ void buildDrawListFromECS(const Registry& registry, const std::vector<Light>& li
     }
 
     std::sort(orderedEntities.begin(), orderedEntities.end(), entityOrderLess);
+    out.timing.gatherMs = msSince(gatherStart);
 
+    const auto itemsStart = now();
     for (Entity entity : orderedEntities) {
         if (!registry.meshes.has(entity) || !registry.materials.has(entity)) {
             continue;
@@ -66,7 +91,22 @@ void buildDrawListFromECS(const Registry& registry, const std::vector<Light>& li
         // than a mesh collapsed onto the origin.
         if (registry.skinnedMeshes.has(entity)) {
             if (const Skin* skin = SkinRegistry::get(registry.skinnedMeshes.get(entity).skin)) {
+                // Accumulated, not bracketed once around the loop: the whole point is to
+                // separate pose resolution from the rest of the per-entity work it is
+                // interleaved with. The clock pair per skinned entity is the instrument's
+                // main cost and is measured, not assumed (§9.3).
+                const auto skinStart = now();
+                // §11 -- snapshot before/after so the counts belong to skinning and not to
+                // the Animation system, which calls findDescendantByName on its own.
+                const RegistryWorkCounters before = registryWorkCounters();
                 Skinning::computeJointMatrices(registry, entity, *skin, item.jointMatrices);
+                const RegistryWorkCounters& after = registryWorkCounters();
+                out.timing.skinSubtreeSearches += after.subtreeSearches - before.subtreeSearches;
+                out.timing.skinNodeVisits += after.nodeVisits - before.nodeVisits;
+                out.timing.skinMatrixHops += after.matrixHops - before.matrixHops;
+                out.timing.skinningMs += msSince(skinStart);
+                out.timing.skinnedItems++;
+                out.timing.joints += item.jointMatrices.size();
             }
         }
 
@@ -85,6 +125,9 @@ void buildDrawListFromECS(const Registry& registry, const std::vector<Light>& li
     // compare below violate std::sort's strict-weak-ordering requirement, which is
     // undefined behavior — std::sort can then read out of bounds and crash. Map any
     // non-finite distance to a large finite sentinel so the ordering stays total.
+    out.timing.itemsMs = msSince(itemsStart) - out.timing.skinningMs;
+
+    const auto sortStart = now();
     auto distanceToCamera = [&](const RenderItem& item) {
         const glm::vec3 worldPos = glm::vec3(item.model[3]);
         const float distSq = glm::dot(worldPos - cameraPosition, worldPos - cameraPosition);
@@ -111,9 +154,12 @@ void buildDrawListFromECS(const Registry& registry, const std::vector<Light>& li
         }
     );
 
+    out.timing.sortMs = msSince(sortStart);
+
     // Lights: the scene-level array (authored in the scene file, the editor's default
     // lighting) plus every active LightComponent entity, whose position and direction are
     // DERIVED from its world transform — never stored twice (DevDocs/DESIGN_LIGHTING.md).
+    const auto lightsStart = now();
     out.lights = lights;
     for (Entity entity : orderedEntities) {
         if (!registry.lights.has(entity)) {
@@ -164,4 +210,7 @@ void buildDrawListFromECS(const Registry& registry, const std::vector<Light>& li
                          });
         out.lights.resize(static_cast<size_t>(MAX_LIGHTS));
     }
+    out.timing.lightsMs = msSince(lightsStart);
+
+    out.timing.totalMs = msSince(buildStart);
 }

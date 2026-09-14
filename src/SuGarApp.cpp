@@ -195,6 +195,126 @@ static void printRenderCpuProfile(const SystemTiming& drawList, const Renderer::
               << " residual=" << residualMs << "\n";
 }
 
+// DESIGN_RENDER_CPU_TIMING.md Section 7 -- the rest of the main loop. Section 6 closed the
+// render path and left ~4.6 ms/frame that neither the per-system profiler (which
+// spans only the fixed step) nor the render regions (which span only camera
+// targets through drawFrame) can see. These regions bracket what is left of the
+// `while (!glfwWindowShouldClose(window))` body.
+//
+// Two things this line has to get right, both recorded in the design before any of
+// it was written:
+//
+// 1. UNITS (Section 7.2). The `[profile]` line above reports the fixed step PER STEP, and
+//    the accumulator runs a variable number of steps per frame -- one or two at a
+//    20 ms frame against a 16.67 ms step period. So `steps/frame` is printed here.
+//    Without it, sim and render figures are being added in different units, the
+//    same class of error as the derived ratio DESIGN_SYSTEM_PROFILER.md Section 9.2 records.
+//    `fixedStep` below is the whole accumulator loop measured PER FRAME, which is
+//    the figure that is commensurable with the others on this line.
+//
+// 2. NO DOUBLE SUBTRACTION. `cameraTargets` sits INSIDE `frameTotal` (the render
+//    region opens immediately before it), so it is printed for information and is
+//    deliberately NOT subtracted again in `other` -- `frameTotal` already carries
+//    it. Marked `(in frameTotal)` in the output so nobody sums this line's numbers
+//    naively.
+//
+// `other` is the residual against an INDEPENDENTLY measured `loopTotal`, not a
+// derived leftover: both sides come from separate clock reads, so a large `other`
+// is a real unlocated cost. The once-a-second report itself (this line, the FPS
+// line, the profile lines -- all stderr I/O) lands in `other` on the ~1 frame in N
+// that reports, which the 120-sample window's median rejects and its max does not.
+//
+// Frames that hit the zero-size-framebuffer `continue` (minimized window) record
+// nothing at all, so a minimized run reports the last non-minimized ~2 seconds
+// rather than a window full of zeroes.
+// DESIGN_RENDER_CPU_TIMING.md Section 9 -- inside `drawList`, which Section 6.2 measured at 93 %
+// of the render frame without ever looking at what it spends the time on. "drawList
+// dominates, and computeJointMatrices is called within it" is two facts placed next to
+// each other, not an attribution -- and Section 6.2 already punished exactly that once, naming
+// `record` a suspect on adjacency and measuring it flat.
+//
+// `buildTotal` is measured independently inside buildDrawListFromECS, so the residual
+// against the five parts is a real quantity. `skinnedItems`/`joints` are counts, printed
+// so the per-joint cost is derivable by a reader who wants it -- the line does not divide
+// them, because DESIGN_SYSTEM_PROFILER.md Section 9.2 records what happens when a ratio's halves
+// come from different moments. These two come from the same frame and the same bracket.
+//
+// Note `buildTotal` here is per BUILD, and it is the same quantity `drawList` reports on
+// the [profile-render] line -- printing both is the cross-check that the inner brackets
+// did not perturb the outer one.
+struct DrawListProfile {
+    SystemTiming gather;
+    SystemTiming items;
+    SystemTiming skinning;
+    SystemTiming sort;
+    SystemTiming lights;
+    SystemTiming buildTotal;
+    std::size_t skinnedItems = 0;
+    std::size_t joints = 0;
+    unsigned long long subtreeSearches = 0;
+    unsigned long long nodeVisits = 0;
+    unsigned long long matrixHops = 0;
+};
+
+static void printDrawListProfile(const DrawListProfile& p) {
+    std::cerr << std::fixed << std::setprecision(4);
+    std::cerr << "[profile-drawlist]"
+              << " gather=" << p.gather.medianMs << "/" << p.gather.maxMs
+              << " items=" << p.items.medianMs << "/" << p.items.maxMs
+              << " skinning=" << p.skinning.medianMs << "/" << p.skinning.maxMs
+              << " sort=" << p.sort.medianMs << "/" << p.sort.maxMs
+              << " lights=" << p.lights.medianMs << "/" << p.lights.maxMs;
+
+    const double partSum = p.gather.medianMs + p.items.medianMs + p.skinning.medianMs +
+                            p.sort.medianMs + p.lights.medianMs;
+    std::cerr << " buildTotal=" << p.buildTotal.medianMs << "/" << p.buildTotal.maxMs
+              << " residual=" << (p.buildTotal.medianMs - partSum)
+              << " skinnedItems=" << p.skinnedItems
+              << " joints=" << p.joints
+              // DESIGN_RENDER_CPU_TIMING.md §11 -- work counts inside skinning. Printed raw;
+              // nodeVisits/subtreeSearches is the ratio that says whether the cost is
+              // per-search overhead or traversal depth, and the reader divides it, not this
+              // line (DESIGN_SYSTEM_PROFILER.md §9.2).
+              << " subtreeSearches=" << p.subtreeSearches
+              << " nodeVisits=" << p.nodeVisits
+              << " matrixHops=" << p.matrixHops << "\n";
+}
+
+struct LoopCpuTiming {
+    SystemTiming input;
+    SystemTiming fileWatch;
+    SystemTiming moduleCheck;
+    SystemTiming cameraTargets;
+    SystemTiming fixedStep;
+    SystemTiming sleep;
+    SystemTiming loopTotal;
+    SystemTiming stepsPerFrame;
+    double frameTotalMedianMs = 0.0;
+};
+
+static void printLoopCpuProfile(const LoopCpuTiming& loop) {
+    std::cerr << std::fixed << std::setprecision(4);
+    std::cerr << "[profile-loop]"
+              << " input=" << loop.input.medianMs << "/" << loop.input.maxMs
+              << " fileWatch=" << loop.fileWatch.medianMs << "/" << loop.fileWatch.maxMs
+              << " moduleCheck=" << loop.moduleCheck.medianMs << "/" << loop.moduleCheck.maxMs
+              << " fixedStep=" << loop.fixedStep.medianMs << "/" << loop.fixedStep.maxMs
+              << " frameTotal=" << loop.frameTotalMedianMs
+              << " cameraTargets(in frameTotal)=" << loop.cameraTargets.medianMs << "/"
+              << loop.cameraTargets.maxMs
+              << " sleep=" << loop.sleep.medianMs << "/" << loop.sleep.maxMs;
+
+    // cameraTargets is intentionally absent: frameTotal already contains it (see above).
+    const double accounted = loop.input.medianMs + loop.fileWatch.medianMs +
+                              loop.moduleCheck.medianMs + loop.fixedStep.medianMs +
+                              loop.frameTotalMedianMs + loop.sleep.medianMs;
+    std::cerr << " loopTotal=" << loop.loopTotal.medianMs << "/" << loop.loopTotal.maxMs
+              << " other=" << (loop.loopTotal.medianMs - accounted)
+              << std::setprecision(2)
+              << " steps/frame=" << loop.stepsPerFrame.medianMs << "/" << loop.stepsPerFrame.maxMs
+              << "\n";
+}
+
 // Same shape as StressTests.h's "[audiodbg] ..." line so the two runs are
 // directly diffable/greppable against each other.
 static void printAudioDebugStats(const AudioDebugStats& stats) {
@@ -1551,6 +1671,31 @@ void SuGarApp::mainLoop() {
     TimingWindow drawListTiming;
     TimingWindow renderFrameTiming;
 
+    // DESIGN_RENDER_CPU_TIMING.md Section 9 -- the five parts of buildDrawListFromECS, fed from
+    // the raw per-frame numbers the DrawList carries back. The app owns the windows and
+    // the statistics; `scene/` only reports what one call cost.
+    TimingWindow dlGatherTiming;
+    TimingWindow dlItemsTiming;
+    TimingWindow dlSkinningTiming;
+    TimingWindow dlSortTiming;
+    TimingWindow dlLightsTiming;
+    TimingWindow dlBuildTotalTiming;
+
+    // DESIGN_RENDER_CPU_TIMING.md Section 7 -- the rest of the loop body, bracketed to
+    // find the ~4.6 ms/frame Section 6.4 left unaccounted. Same lifetime and same
+    // rolling-window shape as the two above. `stepsPerFrameWindow` is not a
+    // duration: it records how many fixed steps the accumulator ran this frame,
+    // which is what makes the per-step `[profile]` line commensurable with the
+    // per-frame numbers here (Section 7.2's units hazard).
+    TimingWindow inputTiming;
+    TimingWindow fileWatchTiming;
+    TimingWindow moduleCheckTiming;
+    TimingWindow cameraTargetsTiming;
+    TimingWindow fixedStepFrameTiming;
+    TimingWindow loopSleepTiming;
+    TimingWindow loopTotalTiming;
+    TimingWindow stepsPerFrameWindow;
+
     // A booted game starts playing immediately: behaviours only run in Play, and someone
     // launching a game expects it running, not paused in the editor. The editor (no
     // SUGAR_GAME) still opens in Edit. (Auto-play, M4 friction #6.)
@@ -1559,13 +1704,23 @@ void SuGarApp::mainLoop() {
     }
 
     while (!glfwWindowShouldClose(window)) {
+        // DESIGN_RENDER_CPU_TIMING.md Section 7 -- loopTotal spans the WHOLE body, measured
+        // independently of every named region inside it so `loopTotal - sum(regions)`
+        // is a real residual rather than an identity. Recorded at the bottom, after
+        // the trailing sleep.
+        const auto loopStart = std::chrono::steady_clock::now();
+
         double currentTime = glfwGetTime();
         float deltaTime = static_cast<float>(currentTime - lastTime);
         lastTime = currentTime;
 
+        const auto inputStart = std::chrono::steady_clock::now();
         Input::beginFrame();
         glfwPollEvents();
         processInput(deltaTime);
+        inputTiming.record(
+            std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - inputStart)
+                .count());
 
         int framebufferWidth = 0;
         int framebufferHeight = 0;
@@ -1596,6 +1751,11 @@ void SuGarApp::mainLoop() {
             }
         }
 
+        // DESIGN_RENDER_CPU_TIMING.md Section 7 -- `fileWatch` covers the poll AND the
+        // reload loop it drives, because the prediction under test is that the
+        // per-frame filesystem walk costs milliseconds; splitting the (rare) reload
+        // out would leave the poll's own cost looking free on reload frames.
+        const auto fileWatchStart = std::chrono::steady_clock::now();
         const auto changedFiles = fileWatcher.pollChanges();
         if (!changedFiles.empty()) {
             vkDeviceWaitIdle(device);
@@ -1626,15 +1786,33 @@ void SuGarApp::mainLoop() {
                 reloadDescriptors = true;
             }
         }
+        fileWatchTiming.record(
+            std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() -
+                                                      fileWatchStart)
+                .count());
 
         // Fixed-timestep gameplay update. Gameplay advances only in Play state;
         // rendering below stays uncapped. The accumulator is clamped to avoid a
         // spiral of death after a long stall (e.g. window drag / hot reload).
         // Code hot reload: if the game DLL was recompiled, swap it in live. Done
         // here (outside the fixed-step update) so no behavior is mid-tick.
+        const auto moduleCheckStart = std::chrono::steady_clock::now();
         if (gameModule.sourceChanged()) {
             reloadGameModule();
         }
+        moduleCheckTiming.record(
+            std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() -
+                                                      moduleCheckStart)
+                .count());
+
+        // DESIGN_RENDER_CPU_TIMING.md Section 7 -- the accumulator loop measured PER FRAME,
+        // alongside the number of steps it ran. `fixedStepTiming` above is per STEP
+        // and is what the `[profile]` line reports; this one is the figure that can
+        // be added to the render and input numbers without mixing units (Section 7.2).
+        // Both are kept: per-step is what a developer tuning a system wants, per-frame
+        // is what closes the frame budget.
+        const auto fixedStepFrameStart = std::chrono::steady_clock::now();
+        int stepsThisFrame = 0;
 
         // Advance the sim only while live-playing (not while scrubbing history).
         if (engineState == EngineState::Play && scrubCursor < 0) {
@@ -1663,10 +1841,16 @@ void SuGarApp::mainLoop() {
                 fixedStepTiming.record(
                     std::chrono::duration<double, std::milli>(fixedStepEnd - fixedStepStart).count());
                 fixedAccumulator -= FIXED_TIMESTEP;
+                ++stepsThisFrame;
             }
         } else {
             fixedAccumulator = 0.0f;
         }
+        fixedStepFrameTiming.record(
+            std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() -
+                                                      fixedStepFrameStart)
+                .count());
+        stepsPerFrameWindow.record(static_cast<double>(stepsThisFrame));
 
         // DESIGN_RENDER_CPU_TIMING.md -- frameTotal spans the whole post-fixed-step
         // region: camera targets, draw-list rebuild (incl. CPU skinning, §3), the
@@ -1676,13 +1860,31 @@ void SuGarApp::mainLoop() {
         // DESIGN_SNAPSHOT_CAPTURE_COST.md §11.6 records).
         const auto renderRegionStart = std::chrono::steady_clock::now();
 
+        // Inside `frameTotal`, deliberately: the render region opens above. Printed
+        // for information on the [profile-loop] line and NOT subtracted again there
+        // (DESIGN_RENDER_CPU_TIMING.md Section 7 -- no double subtraction).
+        const auto cameraTargetsStart = std::chrono::steady_clock::now();
         updateCameraTargets();
+        cameraTargetsTiming.record(
+            std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() -
+                                                      cameraTargetsStart)
+                .count());
 
         const auto drawListStart = std::chrono::steady_clock::now();
         rebuildDrawList();
         const auto drawListEnd = std::chrono::steady_clock::now();
         drawListTiming.record(
             std::chrono::duration<double, std::milli>(drawListEnd - drawListStart).count());
+
+        // DESIGN_RENDER_CPU_TIMING.md Section 9 -- the inner split, recorded from the raw numbers
+        // buildDrawListFromECS just wrote into the list. Fed unconditionally, same as
+        // everything else on this path; only the once-a-second report is gated.
+        dlGatherTiming.record(drawList.timing.gatherMs);
+        dlItemsTiming.record(drawList.timing.itemsMs);
+        dlSkinningTiming.record(drawList.timing.skinningMs);
+        dlSortTiming.record(drawList.timing.sortMs);
+        dlLightsTiming.record(drawList.timing.lightsMs);
+        dlBuildTotalTiming.record(drawList.timing.totalMs);
 
         if (reloadDescriptors) {
             renderer->refreshDrawListResources(); // times itself into Renderer's resourcesTiming_
@@ -1739,12 +1941,46 @@ void SuGarApp::mainLoop() {
                                            renderer->renderCpuTiming(),
                                            { renderFrameTiming.median(), renderFrameTiming.max() });
                 }
+                // DESIGN_RENDER_CPU_TIMING.md Section 7 -- third adjacent line: the rest of
+                // the loop body, so sim, render and loop overhead are read together.
+                LoopCpuTiming loopTiming;
+                loopTiming.input = { inputTiming.median(), inputTiming.max() };
+                loopTiming.fileWatch = { fileWatchTiming.median(), fileWatchTiming.max() };
+                loopTiming.moduleCheck = { moduleCheckTiming.median(), moduleCheckTiming.max() };
+                loopTiming.cameraTargets = { cameraTargetsTiming.median(), cameraTargetsTiming.max() };
+                loopTiming.fixedStep = { fixedStepFrameTiming.median(), fixedStepFrameTiming.max() };
+                loopTiming.sleep = { loopSleepTiming.median(), loopSleepTiming.max() };
+                loopTiming.loopTotal = { loopTotalTiming.median(), loopTotalTiming.max() };
+                loopTiming.stepsPerFrame = { stepsPerFrameWindow.median(), stepsPerFrameWindow.max() };
+                loopTiming.frameTotalMedianMs = renderFrameTiming.median();
+                printLoopCpuProfile(loopTiming);
+                // DESIGN_RENDER_CPU_TIMING.md Section 9 -- fourth line: inside the region the
+                // other three agree is the dominant one.
+                DrawListProfile dlProfile;
+                dlProfile.gather = { dlGatherTiming.median(), dlGatherTiming.max() };
+                dlProfile.items = { dlItemsTiming.median(), dlItemsTiming.max() };
+                dlProfile.skinning = { dlSkinningTiming.median(), dlSkinningTiming.max() };
+                dlProfile.sort = { dlSortTiming.median(), dlSortTiming.max() };
+                dlProfile.lights = { dlLightsTiming.median(), dlLightsTiming.max() };
+                dlProfile.buildTotal = { dlBuildTotalTiming.median(), dlBuildTotalTiming.max() };
+                dlProfile.skinnedItems = drawList.timing.skinnedItems;
+                dlProfile.joints = drawList.timing.joints;
+                dlProfile.subtreeSearches = drawList.timing.skinSubtreeSearches;
+                dlProfile.nodeVisits = drawList.timing.skinNodeVisits;
+                dlProfile.matrixHops = drawList.timing.skinMatrixHops;
+                printDrawListProfile(dlProfile);
             }
             fpsTimer = currentTime;
             framesThisSecond = 0;
         }
 
+        const auto sleepStart = std::chrono::steady_clock::now();
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        const auto sleepEnd = std::chrono::steady_clock::now();
+        loopSleepTiming.record(std::chrono::duration<double, std::milli>(sleepEnd - sleepStart).count());
+
+        // Last statement in the body, so loopTotal really is the whole iteration.
+        loopTotalTiming.record(std::chrono::duration<double, std::milli>(sleepEnd - loopStart).count());
     }
 }
 
