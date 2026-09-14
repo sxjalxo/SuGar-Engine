@@ -46,6 +46,7 @@ struct RenderItem {
 // measured at different moments is how DESIGN_SYSTEM_PROFILER.md §9.2 went wrong. Both
 // counts here come from the same frame and the same bracket.
 struct DrawListBuildTiming {
+    double resetMs = 0.0;    // clear + reserve the output -- incl. freeing last frame's jointMatrices
     double gatherMs = 0.0;   // collect transform entities + sort into deterministic order
     double itemsMs = 0.0;    // the per-entity loop, MINUS skinning
     double skinningMs = 0.0; // Skinning::computeJointMatrices(), accumulated

@@ -1779,6 +1779,47 @@ inline bool testSkinning() {
         AnimationClipRegistry::clear();
     }
 
+    { // DESIGN_RENDER_CPU_TIMING.md §18 -- TWO documented guarantees of
+      // Registry::findDescendantsByName that had no test, both introduced by the
+      // one-walk rewrite and both silent if broken.
+      //
+      // (a) A name listed TWICE resolves both slots to the SAME first match -- which is
+      //     what two separate findDescendantByName calls did. Get this wrong and the
+      //     second slot lands on INVALID_ENTITY, i.e. an identity joint matrix: a bone
+      //     that quietly stops following its skeleton.
+        Skin repeated = skin;
+        repeated.joints = { "Tip", "Tip" };
+        repeated.inverseBindMatrices = { skin.inverseBindMatrices[1], skin.inverseBindMatrices[1] };
+        ok &= repeated.valid();
+        std::vector<glm::mat4> matrices;
+        ok &= Skinning::computeJointMatrices(reg, bar, repeated, matrices);
+        ok &= matrices.size() == 2;
+        if (!ok) {
+            return false;
+        }
+        // Both entries resolved to the same entity, so both matrices are equal AND neither
+        // is identity-by-failure. At bind pose Tip's joint matrix is identity, so move it
+        // first to tell "resolved to the same joint" apart from "failed to resolve".
+        reg.transforms.get(tip).transform.position = glm::vec3(0.0f, 5.0f, 0.0f);
+        ok &= Skinning::computeJointMatrices(reg, bar, repeated, matrices);
+        ok &= nearly(matrices[0][3][1], 3.0f) && nearly(matrices[1][3][1], 3.0f); // 5 - 2 bind
+        reg.transforms.get(tip).transform.position = glm::vec3(0.0f, 2.0f, 0.0f);
+    }
+
+    { // (b) An EMPTY pose target means the root itself, resolved rather than searched for.
+      // applyPose special-cases it, and the one-walk rewrite changed exactly that
+      // expression, so it is tested here rather than trusted.
+        Pose pose;
+        TransformSample sample;
+        sample.hasTranslation = true;
+        sample.translation = glm::vec3(0.0f, 7.0f, 0.0f);
+        pose.entries.push_back({ std::string(), sample });
+
+        applyPose(reg, tip, pose); // empty target -> `tip` itself, not a descendant of it
+        ok &= nearly(reg.transforms.get(tip).transform.position.y, 7.0f);
+        reg.transforms.get(tip).transform.position = glm::vec3(0.0f, 2.0f, 0.0f);
+    }
+
     return ok;
 }
 

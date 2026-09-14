@@ -508,6 +508,34 @@ is a result worth writing down; it stops the next person re-deriving it.
 
 Related: item 14 — the same investigation, where counts predicted a win that wall time refused.
 
+## 17. Frame rate on this machine is 11 % noisy; per-region medians are not
+
+**Observed 2026-09-14.** Five runs of the *same build*, same scene, same resolution, one after
+another:
+
+```
+73.3  71.2  70.9  68.3  65.8   FPS   ->  13.6 - 15.2 ms
+```
+
+An 11 % spread. Over those same runs the per-region medians moved ~3 %: `skinning` 3.35-3.45,
+`buildTotal` 5.56-5.80, `gather` 1.20-1.26.
+
+A result had been published from the best of the five. That is the same error as reading a mean
+against medians (item 12) — picking the favourable member of a distribution and quoting it as the
+value.
+
+**What to do about it:**
+
+1. **Run a performance cell at least three times** and quote the range or the median across runs.
+   One run is an anecdote on a thermally-throttled laptop.
+2. **Prefer the per-region figures as evidence.** They are medians of a 120-sample window inside a
+   run, so they already reject the noise the whole-run frame rate absorbs.
+3. **When you must quote a frame time, quote the distribution**: "~14.1 ms, 13.6-15.2 over five
+   runs" is honest and just as decisive against a 16.67 ms bar.
+
+Related: items 11 (a capped median is not a cost) and 12 (a mean minus a median). All three are the
+same family — the statistic reported is not the statistic measured.
+
 ## Env knobs, current list
 
 Runtime, engine:
@@ -524,7 +552,7 @@ Runtime, engine:
 | `SUGAR_SNAP_CORPUS=<path>` | dumps formatted snapshot bytes to disk on every capture, overwriting; **never combine with a timing run** — the dump is inside the timed region and inflates `total` (F14) |
 | `SUGAR_SNAPRATE=1` | snapshot semantics to stderr every 300 captures: byte-identical consecutive captures, run-length histogram, distinct states in the 600-frame ring, and `[snapdiff]` — the first and last offsets where two consecutive captures differ, with surrounding text. Safe to combine with a timing run (it is fed after the timed region closes), but read `differing_bytes` **only** when `size_delta` is 0 — the compare is positional and an insertion misaligns everything after it |
 | `SUGAR_AUDIODBG=1` | audio-thread health to stderr, once a second from the gameplay thread plus once at shutdown: `callbacks`, `overruns` (mix duration >= its own deadline, derived at runtime from the frame count the callback is handed), `arrival_gaps`, and the lock-wait max/histogram as a fraction of the deadline. Counters are atomics written on the audio thread; the callback never prints, allocates or takes an extra lock. Measured baseline: 0 overruns, max lock wait 0.33 % of deadline (`DESIGN_AUDIO_THREAD_OWNERSHIP.md`) |
-| `SUGAR_PROFILE=1` | per-system fixed-step timing to stderr once a second: `Script=median/max` per named system, `total=` measured independently in `SuGarApp` around the whole fixed step (systems + `Input::endFixedStep` + snapshot capture), and `residual=` total minus the summed systems. `path=` says `plain` or the access-verified path — **Debug numbers include the `ComponentAccessTracker`'s cost and are not comparable to Release**. Collection is always on (~0.16 ms/step, measured against a stubbed build); the editor Systems panel shows the same figures live. **The same knob prints two more lines**: `[profile-render]` (`drawList`/`resources`/`fenceWait`/`record`/`submit`/`frameOther` against an independently measured `frameTotal`; `fenceWait` is WAIT and is deliberately excluded from the work sum) and `[profile-loop]` (`input`/`fileWatch`/`moduleCheck`/`fixedStep`/`sleep` against an independently measured `loopTotal`, plus **`steps/frame`**). Read `steps/frame` before adding any two of these numbers together — see #12. `cameraTargets` on the loop line sits **inside** `frameTotal` and is printed for information only, never subtracted twice (`DESIGN_RENDER_CPU_TIMING.md` §7-§8). A fourth line, `[profile-drawlist]`, splits draw-list construction into `gather`/`items`/`skinning`/`sort`/`lights` against an independent `buildTotal`, with `skinnedItems`/`joints` as counts — divide them yourself, the line will not. **`skinning` is inflated by ~3-5 % by its own per-entity clock pair** (measured against a stubbed build, §10.3), which matters only on torture-scale scenes; at a real entity count it is ~0.03 ms. Also prints `subtreeSearches`/`nodeVisits`/`matrixHops` — work COUNTS inside skinning (~0.5 % overhead for ~150 000 increments, against 3-5 % for 3 212 clock reads), which say *why* rather than *how bad* and survive a change of machine |
+| `SUGAR_PROFILE=1` | per-system fixed-step timing to stderr once a second: `Script=median/max` per named system, `total=` measured independently in `SuGarApp` around the whole fixed step (systems + `Input::endFixedStep` + snapshot capture), and `residual=` total minus the summed systems. `path=` says `plain` or the access-verified path — **Debug numbers include the `ComponentAccessTracker`'s cost and are not comparable to Release**. Collection is always on (~0.16 ms/step, measured against a stubbed build); the editor Systems panel shows the same figures live. **The same knob prints two more lines**: `[profile-render]` (`drawList`/`resources`/`fenceWait`/`record`/`submit`/`frameOther` against an independently measured `frameTotal`; `fenceWait` is WAIT and is deliberately excluded from the work sum) and `[profile-loop]` (`input`/`fileWatch`/`moduleCheck`/`fixedStep`/`sleep` against an independently measured `loopTotal`, plus **`steps/frame`**). Read `steps/frame` before adding any two of these numbers together — see #12. `cameraTargets` on the loop line sits **inside** `frameTotal` and is printed for information only, never subtracted twice (`DESIGN_RENDER_CPU_TIMING.md` §7-§8). A fourth line, `[profile-drawlist]`, splits draw-list construction into `gather`/`items`/`skinning`/`sort`/`lights` against an independent `buildTotal`, with `skinnedItems`/`joints` as counts — divide them yourself, the line will not. **`skinning` is inflated by ~3-5 % by its own per-entity clock pair** (measured against a stubbed build, §10.3), which matters only on torture-scale scenes; at a real entity count it is ~0.03 ms. `reset` is `clear`+`reserve` on the output, split out of `gather` because it silently carried the free of last frame's joint matrices (0.08 ms, §18.1). Also prints `subtreeSearches`/`nodeVisits`/`matrixHops` — work COUNTS inside skinning (~0.5 % overhead for ~150 000 increments, against 3-5 % for 3 212 clock reads), which say *why* rather than *how bad* and survive a change of machine |
 | `SUGAR_RENDER_RES=<W>x<H>` | overrides the offscreen scene render target, independently of the window, so render cost can be measured at 4K on a smaller display. `createViewportResources()` logs the extent it actually allocated — trust that line, not the variable, since `requestedViewportExtent` is otherwise reassigned every frame from the ImGui panel size |
 | `SUGAR_NOAUDIO=1` | skips opening the playback device entirely: no mixer thread, no device, every `play()` a no-op. The same state a machine with no sound card produces. Use for any measurement run that would otherwise play a game's music into whatever else the machine is doing |
 

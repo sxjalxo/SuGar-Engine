@@ -243,6 +243,7 @@ static void printRenderCpuProfile(const SystemTiming& drawList, const Renderer::
 // the [profile-render] line -- printing both is the cross-check that the inner brackets
 // did not perturb the outer one.
 struct DrawListProfile {
+    SystemTiming reset;
     SystemTiming gather;
     SystemTiming items;
     SystemTiming skinning;
@@ -259,19 +260,23 @@ struct DrawListProfile {
 static void printDrawListProfile(const DrawListProfile& p) {
     std::cerr << std::fixed << std::setprecision(4);
     std::cerr << "[profile-drawlist]"
+              << " reset=" << p.reset.medianMs << "/" << p.reset.maxMs
               << " gather=" << p.gather.medianMs << "/" << p.gather.maxMs
               << " items=" << p.items.medianMs << "/" << p.items.maxMs
               << " skinning=" << p.skinning.medianMs << "/" << p.skinning.maxMs
               << " sort=" << p.sort.medianMs << "/" << p.sort.maxMs
               << " lights=" << p.lights.medianMs << "/" << p.lights.maxMs;
 
-    const double partSum = p.gather.medianMs + p.items.medianMs + p.skinning.medianMs +
-                            p.sort.medianMs + p.lights.medianMs;
+    const double partSum = p.reset.medianMs + p.gather.medianMs + p.items.medianMs +
+                            p.skinning.medianMs + p.sort.medianMs + p.lights.medianMs;
     std::cerr << " buildTotal=" << p.buildTotal.medianMs << "/" << p.buildTotal.maxMs
               << " residual=" << (p.buildTotal.medianMs - partSum)
               << " skinnedItems=" << p.skinnedItems
               << " joints=" << p.joints
-              // DESIGN_RENDER_CPU_TIMING.md §11 -- work counts inside skinning. Printed raw;
+              // §11 -- work counts inside skinning. These are LAST-FRAME EXACT COUNTS, not
+              // windowed medians like every millisecond figure on this line; they are
+              // identical on every frame of a steady scene, which is why mixing the two
+              // statistics here is readable rather than misleading. Printed raw;
               // nodeVisits/subtreeSearches is the ratio that says whether the cost is
               // per-search overhead or traversal depth, and the reader divides it, not this
               // line (DESIGN_SYSTEM_PROFILER.md §9.2).
@@ -1674,6 +1679,7 @@ void SuGarApp::mainLoop() {
     // DESIGN_RENDER_CPU_TIMING.md Section 9 -- the five parts of buildDrawListFromECS, fed from
     // the raw per-frame numbers the DrawList carries back. The app owns the windows and
     // the statistics; `scene/` only reports what one call cost.
+    TimingWindow dlResetTiming;
     TimingWindow dlGatherTiming;
     TimingWindow dlItemsTiming;
     TimingWindow dlSkinningTiming;
@@ -1879,6 +1885,7 @@ void SuGarApp::mainLoop() {
         // DESIGN_RENDER_CPU_TIMING.md Section 9 -- the inner split, recorded from the raw numbers
         // buildDrawListFromECS just wrote into the list. Fed unconditionally, same as
         // everything else on this path; only the once-a-second report is gated.
+        dlResetTiming.record(drawList.timing.resetMs);
         dlGatherTiming.record(drawList.timing.gatherMs);
         dlItemsTiming.record(drawList.timing.itemsMs);
         dlSkinningTiming.record(drawList.timing.skinningMs);
@@ -1957,6 +1964,7 @@ void SuGarApp::mainLoop() {
                 // DESIGN_RENDER_CPU_TIMING.md Section 9 -- fourth line: inside the region the
                 // other three agree is the dominant one.
                 DrawListProfile dlProfile;
+                dlProfile.reset = { dlResetTiming.median(), dlResetTiming.max() };
                 dlProfile.gather = { dlGatherTiming.median(), dlGatherTiming.max() };
                 dlProfile.items = { dlItemsTiming.median(), dlItemsTiming.max() };
                 dlProfile.skinning = { dlSkinningTiming.median(), dlSkinningTiming.max() };

@@ -2149,8 +2149,35 @@ recorded so it need not be repeated. The remaining ~1.35 ms of `applyPose` is le
 rather than guessed at. *Proof the shared refactor is behaviour-identical:* `[profile-drawlist]`
 still reports `subtreeSearches=1606 nodeVisits=16060 matrixHops=16060` and `skinning` 3.35 ms,
 unchanged at both cells. Gate **72/72** Debug + Release, `Serializer` golden PASS. **Session arc: the
-arena's CPU-bound 4K cell went 20.0 → 13.6 ms/frame — from 3.0 ms over a 16.67 ms bar to 3.1 ms
-under, with no renderer change at any point.** *Ref:* `DevDocs/DESIGN_RENDER_CPU_TIMING.md` §16-§17.
+arena's CPU-bound 4K cell went 20.0 → ~14.1 ms/frame — from 3.0 ms over a 16.67 ms bar to comfortably
+under, with no renderer change at any point.** (Originally published as 13.6 ms; **§18.3 corrects
+that to a range of 13.6-15.2 over five runs** — 13.6 was the best of them.) *Ref:*
+`DevDocs/DESIGN_RENDER_CPU_TIMING.md` §16-§17.
+
+**Closing review of the whole perf branch — four findings, one of them against my own headline.**
+*Method:* the `property-not-watched` question — what can be violated while the suite stays green? —
+asked over everything §6-§17 added, in the style of the review `DESIGN_SNAPSHOT_CAPTURE_COST.md`
+§11.6 records. *Finding 1 — a region measured something its own comment denied:* `out.items.clear()`
+sat inside the `gather` bracket while the comment above it said `items`, so the published "`gather` =
+collect + sort" figure also contained the destruction of 1 611 `RenderItem`s and the freeing of one
+heap block per skinned item's `jointMatrices`. Fixed by giving it **its own `reset` region** rather
+than by editing the comment to match — measured at **0.08 ms**, with `gather` now 1.20-1.26 ms where
+1.29 was reported. **That also closes a hanging suspect for free:** §9.2 had named exactly this heap
+churn as the fallback hypothesis, and it is now struck off with a number. *Findings 2 and 3 — two
+documented guarantees this branch introduced and never tested,* both silent if broken: a name listed
+twice must resolve both slots to the same first match (break it and a bone quietly stops following
+its skeleton), and an empty pose target must mean the root itself (the rewrite changed exactly that
+expression). Both now tested, and **each break-tested independently at 61/62** before being trusted.
+*Finding 4, against the headline:* the session-end frame time was published as **13.6 ms** from a
+single run. Five runs of the same build give **73.3 / 71.2 / 70.9 / 68.3 / 65.8 FPS — 13.6-15.2 ms,
+median ~14.1**, so 13.6 was the best of five, which is the same error §8 and §12 corrected in other
+forms. **Corrected to the distribution.** Useful side-observation: per-region medians held to ~3 %
+across those runs while the frame rate moved 11 %, so the frame figure carries thermal and scheduling
+noise the region figures do not — prefer the regions as evidence. *What the review did NOT find:* no
+counter that cannot fire (all three move with load and came back bit-identical across the shared-
+helper refactor, a stronger check than any assertion), no unguarded `transforms.get` in the
+world-matrix memo, no unlabelled mixed-statistics output. Gate **72/72** Debug + Release. *Ref:*
+`DevDocs/DESIGN_RENDER_CPU_TIMING.md` §18.
 
 ---
 

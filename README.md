@@ -225,8 +225,10 @@ The same shape turned up once more, in pose application, and this time the instr
 cost a third of the region it measured — so it was found by **ablation** instead: make `applyPose`
 return immediately, measure, revert. That attributed **63 %** of the animation system to resolving
 pose targets by name, for zero instrument overhead. One shared `findDescendantsByName` now serves
-both hot loops. `Animation` **3.82 → 2.94 ms a step**, and the heavy cell ends at **13.6 ms a frame
-— 3.1 ms under a 16.67 ms budget it began 3.0 ms over.** Still no renderer change.
+both hot loops. `Animation` **3.82 → 2.94 ms a step**, and the heavy cell ends at **~14.1 ms a frame
+(13.6-15.2 over five runs) — comfortably under a 16.67 ms budget it began 3.0 ms over.** Still no
+renderer change. The per-region medians held to ~3 % across those runs while the frame rate moved
+11 %, which is why the regions, not the frame figure, are the evidence.
 
 Two more, both dev-only: `SUGAR_RENDER_RES=<W>x<H>` renders the scene to an offscreen target at an
 explicit resolution independently of the window — which is what makes render cost at 4K measurable

@@ -32,14 +32,19 @@ void buildDrawListFromECS(const Registry& registry, const std::vector<Light>& li
     const auto buildStart = now();
     out.timing = DrawListBuildTiming{};
 
-    // Inside `items`, deliberately: clear() destroys every RenderItem, which frees one
-    // heap block per skinned item's jointMatrices that the loop below then reallocates.
-    // §9.2 names that churn as the fallback suspect, so it must not sit outside the
-    // brackets where nothing would ever see it.
-    const auto gatherStart = now();
+    // §18 -- its OWN region, and this is a correction. The comment here used to say
+    // "inside `items`" while the code had it inside `gather`, so the published figure for
+    // `gather` ("collect every transform entity and sort them") silently also contained
+    // this: clear() destroys every RenderItem, freeing one heap block per skinned item's
+    // jointMatrices that the loop below then reallocates. §9.2 named that churn as a
+    // suspect, and it was being charged to the wrong region while a comment claimed a
+    // third one. Two clock reads a frame buys an honest answer instead.
+    const auto resetStart = now();
     out.items.clear();
     out.items.reserve(registry.transforms.getAll().size());
+    out.timing.resetMs = msSince(resetStart);
 
+    const auto gatherStart = now();
     std::vector<Entity> orderedEntities;
     orderedEntities.reserve(registry.transforms.getAll().size());
 
