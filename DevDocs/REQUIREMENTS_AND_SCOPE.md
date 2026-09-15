@@ -1023,6 +1023,13 @@ counters cost ~0.4 ms per fixed step across audio, navigation and animation once
 using the helpers they lived in, and removing them changed the reported numbers not at all
 (`DevDocs/DEV_ENVIRONMENT.md` #15).
 
+A speed-up measured on a **synthetic scale-up** must be re-measured on the real game configuration
+before it is described as a fix, and **both numbers published**. The arena's torture pass carries
+9x the entities of the game it is named after: it made a real mechanism visible that the game could
+never have surfaced, and on the real configuration the same fix is imperceptible because that frame
+was already at the display cap. A magnifier is not a proxy (`DevDocs/DEV_ENVIRONMENT.md` #18), and a
+slowdown that appears only at a cap is a pacing artefact rather than a cost (#19).
+
 Counts locate a cost; **wall time adjudicates it**. The first joint-resolution rewrite won every
 count it predicted and ran 8 % slower, because the hash maps it introduced were never counted
 (`DevDocs/DEV_ENVIRONMENT.md` #14). Both instruments run; the clock decides.

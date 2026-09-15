@@ -2206,6 +2206,29 @@ re-measured on the real configuration before it is called a fix, and **both** nu
 §14 and §17 each published only the magnified one. *Ref:*
 `DevDocs/DESIGN_RENDER_CPU_TIMING.md` §19.
 
+**The instrumentation is free, and the 1.5 % was never a cost.** *Forced by this document's own
+rule:* §15 says an always-on instrument in a hot shared path must be measured at **every** call site,
+and this branch had not obeyed it — the skinning brackets (§10.3) and the counters (§12.3) were
+priced **on the torture cell only**, and the eight `[profile-loop]` regions were never priced at all.
+§19.3's flagged ~1.5 % frame-rate gap made it concrete. *Method:* a `git worktree` at HEAD with every
+instrument this branch added compiled out — five draw-list brackets, the per-skinned-entity clock
+pair, three counter sites, the counter deltas, eight main-loop regions — keeping `[profile]` and
+`[profile-render]` so the run stays comparable to 9514b39. *Result:* **stubbing them recovered
+nothing.** Stubbed 141.6-142.7 FPS against instrumented 140.8-142.4, with overlapping bands on sim
+total and `Animation` too. So **the number §15 said should have existed now does: at the real scene's
+150 skinned items this branch's whole instrumentation is below measurement noise** — not "cheap by
+arithmetic" but indistinguishable by experiment. (§10.3's 3-5 % and §12.3's 0.5 % stand *for the
+torture cell*, at ten times the skinned entities.) **§20.1's own prediction of ~0.5 % was wrong**; the
+clock-read model over-predicts at this scale. *And the gap is resolved with data already in hand:*
+the same two builds on the **uncapped** torture cell go **20.0 → ~14.1 ms/frame**, a 1.4x win. **A
+cost shows up in both rows; this shows up only in the capped one.** The post build does measurably
+less CPU work per frame (`drawList` 0.72 → 0.42, `Animation` 0.25 → 0.19) and still sits 0.1 ms lower
+*only* where presentation, not work, decides the frame rate. Leading suspect — named, not claimed —
+is landing earlier against a present interval with the unconditional `sleep_for(1ms)` §6.3 measured
+at 1.53 ms, missing a slot and picking up a beat. **§19.3 closes as "not a cost", with the
+instrumentation exonerated by experiment rather than by arithmetic.** *Ref:*
+`DevDocs/DESIGN_RENDER_CPU_TIMING.md` §20.
+
 ---
 
 ## Phase detail — M3 (Phases 16–21)

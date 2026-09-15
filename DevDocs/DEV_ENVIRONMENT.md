@@ -569,6 +569,37 @@ because that game had ~3.4 ms of headroom in a 6.94 ms frame before anything cha
 Related: item 11 (a capped frame time is not a measurement — it applies to *both* sides of an A/B)
 and item 17 (run it three times).
 
+## 19. A slowdown that appears only at the cap is a pacing artefact, not a cost
+
+**Observed 2026-09-14.** Two builds, the second doing measurably less CPU work per frame
+(`drawList` 0.72 -> 0.42 ms, `Animation` 0.25 -> 0.19 ms/step):
+
+```
+real scene, frame rate CAPPED     143.7 -> 141.7 FPS   (the newer build is SLOWER)
+torture cell, UNCAPPED             50   ->  70   FPS   (the newer build is 1.4x faster)
+```
+
+Both rows are the same two builds. **A real cost slows both. This slowed only the capped one.**
+
+Before concluding that, every instrument the newer build added was compiled out in a worktree and
+re-run: **it recovered nothing**, so the difference was not measurement overhead either.
+
+The leading explanation is pacing — finishing earlier, against an unconditional `sleep_for(1ms)`
+that actually costs ~1.5 ms, can land on the wrong side of a present interval and pick up a whole
+beat on some frames. 6.96 -> 7.06 ms at a cap changes nothing for any game.
+
+**What to do about it:**
+
+1. **Always have an uncapped row.** A capped comparison cannot tell a cost from a pacing shift; an
+   uncapped one settles it immediately, and you may already have the data.
+2. **Stub the instrumentation before blaming it.** Arithmetic said ~0.5 %; the experiment said
+   nothing measurable. Prefer the experiment — a clock-read cost model over-predicts at small N.
+3. **Do not chase a sub-millisecond capped-frame difference.** Name the suspect, state it is not
+   confirmed, and stop. There is no game behind it.
+
+Related: items 11 (a capped frame time is not a measurement), 17 (run it three times) and 18
+(re-measure on the real configuration).
+
 ## Env knobs, current list
 
 Runtime, engine:
