@@ -230,6 +230,15 @@ both hot loops. `Animation` **3.82 → 2.94 ms a step**, and the heavy cell ends
 renderer change. The per-region medians held to ~3 % across those runs while the frame rate moved
 11 %, which is why the regions, not the frame figure, are the evidence.
 
+One more number belongs next to those, because it is the one that decides whether any of it
+mattered. All of the above was measured on a torture pass carrying **nine times the entities** of the
+game it is named after. Re-measured on the arena's real 162-enemy configuration — a worktree at the
+commit before the fix, against the current one, three runs each — draw-list construction goes
+**0.72 → 0.42 ms** and animation **0.25 → 0.19 ms a step**, against a frame that was **already pinned
+at the display's refresh cap with ~3.4 ms to spare.** Real, repeatable, and imperceptible. The
+synthetic scene is a magnifier, not a proxy: it made a genuine mechanism visible that the game could
+never have surfaced, and saying so is more useful than quoting the magnified number alone.
+
 Two more, both dev-only: `SUGAR_RENDER_RES=<W>x<H>` renders the scene to an offscreen target at an
 explicit resolution independently of the window — which is what makes render cost at 4K measurable
 without a 4K display — and `SUGAR_NOAUDIO=1` skips opening the playback device entirely, so a

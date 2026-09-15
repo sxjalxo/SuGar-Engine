@@ -536,6 +536,39 @@ value.
 Related: items 11 (a capped median is not a cost) and 12 (a mean minus a median). All three are the
 same family — the statistic reported is not the statistic measured.
 
+## 18. Re-measure on the real configuration before calling a speed-up a fix
+
+**Observed 2026-09-14.** Two optimisations were designed, predicted, built and published entirely
+against a **torture pass** — the combat arena's `SUGAR_ARENA_TORTURE=anim` at 1 606 skinned entities.
+The arena's actual game configuration is **162 enemies**: **9x fewer entities, 10x fewer draw items.**
+
+Re-measured on the real configuration (a `git worktree` at the pre-fix commit, built Release,
+against HEAD, three runs each, comparing only instruments present in both builds):
+
+```
+drawList    0.72 -> 0.42 ms          (torture: 8.65 -> 5.54)
+Animation   0.25 -> 0.19 ms/step     (torture: 3.82 -> 2.94)
+frame       already at the 144Hz cap, both sides
+```
+
+The mechanism was real and the fix is real. **The benefit to the shipped game is imperceptible**,
+because that game had ~3.4 ms of headroom in a 6.94 ms frame before anything changed.
+
+**What to do about it:**
+
+1. **A synthetic scale-up is a magnifier, not a proxy.** It is the right tool for making a mechanism
+   visible — no memo between joints of one skeleton was invisible at 162 enemies and obvious at
+   1 606. It is the wrong tool for deciding whether the mechanism matters.
+2. **Publish both numbers.** "8.65 → 5.54 ms" without "and 0.72 → 0.42 on the real scene, which was
+   already capped" overstates what happened.
+3. **Check whether the real configuration was ever failing.** Here it was not, which makes the work
+   evidence-authorized rather than forced — a distinction worth recording in the commit, not hidden.
+4. **Use a worktree for the before side.** `git worktree add <dir> <commit>` plus its own build tree
+   gives an honest A/B without touching the working copy.
+
+Related: item 11 (a capped frame time is not a measurement — it applies to *both* sides of an A/B)
+and item 17 (run it three times).
+
 ## Env knobs, current list
 
 Runtime, engine:

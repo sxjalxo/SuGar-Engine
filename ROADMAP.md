@@ -2179,6 +2179,33 @@ helper refactor, a stronger check than any assertion), no unguarded `transforms.
 world-matrix memo, no unlabelled mixed-statistics output. Gate **72/72** Debug + Release. *Ref:*
 `DevDocs/DESIGN_RENDER_CPU_TIMING.md` §18.
 
+**The measurement that was owed: what the fix bought the REAL game.** *Why:* everything §6-§18
+measured ran on the arena's **torture pass** (1 606 skinned entities). The arena's actual game
+configuration is **162 enemies**, and this project's rule is *a game forces it, or it waits* — so the
+closing question is not how much faster the torture cell got. *Method:* a `git worktree` at
+**9514b39** (before either fix) built Release against HEAD built Release, same packaged `dist`, same
+scene, same 3840×2160, **three runs each**, comparing only figures an instrument present in **both**
+builds produces. *Result, ~1 780 entities and 155-157 draw items:* `drawList` **0.714-0.731 →
+0.412-0.434 ms** (1.7x), `Animation` **0.242-0.251 → 0.182-0.188 ms/step** (1.34x), sim total
+3.49-3.56 → **3.26-3.30 ms/step**. The 10-visits-and-10-hops-per-entity floor reproduces exactly
+(150 searches, 1 500 visits, 1 500 hops), so the algorithmic result transfers. *The honest headline:*
+**the frame was already pinned at the 144 Hz cap before the fix**, so `DEV_ENVIRONMENT.md` #11
+applies and no rendering conclusion can be drawn from either side. What the game actually gained is
+**0.30 ms of draw-list and 0.06 ms of animation against a 6.94 ms frame with ~3.4 ms of headroom** —
+real, repeatable, **imperceptible**. *Which settles the Rule 8 question honestly:* the torture cell
+is a **magnifier, not a proxy** (9x the entities, 10x the draw items of the game it is named after);
+it made a genuine mechanism visible that the game could never have surfaced, and the fix is genuine —
+but **"closes the heavy-scene miss" is a statement about the torture pass**, and no shipped
+configuration of any L3 game was missing the bar. *Flagged, not explained away:* post-fix frame rate
+is consistently ~1.5 % LOWER (140.8-142.4 vs 143.5-144.0, nine samples each side, no overlap) while
+the post build does 0.5 ms/frame less work — most likely the always-on instrumentation the pre build
+lacks, but arithmetic puts that near 0.4 %, both figures sit at a cap #11 says is not a measurement,
+and settling it would need a stubbed build nobody has a forcing event for. **Recorded as an open
+discrepancy.** *New reporting standard:* a speed-up measured on a synthetic magnifier must be
+re-measured on the real configuration before it is called a fix, and **both** numbers published —
+§14 and §17 each published only the magnified one. *Ref:*
+`DevDocs/DESIGN_RENDER_CPU_TIMING.md` §19.
+
 ---
 
 ## Phase detail — M3 (Phases 16–21)
